@@ -1,0 +1,4 @@
+interface:
+  display_name: "Software Factory Architecture"
+  short_description: "Refresh full-repo architecture diagram"
+  default_prompt: "Use $software-factory-architecture-refresh to rescan docs and src, then regenerate the Chinese full-project architecture diagram."

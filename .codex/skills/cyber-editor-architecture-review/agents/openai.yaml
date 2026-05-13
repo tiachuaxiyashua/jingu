@@ -1,0 +1,4 @@
+interface:
+  display_name: "Arch Review"
+  short_description: "Review architecture holes and boundary drift"
+  default_prompt: "Review Cyber Editor architecture with a hard focus on boundary integrity, source-of-truth ownership, execution-path closure, durability, recovery, and docs-code-test parity. Findings must be evidence-based and ordered by severity."

@@ -1,0 +1,15 @@
+﻿# Jingu
+
+Jingu 是从 Cyber Editor 的 `truth/` 独立出来的 harness 工程。
+
+名字含义：孙悟空头上的金箍。这里的“金箍”代表行者的边界、律、验收、证链、治理和可恢复运行机制；它不夺取愿主的价值主权，而是让行者在可承接、可验证、可追责的范围内完成业。
+
+## 当前内容
+
+- `truth/`：相业架构、临时讨论、评审、模拟测试材料。
+- `.codex/skills/`：从原工程复制的本地技能集合。
+- `legacy-config/`：原 Cyber Editor 根指令备份，仅作迁移参考，不作为 Jingu 根规则。
+
+## 当前根规则
+
+Jingu 以 `truth/` 作为未来重构和 harness 设计的源头。旧 Cyber Editor 的 `docs/` 优先规则不适用于本工程。

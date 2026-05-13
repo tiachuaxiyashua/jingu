@@ -1,0 +1,5 @@
+interface:
+  display_name: "Frontier Desktop IA Review"
+  short_description: "Review editor layout and panel hierarchy with current guidance."
+  default_prompt: "Use $frontier-desktop-ia-review to review workbench layout, panels, trees, and adaptive hierarchy."
+

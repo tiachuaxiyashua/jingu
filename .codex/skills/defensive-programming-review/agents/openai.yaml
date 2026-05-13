@@ -1,0 +1,4 @@
+interface:
+  display_name: "Defensive Review"
+  short_description: "Find weak failure paths and risky coupling"
+  default_prompt: "Use -programming-review to review Cyber Editor for hidden failure paths, weak guards, unsafe destructive actions, and test blind spots."

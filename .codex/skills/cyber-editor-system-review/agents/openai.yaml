@@ -1,0 +1,4 @@
+interface:
+  display_name: "Cyber System Review"
+  short_description: "Review Cyber Editor system readiness"
+  default_prompt: "Use $cyber-editor-system-review to review Cyber Editor docs, code, and tests across scope, architecture, orchestration, harness, contracts, safety, and traceability."

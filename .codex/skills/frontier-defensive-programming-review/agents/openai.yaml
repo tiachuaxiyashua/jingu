@@ -1,0 +1,5 @@
+interface:
+  display_name: "Frontier Defensive Programming Review"
+  short_description: "Review failure containment and hardening with current guidance."
+  default_prompt: "Use $frontier-defensive-programming-review to review rollback, replay safety, and runtime hardening."
+

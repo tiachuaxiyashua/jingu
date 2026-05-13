@@ -1,0 +1,4 @@
+interface:
+  display_name: "Frontier Runtime Governance Review"
+  short_description: "Review runtime safety and approvals with current official guidance."
+  default_prompt: "Use $frontier-runtime-governance-review to review approvals, recovery, observability, and runtime governance."

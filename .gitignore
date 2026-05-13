@@ -1,0 +1,44 @@
+node_modules/
+
+# Build and cache output
+.vite/
+src/renderer/.vite/
+dist/
+out/
+coverage/
+playwright-report/
+test-results/
+output/
+artifacts/
+
+# Local recovery, generated design workspace, and runtime project state
+.scratch/
+.superdesign/
+.project/
+codex.json
+build-code-agent-main/
+__pycache__/
+*.py[cod]
+
+# Binary archives are treated as transfer artifacts, not source.
+*.zip
+*.7z
+*.rar
+*.tar
+*.tgz
+*.gz
+
+# Environment and local secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.pfx
+*.p12
+
+# Logs and crash dumps
+*.log
+*.tmp
+*.bak
+*.dmp

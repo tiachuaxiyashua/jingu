@@ -1,0 +1,4 @@
+interface:
+  display_name: "Frontier Test Architecture Review"
+  short_description: "Review tests and oracles with current Playwright and eval guidance."
+  default_prompt: "Use $frontier-test-architecture-review to review coverage, oracles, and AI/runtime regression strategy."

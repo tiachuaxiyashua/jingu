@@ -1,0 +1,5 @@
+interface:
+  display_name: "Frontier Data Contracts Review"
+  short_description: "Review schemas and manifests with current contract guidance."
+  default_prompt: "Use $frontier-data-contracts-review to review manifests, schemas, versioning, and file contracts."
+

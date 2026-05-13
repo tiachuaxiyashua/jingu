@@ -1,0 +1,4 @@
+interface:
+  display_name: "Frontier Orchestration Review"
+  short_description: "Review agent orchestration against current official patterns."
+  default_prompt: "Use $frontier-agent-orchestration-review to review workflow semantics, agents, and execution boundaries."

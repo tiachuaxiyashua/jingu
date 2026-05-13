@@ -1,0 +1,5 @@
+interface:
+  display_name: "Frontier Product Architecture Review"
+  short_description: "Review product structure with current desktop and AI guidance."
+  default_prompt: "Use $frontier-product-architecture-review to review product boundary, journeys, and feature hierarchy."
+

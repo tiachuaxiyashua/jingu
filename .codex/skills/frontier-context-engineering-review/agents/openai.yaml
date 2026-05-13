@@ -1,0 +1,4 @@
+interface:
+  display_name: "Frontier Context Engineering Review"
+  short_description: "Review context systems against current official agent practice."
+  default_prompt: "Use $frontier-context-engineering-review to review retrieval, memory, budget, and evidence flows."

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Post-Change Extreme Validation"
+  short_description: "Run Cyber Editor post-change stress validation"
+  default_prompt: "Use $cyber-editor-post-change-extreme-validation to summarize what is testable after a change, run the required regression commands, inspect extreme-validation evidence, and iterate until results match expectations."
