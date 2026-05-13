@@ -19,6 +19,12 @@ Jingu means the golden headband on Sun Wukong. In this project it represents the
 - Do not delete detailed design content merely to simplify documents. First migrate still-useful detail into the current truth source, then remove only duplicated or obsolete wording.
 - Do not treat a document shape, callable API, status label, or demo shell as completion. Mature completion means truth alignment, clear ownership, executable or reviewable path, tests or evidence, and explicit remaining risks.
 
+## AI Test Runtime
+
+- DeepSeek-backed tests must load local configuration from `.env.deepseek.local` and read `DEEPSEEK_API_KEY`, `DEEPSEEK_BASE_URL`, `DEEPSEEK_MODEL`, and related model settings from that file.
+- Do not hardcode API keys or model names in scripts, tests, docs, command history, or committed files; keep local secret files covered by `.gitignore`.
+- Use the configured DeepSeek model for AI runtime tests unless the user explicitly requests another provider or model for a specific test.
+
 ## GitHub Synchronization
 
 - The GitHub repository is the source-controlled handoff path for this project. Durable docs, code, tests, scripts, skills, and configuration changes must be committed through git and pushed to the GitHub remote.
