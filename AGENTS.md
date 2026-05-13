@@ -11,7 +11,6 @@ Jingu means the golden headband on Sun Wukong. In this project it represents the
 - Preserve the distinction between current truth source, temporary discussion, temporary review, and temporary test materials.
 - Do not force Jingu back into Cyber Editor's old `docs/` worldview.
 - Do not create additional parallel truth roots beyond `truth/` without explicit user approval.
-- Files under `legacy-config/` are copied historical references only; they are not active instructions unless explicitly promoted.
 
 ## Design Discipline
 
