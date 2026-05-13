@@ -25,6 +25,12 @@ Jingu means the golden headband on Sun Wukong. In this project it represents the
 - Do not hardcode API keys or model names in scripts, tests, docs, command history, or committed files; keep local secret files covered by `.gitignore`.
 - Use the configured DeepSeek model for AI runtime tests unless the user explicitly requests another provider or model for a specific test.
 
+## Skill Usage
+
+- When a task matches a local skill, first use the exact `SKILL.md` path provided by the current session. If that path is missing, do not declare the skill unavailable until checking these fallback locations in order: repository `.codex/skills/<skill-name>/SKILL.md`, user `%USERPROFILE%\.codex\skills\<skill-name>\SKILL.md`, and system `%USERPROFILE%\.codex\skills\.system\<skill-name>\SKILL.md`.
+- If a referenced skill path is stale but the same skill exists in another approved local location, use the valid local path and record or repair the stale path before continuing.
+- When the current local skills do not cover a problem well enough, and a specialized skill would materially improve correctness or safety, search online or the curated skill index for a suitable skill. Prefer official or trusted sources, inspect the source and purpose before installing, use the `skill-installer` workflow when applicable, and report any restart requirement.
+
 ## GitHub Synchronization
 
 - The GitHub repository is the source-controlled handoff path for this project. Durable docs, code, tests, scripts, skills, and configuration changes must be committed through git and pushed to the GitHub remote.
