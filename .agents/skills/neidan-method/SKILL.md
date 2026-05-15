@@ -5,7 +5,7 @@ description: Jingu内丹法原型，用于把模糊愿望主动转成可执行�
 
 # 内丹法
 
-这不是一个给通用 Codex 自动轻触发的轻量 skill，而是 Jingu 的方法原型。它的用途是主动把模糊愿望推成可执行能力闭环，并在反复压测中逐步内化为“法”。
+这不是一个给通用 Codex 自动轻触发的轻量技能，而是 Jingu 的方法原型。它的用途是主动把模糊愿望推成可执行能力闭环，并在反复压测中逐步内化为“法”。
 
 内丹法的目标不是只想明白，而是把“我想要但我不会做”转成一条能执行、能验收、能修正、能沉淀的路径。
 
@@ -30,7 +30,7 @@ description: Jingu内丹法原型，用于把模糊愿望主动转成可执行�
 ## 核心纪律
 
 1. 先保存原始愿望，再改写为任务结构。
-2. 先做复用扫描，再决定是否新拆解。优先复用当前真相、已有法、本地 skill、可参考外部 skill 或文档，能改造就不要重造。
+2. 先做复用扫描，再决定是否新拆解。优先复用当前真相、已有法、本地技能、可参考外部技能或文档，能改造就不要重造。
 3. 不因为产物容易做就缩小最终目标。必须同时保留最终目标、当前阶段产物和验证对象。
 4. 概念不能只拆一层。每个关键概念都要继续下钻到机制、动作、信号、边界和验收。
 5. 只有能改善执行、验收、风险控制或价值判断的子业才值得建立，避免装饰性拆分。
@@ -44,15 +44,15 @@ description: Jingu内丹法原型，用于把模糊愿望主动转成可执行�
 
 先写清任务契约：
 
-```text
-source_wish:
-final_target:
-current_phase_output:
-validation_artifact:
-non_goals:
-known_constraints:
-risk_level:
-feedback_channels:
+```
+原始愿望:
+最终目标:
+当前阶段产物:
+验收对象:
+非目标:
+已知约束:
+风险等级:
+反馈渠道:
 ```
 
 如果用户给的是大目标，不能让一个小样稿冒充最终交付。
@@ -62,8 +62,8 @@ feedback_channels:
 在更深拆解前，先盘点可复用项：
 
 - 当前真相和已建立的法
-- 仓库内现有 skill 和参考资料
-- 可信的外部 skill、文档或模板
+- 仓库内现有技能和参考资料
+- 可信的外部技能、文档或模板
 
 每个候选项都要标注：
 
@@ -78,14 +78,14 @@ feedback_channels:
 
 列出愿望里的关键概念。每个概念都要标注：
 
-```text
-concept:
-role: goal | material | quality | constraint | risk | audience | tool | domain
-current_clarity: clear | vague | conflicting | missing
-blocks_execution: yes | no
-blocks_evaluation: yes | no
-needs_external_evidence: yes | no
-needs_human_choice: yes | no
+```
+概念:
+角色: 目标 | 材料 | 质量 | 约束 | 风险 | 受众 | 工具 | 领域
+当前清晰度: 清晰 | 模糊 | 冲突 | 缺失
+是否阻塞执行: 是 | 否
+是否阻塞验收: 是 | 否
+是否需要外部证据: 是 | 否
+是否需要人类决策: 是 | 否
 ```
 
 ### 3. 递归下钻
@@ -125,20 +125,20 @@ needs_human_choice: yes | no
 
 把当前任务需要的法写成可执行对象：
 
-```text
-method_name:
-applies_to:
-steps:
-rules:
-atomic_actions:
-examples:
-counterexamples:
-quality_checks:
-feedback_to_collect:
-revision_rules:
+```
+法名:
+适用范围:
+步骤:
+规则:
+原子动作:
+示例:
+反例:
+质量检查:
+需要收集的反馈:
+修正规则:
 ```
 
-临时法必须能被另一个人或另一个 agent 独立读懂并执行，不能只对当前上下文有意义。
+临时法必须能被另一位人或另一位执行者独立读懂并执行，不能只对当前上下文有意义。
 
 ### 6. 执行产物
 
@@ -181,13 +181,13 @@ AI 评审
 
 记录：
 
-```text
-confirmed:
-weakened:
-changed:
-new_gap:
-method_update:
-rollback_needed:
+```
+已确认:
+已削弱:
+已变化:
+新缺口:
+法更新:
+需要回退:
 ```
 
 ## 输出形态
