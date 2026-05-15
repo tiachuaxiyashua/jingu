@@ -1,9 +1,11 @@
 ---
 name: neidan-method
-description: Use when Codex must transform a vague or under-specified human wish into executable work by recursively clarifying concepts, generating task-specific methods or skills, identifying evidence and feedback channels, producing a first high-quality artifact, and updating the method from feedback. Especially useful for low-expertise users, capability-completion tasks, ambiguous creative work, unfamiliar domains, and Jingu Xiang/Ye architecture discussions.
+description: Jingu Neidan Method prototype for actively transforming vague human wishes into executable capability loops by clarifying concepts, generating task-specific methods, identifying evidence and feedback channels, producing artifacts, and updating the method from feedback.
 ---
 
 # Neidan Method
+
+This is not optimized as a minimal auto-triggered Codex skill. It is a Jingu method prototype intended to be actively invoked, stress-tested, expanded, and eventually internalized as a reusable `法`.
 
 Neidan Method turns "I want X but I do not know how" into a learning-and-execution loop. It treats the user's wish as the source, then builds the missing capability around it: concepts, standards, evidence, methods, execution, feedback, revision, and reusable learning.
 

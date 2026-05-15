@@ -12,6 +12,12 @@
 - Claude Skill authoring best practices：强调简洁、渐进披露、按任务脆弱性设置自由度、用真实用法测试。
 - OpenAI Codex Agent Skills 文档：说明 skill 是含 `SKILL.md` 的目录，可带 `scripts/`、`references/`、`assets/`、`agents/openai.yaml`；Codex 通过 description 触发 skill，并推荐 `.agents/skills` 作为 repo 级路径。
 
+修正说明：
+
+- 上述平台文档中的“短、易触发、描述调用时机”适用于通用 agent skill 分发，不应反向束缚 Jingu 的内丹法。
+- 本项目中的 `neidan-method` 不是最终给外部 Codex 自动触发的轻量 skill，而是 Jingu 未来要内化为 `法` 的方法论原型。
+- 因此它可以更长、更显式、更适合主动调用和持续压测；当前重点是方法有效性，不是触发元数据优化。
+
 本次实现位置：
 
 ```text
