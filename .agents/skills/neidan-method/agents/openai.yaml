@@ -1,0 +1,4 @@
+interface:
+  display_name: "Neidan Method"
+  short_description: "Turn vague goals into executable capability loops"
+  default_prompt: "Use neidan-method to transform this vague goal into executable work, generated methods, evidence, feedback, and iteration."
