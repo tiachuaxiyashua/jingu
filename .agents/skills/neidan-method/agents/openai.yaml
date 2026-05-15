@@ -1,4 +1,4 @@
 interface:
-  display_name: "Neidan Method"
-  short_description: "Turn vague goals into executable capability loops"
-  default_prompt: "Use neidan-method to transform this vague goal into executable work, generated methods, evidence, feedback, and iteration."
+  display_name: "内丹法"
+  short_description: "把模糊愿望转成可执行能力闭环"
+  default_prompt: "使用内丹法：先做复用扫描，再递归下钻概念到原子动作，生成临时法、证据、验收标准和执行产物，并用反馈修正。"

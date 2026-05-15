@@ -1,47 +1,48 @@
 ---
 name: neidan-method
-description: Jingu Neidan Method prototype for actively transforming vague human wishes into executable capability loops by clarifying concepts, generating task-specific methods, identifying evidence and feedback channels, producing artifacts, and updating the method from feedback.
+description: Jingu内丹法原型，用于把模糊愿望主动转成可执行的能力闭环：先复用已有法，再递归下钻概念到原子动作，生成临时法、证据、验收标准、执行产物，并用反馈持续修正。
 ---
 
-# Neidan Method
+# 内丹法
 
-This is not optimized as a minimal auto-triggered Codex skill. It is a Jingu method prototype intended to be actively invoked, stress-tested, expanded, and eventually internalized as a reusable `法`.
+这不是一个给通用 Codex 自动轻触发的轻量 skill，而是 Jingu 的方法原型。它的用途是主动把模糊愿望推成可执行能力闭环，并在反复压测中逐步内化为“法”。
 
-Neidan Method turns "I want X but I do not know how" into a learning-and-execution loop. It treats the user's wish as the source, then builds the missing capability around it: reusable methods, concepts, standards, evidence, execution, feedback, revision, and learning.
+内丹法的目标不是只想明白，而是把“我想要但我不会做”转成一条能执行、能验收、能修正、能沉淀的路径。
 
-Do not use this as a thinking-only checklist. The method must move toward a concrete artifact and a feedback channel.
-
-## Core Loop
+## 总循环
 
 ```text
-original wish
-  -> task ye
-  -> reuse scan
-  -> concept breakdown
-  -> operational standards
-  -> evidence / examples / counterexamples
-  -> capability method v0
-  -> execution artifact
-  -> feedback / evaluation
-  -> method update or rollback
+原始愿望
+  -> 复用扫描
+  -> 任务业
+  -> 概念拆解
+  -> 递归下钻
+  -> 原子动作层
+  -> 可执行标准
+  -> 证据 / 范例 / 反例
+  -> 临时法
+  -> 执行产物
+  -> 临时法自验收
+  -> 外部反馈 / 评价
+  -> 法更新或回退
 ```
 
-## Required Discipline
+## 核心纪律
 
-1. Preserve the user's original wish before rewriting it.
-2. Do a reuse scan before inventing a new decomposition. Check current truth, existing local methods or skills, and externally available candidate skills or references. Reuse or adapt a fit before creating a new method.
-3. Do not shrink the final goal just because a smaller artifact is easier. Separate final target, current phase output, and validation artifact.
-4. Break vague concepts until they become executable choices, observable standards, examples, counterexamples, or feedback questions.
-5. Create child work only when it improves execution, validation, risk control, or value choice. Avoid decorative decomposition.
-6. Prefer generated defaults for low-level execution details. Ask the human only when the answer materially changes value, direction, risk, or irreversible commitment.
-7. Treat community practice, expert heuristics, tests, market data, physical feedback, user feedback, and AI review as usable evidence with different reliability levels.
-8. Every generated method is provisional. It must record what feedback would confirm, revise, or retire it.
+1. 先保存原始愿望，再改写为任务结构。
+2. 先做复用扫描，再决定是否新拆解。优先复用当前真相、已有法、本地 skill、可参考外部 skill 或文档，能改造就不要重造。
+3. 不因为产物容易做就缩小最终目标。必须同时保留最终目标、当前阶段产物和验证对象。
+4. 概念不能只拆一层。每个关键概念都要继续下钻到机制、动作、信号、边界和验收。
+5. 只有能改善执行、验收、风险控制或价值判断的子业才值得建立，避免装饰性拆分。
+6. 低层执行细节优先由系统给默认方案；只有当答案会实质改变方向、风险、价值取舍或不可逆承诺时才问人。
+7. 社区经验、专家经验、测试、市场数据、物理反馈、人类反馈和 AI 评审都可以用，但可靠性不同，必须标明来源等级。
+8. 任何临时法都必须可被反馈推翻、修正或废弃。
 
-## Workflow
+## 工作流程
 
-### 1. Establish Task Ye
+### 1. 建立任务业
 
-Create a task contract:
+先写清任务契约：
 
 ```text
 source_wish:
@@ -54,28 +55,28 @@ risk_level:
 feedback_channels:
 ```
 
-If the user asks for a broad end state, keep that end state visible. Do not let a prototype, sample, or outline silently become the real deliverable.
+如果用户给的是大目标，不能让一个小样稿冒充最终交付。
 
-### 1.5 Reuse Scan
+### 1.5 复用扫描
 
-Before deeper decomposition, inventory what can already be reused:
+在更深拆解前，先盘点可复用项：
 
-- current truth and established `法`
-- repository-local skills and references
-- trusted external skills, docs, or templates if the local set is thin
+- 当前真相和已建立的法
+- 仓库内现有 skill 和参考资料
+- 可信的外部 skill、文档或模板
 
-For each candidate, classify it as:
+每个候选项都要标注：
 
-- reuse as-is
-- reuse with adaptation
-- cite as reference only
-- ignore
+- 直接复用
+- 改造复用
+- 仅作参考
+- 忽略
 
-Time-box the scan. Stop once reuse value drops or the task is urgent. The goal is to avoid reinventing a wheel, not to search forever.
+这个阶段要限时。目标是避免重复造轮子，不是无限搜索。
 
-### 2. Extract Concepts
+### 2. 概念拆解
 
-List the important concepts in the wish. For each concept, classify it:
+列出愿望里的关键概念。每个概念都要标注：
 
 ```text
 concept:
@@ -87,56 +88,49 @@ needs_external_evidence: yes | no
 needs_human_choice: yes | no
 ```
 
-### 3. Operationalize Concepts
+### 3. 递归下钻
 
-For every blocking vague concept, produce at least one of:
+不要停在第一层名词解释。每个阻塞概念至少继续追问到下面几个层次：
 
-- executable definition
-- measurable proxy
-- rubric
-- example
-- counterexample
-- source-backed heuristic
-- decision question
-- feedback loop
+- 机制：它是怎么产生的？
+- 结构：它由哪些部件组成？
+- 动作：要做哪些可执行动作才会出现？
+- 信号：出现了什么才算它真的成立？
+- 失败信号：什么表现说明它不成立？
+- 边界：什么情况下它不适用？
+- 反馈源：靠什么外部或内部反馈修正它？
 
-Do not stop at labels like "high quality", "engaging", "safe", "professional", "novel", or "complete". Turn them into actions and checks.
+如果一个概念还不能落到动作或信号，就说明还没下钻够。
 
-### 4. Build Child Ye
+### 4. 原子动作层
 
-Create child work units only for unresolved items that matter:
+每个叶子节点都要尽量映射到原子动作。常见原子动作包括：
 
-```text
-child_ye:
-purpose:
-input_xiang:
-method:
-expected_output:
-acceptance_check:
-feeds_back_to:
-```
+- 检索
+- 比较
+- 归纳
+- 选择
+- 生成
+- 修改
+- 校验
+- 发布
+- 记录
+- 转译
+- 反馈
+- 回退
 
-Typical child ye:
+不能执行、不能观察、不能校验的概念，不算真正拆完。
 
-- evidence search
-- concept refinement
-- example mining
-- counterexample mining
-- method synthesis
-- risk review
-- execution
-- evaluation
-- feedback incorporation
+### 5. 生成临时法
 
-### 5. Synthesize Method Fa
-
-Create a task-specific method:
+把当前任务需要的法写成可执行对象：
 
 ```text
 method_name:
 applies_to:
 steps:
 rules:
+atomic_actions:
 examples:
 counterexamples:
 quality_checks:
@@ -144,35 +138,48 @@ feedback_to_collect:
 revision_rules:
 ```
 
-The method may be a temporary skill, checklist, rubric, playbook, workflow, or prompt protocol. Keep it usable by another agent without the full conversation.
+临时法必须能被另一个人或另一个 agent 独立读懂并执行，不能只对当前上下文有意义。
 
-### 6. Execute
+### 6. 执行产物
 
-Use the method to produce the best current artifact. Do not only analyze unless analysis itself is the requested artifact.
+不是只分析。必须拿临时法产出当前阶段最好的对象。
 
-For large tasks, produce:
+大型任务至少要产出：
 
-- final target map
-- current phase deliverable
-- next execution batch
-- what feedback would update the method
+- 最终目标图
+- 当前阶段交付物
+- 下一批执行计划
+- 哪些反馈会推动法更新
 
-### 7. Evaluate And Update
+### 7. 用法自验收
 
-Evaluate with the best available feedback:
+临时法生成后，必须用它自己验一次产物：
 
 ```text
-human feedback
-physical test
-unit/integration test
-market metric
-expert/community heuristic
-AI critique
-source comparison
-red-team review
+1. 这份产物是否真的满足任务契约？
+2. 每个关键概念是否已经落到动作、信号或边界？
+3. 这份法是否真的指导了执行，而不是只做了总结？
+4. 哪些地方仍然只能靠外部反馈决定？
 ```
 
-Record:
+如果临时法连自己都验不过，就不能假装成熟。
+
+### 8. 外部反馈与更新
+
+可用反馈包括：
+
+```text
+人类反馈
+物理测试
+单元/集成测试
+市场数据
+专家/社区经验
+AI 评审
+来源比对
+红队审查
+```
+
+记录：
 
 ```text
 confirmed:
@@ -183,31 +190,36 @@ method_update:
 rollback_needed:
 ```
 
-## Output Shape
+## 输出形态
 
-Use this compact structure unless the task needs another format:
+除非任务另有要求，默认按这个结构输出：
 
 ```text
-Original wish:
-Task ye:
-Concept map:
-Blocking gaps:
-Child ye:
-Generated method:
-Artifact:
-Evaluation plan:
-Method update notes:
-Observed failure modes:
+原始愿望:
+任务业:
+复用扫描:
+概念图:
+下钻层:
+阻塞缺口:
+子业:
+临时法:
+原子动作:
+产物:
+验收结果:
+法更新说明:
+观察到的失败模式:
 ```
 
-## Failure Modes To Watch
+## 失败模式
 
-- Goal collapse: replacing the user's final goal with a smaller convenient output.
-- Concept ornamentation: decomposing words without improving execution.
-- Proxy worship: treating a measurable proxy as the real value.
-- Source flattening: treating a forum tip, expert rule, benchmark, and physical test as equally strong.
-- Question flood: asking the human about low-level details that the system should propose by default.
-- Self-sealing method: generating a method that cannot be corrected by feedback.
-- Context bloat: importing all child work into the parent instead of passing conclusions, evidence, and open issues.
+- 目标坍缩：把用户最终目标缩成一个容易交付的小样。
+- 单层拆解：只拆第一层概念，没有继续下钻到机制、动作和验收。
+- 概念装饰：拆了一堆词，但没有改善执行。
+- 伪量化：只给模糊标签，没有可执行标准。
+- 来源扁平化：把论坛经验、专家规则、基准测试和物理反馈当成同一层证据。
+- 追问泛滥：把低层细节也丢给人问，系统不提出默认方案。
+- 自封闭方法：生成一个不能被反馈修正的法。
+- 上下文膨胀：把全部子业过程都塞回父业，而不是只回传结论、证据和开放问题。
+- 不验收：产出法之后没有反过来验产物。
 
-When any failure mode appears, name it and revise the method before continuing.
+出现任一失败模式时，必须先指出，再修法继续。

@@ -1,23 +1,23 @@
-# Neidan Method Pressure-Test Prompts
+# 内丹法压测提示
 
-Use these prompts to forward-test whether the skill generalizes beyond a single domain.
+用这些提示测试 skill 是否能跨领域泛化。
 
-1. A child wants to write a blockbuster novel about humans being born from eggs.
-2. A non-programmer wants to build a privacy-safe local AI habit coach in one weekend.
-3. A rural clinic wants a safer fever triage process with almost no equipment.
-4. A tenant facing eviction wants to understand options without receiving fake legal certainty.
-5. A parent wants to invent a safer infant sleep product from a vague idea.
-6. A small restaurant wants to recover from bad reviews and increase repeat visits.
-7. A student wants to learn calculus fast after years of math anxiety.
-8. A local community wants to prepare for floods with no budget and low trust.
-9. A researcher has a vague hypothesis about AI memory pollution and wants a publishable experiment.
-10. A founder wants a product strategy for an emotionally sensitive AI companion without harming users.
+1. 一个完全不会写作的孩子，想写一部“人类蛋生”的爆款小说。
+2. 一个不会编程的人，想在一个周末做出隐私安全的本地 AI 习惯教练。
+3. 一个农村诊所，想在设备很少的情况下做更安全的发热分诊。
+4. 一个面临驱逐的租客，想知道自己接下来该做什么，但不想得到虚假的法律结论。
+5. 一个家长，想从模糊想法出发做一个更安全的婴儿睡眠产品。
+6. 一家小餐厅，想从差评中恢复口碑并提高复购。
+7. 一个学生，想在多年数学焦虑后快速学会微积分。
+8. 一个低预算、低信任的社区，想为洪水做准备。
+9. 一个研究者，有一个关于 AI 记忆污染的模糊假设，想把它做成可发表实验。
+10. 一个创业者，想做一个情绪敏感的 AI 陪伴产品，又不想伤害脆弱用户。
 
-For each prompt, check:
+每个提示都要检查：
 
-- Did the model preserve the final ambition instead of shrinking the task?
-- Did it turn blocking vague concepts into executable standards, examples, or feedback loops?
-- Did it synthesize a reusable method?
-- Did it produce a concrete artifact?
-- Did it identify how the method would be updated by feedback?
-- Did it expose failure modes rather than hiding them?
+- 是否保留了最终目标，而不是把任务缩成好做的小样。
+- 是否把阻塞性的模糊概念拆到了可执行标准、原子动作、范例或反馈回路。
+- 是否生成了可以复用的法。
+- 是否产出了具体对象。
+- 是否说明了法会如何被反馈修正。
+- 是否暴露了失败模式，而不是掩盖失败模式。
