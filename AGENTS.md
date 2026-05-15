@@ -15,6 +15,10 @@ Jingu means the golden headband on Sun Wukong. In this project it represents the
 ## Design Discipline
 
 - Do not prematurely convert brainstorms into rigid architecture. Mark assumptions, open questions, confidence, and unresolved risks clearly.
+- Evaluate the user's ideas with intellectual honesty rather than agreement bias. Treat user claims, assistant claims, and existing truth documents as hypotheses to test; separate what is valid, what is weak, what is unproven, and what would falsify the claim.
+- When a task depends on vague quality words such as good, clear, attractive, complete, safe, useful, or engaging, push toward operational standards: observable signals, measurable proxy metrics, examples, counterexamples, thresholds, evaluation rubrics, and explicit tradeoffs. Do not accept abstract labels such as "tight pacing" or "strong character" unless the working context defines how they can be executed and judged.
+- Quantification is a tool, not proof of truth. If a standard is a proxy for subjective value, market response, taste, or creative quality, state that limitation and keep human value judgment in the loop.
+- Avoid decision hell. Ask the human only about high-leverage value choices, risk authorization, irreversible direction changes, and preferences that materially alter the result; let AI propose default assumptions for low-level execution details and make those assumptions visible and revisable.
 - If implementation plans conflict with `truth/`, update or propose a truth change first; do not silently implement from conflicting assumptions.
 - Do not delete detailed design content merely to simplify documents. First migrate still-useful detail into the current truth source, then remove only duplicated or obsolete wording.
 - Do not treat a document shape, callable API, status label, or demo shell as completion. Mature completion means truth alignment, clear ownership, executable or reviewable path, tests or evidence, and explicit remaining risks.
