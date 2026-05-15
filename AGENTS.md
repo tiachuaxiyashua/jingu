@@ -19,6 +19,7 @@ Jingu means the golden headband on Sun Wukong. In this project it represents the
 - If implementation plans conflict with `truth/`, update or propose a truth change first; do not silently implement from conflicting assumptions.
 - Do not delete detailed design content merely to simplify documents. First migrate still-useful detail into the current truth source, then remove only duplicated or obsolete wording.
 - Do not treat a document shape, callable API, status label, or demo shell as completion. Mature completion means truth alignment, clear ownership, executable or reviewable path, tests or evidence, and explicit remaining risks.
+- When producing artifacts that the user must judge, test, or use as evidence, output the complete artifact. Do not use excerpts, summaries, ellipses, "omitted for brevity", or partial samples in place of the actual deliverable. Never reduce artifact completeness to save tokens or effort; if the artifact is too large for one response or file, split it into explicit parts or additional files while preserving the full content.
 
 ## AI Test Runtime
 
