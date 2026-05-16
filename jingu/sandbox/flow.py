@@ -15,6 +15,7 @@ from jingu.sandbox.paths import flow_events_path
 
 FLOW_SANDBOX_CREATED = "sandbox_created"
 FLOW_RUNTIME_INITIALIZED = "runtime_initialized"
+FLOW_CHAT_SESSION_STARTED = "chat_session_started"
 FLOW_ROOT_JOB_CREATED = "root_job_created"
 FLOW_JOB_READY = "job_ready"
 FLOW_JOB_RUNNING = "job_running"
@@ -25,11 +26,13 @@ FLOW_CANDIDATE_SUBMITTED = "candidate_submitted"
 FLOW_EVIDENCE_SUBMITTED = "evidence_submitted"
 FLOW_JOB_ACCEPTED = "job_accepted"
 FLOW_RESULT_OUTPUT_RECORDED = "result_output_recorded"
+FLOW_CHAT_TURN_FINISHED = "chat_turn_finished"
+FLOW_CHAT_SESSION_FINISHED = "chat_session_finished"
 FLOW_RUN_FAILED = "run_failed"
 FLOW_RUN_FINISHED = "run_finished"
 FLOW_SANDBOX_DESTROYED = "sandbox_destroyed"
 
-TERMINAL_EVENTS = {FLOW_RUN_FINISHED, FLOW_SANDBOX_DESTROYED}
+TERMINAL_EVENTS = {FLOW_RUN_FINISHED, FLOW_CHAT_SESSION_FINISHED, FLOW_SANDBOX_DESTROYED}
 
 
 @dataclass(frozen=True)

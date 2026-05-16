@@ -13,7 +13,7 @@ from jingu.ai.config import load_ai_config
 from jingu.cli import main
 from jingu.runtime.errors import JinguRuntimeError
 from jingu.sandbox.flow import FlowWriter, tail_flow_events
-from jingu.sandbox.runner import AiSandboxRunner
+from jingu.sandbox.runner import AiSandboxChatSession, AiSandboxRunner
 
 
 class FakeChatClient:
@@ -24,6 +24,10 @@ class FakeChatClient:
     def complete(self, message: str) -> ChatResponse:
         self.messages.append(message)
         return ChatResponse(content=self.content, raw={"ok": True})
+
+    def complete_messages(self, messages: list[dict[str, str]]) -> ChatResponse:
+        self.messages.append(messages[-1]["content"])
+        return ChatResponse(content=f"{self.content} {len(messages)}", raw={"ok": True})
 
 
 class AiSandboxChatTest(unittest.TestCase):
@@ -122,6 +126,32 @@ class AiSandboxChatTest(unittest.TestCase):
 
         self.assertEqual(code, 0)
         self.assertEqual(output.getvalue(), "answer only\n")
+
+    def test_interactive_chat_session_keeps_context_and_cleans_sandbox(self) -> None:
+        with TemporaryDirectory() as tmp:
+            sandbox = Path(tmp) / "sandbox"
+            log_dir = Path(tmp) / "logs"
+            client = FakeChatClient("chat answer")
+            session = AiSandboxChatSession(sandbox_path=sandbox, log_dir=log_dir, client=client)
+
+            session.start()
+            first = session.ask("first task")
+            second = session.ask("second decision")
+            session.finish()
+
+            self.assertEqual(first, "chat answer 1")
+            self.assertEqual(second, "chat answer 3")
+            self.assertFalse(sandbox.exists())
+            log_files = sorted(log_dir.glob("ai-run-*.jsonl"))
+            records = [
+                json.loads(line)
+                for line in log_files[0].read_text(encoding="utf-8").splitlines()
+                if line.strip()
+            ]
+            event_types = [record["event_type"] for record in records]
+            self.assertEqual(event_types.count("user_input_recorded"), 2)
+            self.assertEqual(event_types.count("result_output_recorded"), 2)
+            self.assertIn("chat_session_finished", event_types)
 
 
 if __name__ == "__main__":

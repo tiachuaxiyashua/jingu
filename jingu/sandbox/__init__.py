@@ -1,5 +1,5 @@
 """Ephemeral sandbox workflow for AI chat."""
 
-from jingu.sandbox.runner import AiSandboxRunner
+from jingu.sandbox.runner import AiSandboxChatSession, AiSandboxRunner
 
-__all__ = ["AiSandboxRunner"]
+__all__ = ["AiSandboxChatSession", "AiSandboxRunner"]

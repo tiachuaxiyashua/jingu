@@ -12,7 +12,7 @@ from jingu.runtime.errors import JinguRuntimeError
 from jingu.runtime.service import RuntimeService
 from jingu.sandbox.flow import tail_flow_events
 from jingu.sandbox.paths import latest_log_pointer_path, resolve_log_dir, resolve_sandbox_path
-from jingu.sandbox.runner import AiSandboxRunner
+from jingu.sandbox.runner import AiSandboxChatSession, AiSandboxRunner
 
 
 def print_json(value: Any) -> None:
@@ -81,6 +81,10 @@ def build_parser() -> argparse.ArgumentParser:
     ai_monitor.add_argument("--sandbox", type=Path)
     ai_monitor.add_argument("--log-dir", type=Path)
     ai_monitor.add_argument("--wait-seconds", type=float, default=30.0)
+    ai_chat = ai_subparsers.add_parser("chat", help="Start an interactive AI chat session.")
+    ai_chat.add_argument("--sandbox", type=Path)
+    ai_chat.add_argument("--log-dir", type=Path)
+    ai_chat.add_argument("--config", type=Path)
 
     return parser
 
@@ -161,6 +165,33 @@ def run_monitor(args: argparse.Namespace) -> None:
         print(format_flow_event(event), flush=True)
 
 
+def run_chat(args: argparse.Namespace) -> None:
+    session = AiSandboxChatSession(
+        sandbox_path=args.sandbox,
+        log_dir=args.log_dir,
+        config_path=args.config,
+    )
+    session.start()
+    print("Jingu AI chat started. Type /exit to finish.", flush=True)
+    try:
+        while True:
+            user_input = input("You> ").strip()
+            if not user_input:
+                continue
+            if user_input.lower() in {"/exit", "/quit", "exit", "quit"}:
+                session.finish()
+                print("Session closed.", flush=True)
+                return
+            answer = session.ask(user_input)
+            print(f"AI> {answer}", flush=True)
+    except (KeyboardInterrupt, EOFError):
+        session.finish()
+        print("\nSession closed.", flush=True)
+    except Exception as exc:
+        session.fail(exc)
+        raise
+
+
 def format_flow_event(event: dict[str, Any]) -> str:
     data = event.get("data") or {}
     data_text = " ".join(f"{key}={value}" for key, value in sorted(data.items()))
@@ -175,11 +206,14 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "ai" and args.ai_command == "run":
             print(run_result_only(args))
             return 0
+        if args.command == "ai" and args.ai_command == "chat":
+            run_chat(args)
+            return 0
         if args.command == "ai" and args.ai_command == "monitor":
             run_monitor(args)
             return 0
         print_json(run(args))
-    except (JinguRuntimeError, ValueError, OSError) as exc:
+    except (JinguRuntimeError, RuntimeError, ValueError, OSError) as exc:
         if getattr(args, "command", None) == "ai":
             print(str(exc), file=sys.stderr)
         else:

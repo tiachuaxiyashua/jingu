@@ -12,6 +12,9 @@ from jingu.sandbox.flow import (
     FLOW_AI_REQUEST_STARTED,
     FLOW_AI_RESPONSE_RECEIVED,
     FLOW_CANDIDATE_SUBMITTED,
+    FLOW_CHAT_SESSION_FINISHED,
+    FLOW_CHAT_SESSION_STARTED,
+    FLOW_CHAT_TURN_FINISHED,
     FLOW_EVIDENCE_SUBMITTED,
     FLOW_JOB_ACCEPTED,
     FLOW_JOB_READY,
@@ -128,6 +131,142 @@ class AiSandboxRunner:
                 log_path=str(self.diagnostic_log_path),
             )
             shutil.rmtree(self.sandbox_path, ignore_errors=True)
+
+    def _reset_sandbox(self) -> None:
+        if self.sandbox_path.exists():
+            shutil.rmtree(self.sandbox_path)
+
+    def _write_latest_log_pointer(self) -> None:
+        self.log_dir.mkdir(parents=True, exist_ok=True)
+        latest_log_pointer_path(self.log_dir).write_text(
+            str(self.diagnostic_log_path), encoding="utf-8"
+        )
+
+
+class AiSandboxChatSession:
+    def __init__(
+        self,
+        *,
+        sandbox_path: Path | str | None = None,
+        log_dir: Path | str | None = None,
+        config_path: Path | str | None = None,
+        client: ChatClient | None = None,
+    ) -> None:
+        self.sandbox_path = resolve_sandbox_path(sandbox_path)
+        self.log_dir = resolve_log_dir(log_dir)
+        self.diagnostic_log_path = new_diagnostic_log_path(self.log_dir)
+        self.config_path = Path(config_path) if config_path is not None else None
+        self.client = client
+        self.flow = FlowWriter(self.sandbox_path, self.diagnostic_log_path)
+        self.history: list[dict[str, str]] = []
+        self.service: RuntimeService | None = None
+
+    def start(self) -> None:
+        self._reset_sandbox()
+        self.sandbox_path.mkdir(parents=True, exist_ok=True)
+        self._write_latest_log_pointer()
+        self.flow.write(
+            FLOW_SANDBOX_CREATED,
+            "sandbox created",
+            sandbox_path=str(self.sandbox_path),
+            log_path=str(self.diagnostic_log_path),
+        )
+        self.service = RuntimeService(self.sandbox_path)
+        self.service.initialize()
+        self.flow.write(FLOW_RUNTIME_INITIALIZED, "runtime initialized")
+        self.flow.write(FLOW_CHAT_SESSION_STARTED, "chat session started")
+
+    def ask(self, user_input: str) -> str:
+        if self.service is None:
+            raise RuntimeError("chat session has not started")
+
+        turn = str((len(self.history) // 2) + 1)
+        self.flow.write(FLOW_USER_INPUT_RECORDED, "user input recorded", turn=turn, input=user_input)
+
+        root = self.service.create_root_job(wish=user_input, target=user_input, actor_id="human")
+        job_id = root["job_id"]
+        self.flow.write(FLOW_ROOT_JOB_CREATED, "root job created", turn=turn, job_id=job_id)
+
+        self.service.mark_ready(job_id, actor_id="system")
+        self.flow.write(FLOW_JOB_READY, "job marked ready", turn=turn, job_id=job_id)
+
+        self.service.start_job(job_id, actor_id="system")
+        self.flow.write(FLOW_JOB_RUNNING, "job running", turn=turn, job_id=job_id)
+
+        self.history.append({"role": "user", "content": user_input})
+        client = self.client or ChatClient(load_ai_config(self.config_path))
+        self.flow.write(
+            FLOW_AI_REQUEST_STARTED,
+            "AI request started",
+            turn=turn,
+            job_id=job_id,
+            message_count=str(len(self.history)),
+        )
+        response = client.complete_messages(self.history)
+        self.history.append({"role": "assistant", "content": response.content})
+        self.flow.write(
+            FLOW_AI_RESPONSE_RECEIVED,
+            "AI response received",
+            turn=turn,
+            job_id=job_id,
+            response=response.content,
+        )
+
+        candidate = self.service.submit_candidate(
+            job_id,
+            text=response.content,
+            actor_id="ai",
+        )["candidate"]
+        self.flow.write(
+            FLOW_CANDIDATE_SUBMITTED,
+            "candidate submitted",
+            turn=turn,
+            job_id=job_id,
+            appearance_id=candidate["appearance_id"],
+        )
+
+        evidence = self.service.submit_evidence(
+            job_id,
+            text="provider_response_received",
+            actor_id="system",
+        )["evidence"]
+        self.flow.write(
+            FLOW_EVIDENCE_SUBMITTED,
+            "evidence submitted",
+            turn=turn,
+            job_id=job_id,
+            appearance_id=evidence["appearance_id"],
+        )
+
+        self.service.accept_candidate(
+            job_id,
+            candidate_appearance_id=candidate["appearance_id"],
+            evidence_appearance_id=evidence["appearance_id"],
+            actor_id="system",
+        )
+        self.flow.write(FLOW_JOB_ACCEPTED, "job accepted", turn=turn, job_id=job_id)
+        self.flow.write(
+            FLOW_RESULT_OUTPUT_RECORDED,
+            "result output recorded",
+            turn=turn,
+            result=response.content,
+        )
+        self.flow.write(FLOW_CHAT_TURN_FINISHED, "chat turn finished", turn=turn, job_id=job_id)
+        return response.content
+
+    def finish(self) -> None:
+        self.flow.write(FLOW_CHAT_SESSION_FINISHED, "chat session finished")
+        self.flow.write(
+            FLOW_SANDBOX_DESTROYED,
+            "sandbox destroyed",
+            sandbox_path=str(self.sandbox_path),
+            log_path=str(self.diagnostic_log_path),
+        )
+        shutil.rmtree(self.sandbox_path, ignore_errors=True)
+
+    def fail(self, exc: Exception) -> None:
+        self.flow.write(FLOW_RUN_FAILED, "chat session failed", error=str(exc))
+        self.finish()
 
     def _reset_sandbox(self) -> None:
         if self.sandbox_path.exists():

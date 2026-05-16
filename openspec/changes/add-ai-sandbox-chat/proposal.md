@@ -4,18 +4,18 @@ The first runtime kernel proves the ledger and guardrails, but it is still too l
 
 ## What Changes
 
-- Add a DeepSeek-backed minimal chat runner that loads provider settings from `.env.deepseek.local`.
-- Add an ephemeral sandbox runner that creates local runtime state for one run and destroys the sandbox at the end.
-- Add a result-only run command so the main terminal prints only the AI answer.
-- Add a separate monitor command that tails all flow status from the active sandbox in real time.
-- Add one-click PowerShell scripts for running and monitoring the sandbox workflow.
+- Add a DeepSeek-backed interactive chat session that loads provider settings from `.env.deepseek.local`.
+- Add an ephemeral sandbox session that creates local runtime state when chat starts and destroys the sandbox when the user exits.
+- Add a chat CLI where the user can make task requests, continue discussion, and provide decisions or corrections.
+- Add a separate monitor CLI that prints every flow event, input, output, provider interaction summary, kernel transition, error, and cleanup event in real time.
+- Add one-click PowerShell launcher that opens both the chat CLI and monitor CLI with the same sandbox and log directory.
 - Add tests and hardcoding scan coverage for the new non-secret configuration and cleanup behavior.
 
 ## Capabilities
 
 ### New Capabilities
 
-- `ai-sandbox-chat`: AI-backed ephemeral chat workflow with sandbox lifecycle, result-only execution, and separate real-time flow monitoring.
+- `ai-sandbox-chat`: AI-backed ephemeral interactive chat workflow with sandbox lifecycle, full diagnostic logging, and a separate real-time monitor CLI.
 
 ### Modified Capabilities
 

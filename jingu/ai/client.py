@@ -26,9 +26,12 @@ class ChatClient:
         self.config = config
 
     def complete(self, message: str) -> ChatResponse:
+        return self.complete_messages([{"role": "user", "content": message}])
+
+    def complete_messages(self, messages: list[dict[str, str]]) -> ChatResponse:
         body: dict[str, Any] = {
             "model": self.config.model,
-            "messages": [{"role": "user", "content": message}],
+            "messages": messages,
         }
         if self.config.temperature is not None:
             body["temperature"] = self.config.temperature

@@ -16,6 +16,7 @@ artifacts/
 .superdesign/
 .project/
 .金箍/
+local-ai-logs/
 codex.json
 build-code-agent-main/
 __pycache__/
