@@ -12,7 +12,7 @@ The system SHALL load DeepSeek AI runtime configuration from `.env.deepseek.loca
 - **THEN** the system MUST fail before making a provider request
 
 ### Requirement: Interactive AI chat command
-The system SHALL provide an AI chat command where the user can conduct a multi-turn conversation for task requests and human decisions.
+The system SHALL provide an AI chat command where the user can conduct a multi-turn conversation for task requests and natural follow-up decisions.
 
 #### Scenario: Start interactive chat
 - **WHEN** the user starts the AI chat command
@@ -20,7 +20,22 @@ The system SHALL provide an AI chat command where the user can conduct a multi-t
 
 #### Scenario: Complete a chat turn
 - **WHEN** the user enters a task request or decision
-- **THEN** the command calls the configured AI provider with conversation context, drives the Jingu workflow for that turn, prints the AI reply in the chat CLI, and waits for the next input
+- **THEN** the command calls the configured AI provider with conversation context, drives the Jingu workflow for that turn, prints the AI reply in the chat CLI, records the turn as a candidate result with evidence, asks the AI whether a feedback job is needed, and waits for the next input
+
+#### Scenario: Natural human follow-up
+- **WHEN** the user wants to continue, correct, refine, or state that the result is satisfactory
+- **THEN** the user can enter that as the next chat input and the system records it without requiring a hardcoded yes/no verdict format
+
+### Requirement: AI feedback-job judgment
+The system SHALL ask the AI to judge whether each completed chat turn needs a high-value or directional feedback job, and SHALL create that job only when the AI judges it necessary.
+
+#### Scenario: Feedback job needed
+- **WHEN** the AI judges that the latest turn contains a high-value decision point or directional correction point
+- **THEN** the system creates a child feedback job, records the AI judgment, and leaves the candidate result unaccepted
+
+#### Scenario: Feedback job not needed
+- **WHEN** the AI judges that the latest turn can continue as normal conversation
+- **THEN** the system records the AI judgment and does not create a feedback job
 
 #### Scenario: Exit interactive chat
 - **WHEN** the user enters an exit command
@@ -64,11 +79,11 @@ The system SHALL persist a JSONL diagnostic log outside the ephemeral sandbox fo
 - **THEN** the log MUST NOT contain API keys or authorization headers
 
 ### Requirement: Jingu workflow integration
-Each AI chat turn SHALL drive the existing runtime kernel through root job creation, ready, running, candidate submission, evidence submission, and acceptance.
+Each AI chat turn SHALL drive the existing runtime kernel through root job creation, ready, running, candidate submission, evidence submission, and optional feedback child job creation.
 
-#### Scenario: Accepted job from AI response
+#### Scenario: Candidate job from AI response
 - **WHEN** the configured AI provider returns a response
-- **THEN** the sandbox workflow stores the response as a candidate result, stores provider-return evidence, accepts the candidate, and records the event flow
+- **THEN** the sandbox workflow stores the response as a candidate result, stores provider-return evidence, asks the AI whether a feedback job is needed, and records the event flow without hardcoding acceptance
 
 ### Requirement: One-click scripts
 The system SHALL provide a one-click script that opens the chat CLI and monitor CLI as two separate terminal windows sharing the same sandbox and log directory.

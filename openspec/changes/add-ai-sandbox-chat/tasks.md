@@ -13,6 +13,7 @@
 - [x] 3.2 Implement JSONL flow event writing and tailing.
 - [x] 3.3 Replace one-shot runner with an interactive multi-turn AI chat session that drives the existing runtime kernel per turn.
 - [x] 3.4 Persist full diagnostic JSONL logs outside the sandbox, including inputs and outputs without secrets.
+- [x] 3.5 Add AI-driven feedback judgment that creates a child feedback job when a turn needs high-value or directional feedback.
 
 ## 4. CLI And Scripts
 
