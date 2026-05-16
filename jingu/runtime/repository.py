@@ -120,6 +120,24 @@ class RuntimeRepository:
         row = connection.execute("SELECT * FROM jobs WHERE job_id = ?", (job_id,)).fetchone()
         return row_to_dict(row)
 
+    def list_jobs_by_root(
+        self, connection: sqlite3.Connection, root_job_id: str
+    ) -> list[dict[str, Any]]:
+        rows = connection.execute(
+            "SELECT * FROM jobs WHERE root_job_id = ? ORDER BY created_at ASC, job_id ASC",
+            (root_job_id,),
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+    def list_child_jobs(
+        self, connection: sqlite3.Connection, parent_job_id: str
+    ) -> list[dict[str, Any]]:
+        rows = connection.execute(
+            "SELECT * FROM jobs WHERE parent_job_id = ? ORDER BY created_at ASC, job_id ASC",
+            (parent_job_id,),
+        ).fetchall()
+        return [dict(row) for row in rows]
+
     def require_job(self, connection: sqlite3.Connection, job_id: str) -> dict[str, Any]:
         job = self.get_job(connection, job_id)
         if job is None:

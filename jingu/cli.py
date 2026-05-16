@@ -10,6 +10,7 @@ from typing import Any
 
 from jingu.runtime.errors import JinguRuntimeError
 from jingu.runtime.service import RuntimeService
+from jingu.runtime.tree import TreeService
 from jingu.sandbox.flow import tail_flow_events
 from jingu.sandbox.paths import latest_log_pointer_path, resolve_log_dir, resolve_sandbox_path
 from jingu.sandbox.runner import AiSandboxChatSession, AiSandboxRunner
@@ -70,6 +71,35 @@ def build_parser() -> argparse.ArgumentParser:
     events_parser = subparsers.add_parser("events", help="Show job event ledger.")
     events_parser.add_argument("job_id")
 
+    tree_parser = subparsers.add_parser("tree", help="Job tree commands.")
+    tree_subparsers = tree_parser.add_subparsers(dest="tree_command", required=True)
+    tree_propose_child = tree_subparsers.add_parser(
+        "propose-child", help="Create a guarded child job from a split proposal."
+    )
+    tree_propose_child.add_argument("parent_job_id")
+    tree_propose_child.add_argument("--target", required=True)
+    tree_propose_child.add_argument("--blocking-reason", required=True)
+    tree_propose_child.add_argument("--output-contract", required=True)
+    tree_propose_child.add_argument("--acceptance-criteria", required=True)
+    tree_propose_child.add_argument("--estimated-effort", type=int, required=True)
+    tree_propose_child.add_argument("--depth-limit", type=int, required=True)
+    tree_propose_child.add_argument("--gap", action="append", default=[])
+
+    tree_show = tree_subparsers.add_parser("show", help="Show a root job tree.")
+    tree_show.add_argument("job_id")
+    tree_frontier = tree_subparsers.add_parser("frontier", help="Show active leaf jobs.")
+    tree_frontier.add_argument("job_id")
+    tree_package = tree_subparsers.add_parser(
+        "submit-package", help="Submit a structured result package."
+    )
+    tree_package.add_argument("job_id")
+    tree_package.add_argument("--file", type=Path, required=True)
+    tree_package.add_argument("--evidence-text")
+    tree_reevaluate = tree_subparsers.add_parser(
+        "reevaluate", help="Show parent re-evaluation data."
+    )
+    tree_reevaluate.add_argument("job_id")
+
     ai_parser = subparsers.add_parser("ai", help="AI sandbox commands.")
     ai_subparsers = ai_parser.add_subparsers(dest="ai_command", required=True)
     ai_run = ai_subparsers.add_parser("run", help="Run one AI chat in an ephemeral sandbox.")
@@ -97,6 +127,7 @@ def add_content_arguments(parser: argparse.ArgumentParser) -> None:
 
 def run(args: argparse.Namespace) -> Any:
     service = RuntimeService(args.workspace)
+    tree_service = TreeService(args.workspace)
 
     if args.command == "init":
         return service.initialize()
@@ -142,7 +173,44 @@ def run(args: argparse.Namespace) -> Any:
     if args.command == "events":
         return service.list_events(args.job_id)
 
+    if args.command == "tree" and args.tree_command == "propose-child":
+        return tree_service.propose_child_job(
+            parent_job_id=args.parent_job_id,
+            target=args.target,
+            blocking_reason=args.blocking_reason,
+            output_contract=args.output_contract,
+            acceptance_criteria=args.acceptance_criteria,
+            estimated_effort=args.estimated_effort,
+            depth_limit=args.depth_limit,
+            required_context_gaps=args.gap,
+            actor_id="human",
+        )
+
+    if args.command == "tree" and args.tree_command == "show":
+        return tree_service.get_tree(args.job_id)
+
+    if args.command == "tree" and args.tree_command == "frontier":
+        return tree_service.get_frontier(args.job_id)
+
+    if args.command == "tree" and args.tree_command == "submit-package":
+        return tree_service.submit_result_package(
+            args.job_id,
+            package=read_json_file(args.file),
+            evidence_text=args.evidence_text,
+            actor_id="human",
+        )
+
+    if args.command == "tree" and args.tree_command == "reevaluate":
+        return tree_service.reevaluate_parent(args.job_id)
+
     raise JinguRuntimeError("unknown command")
+
+
+def read_json_file(path: Path) -> dict[str, Any]:
+    payload = json.loads(path.read_text(encoding="utf-8-sig"))
+    if not isinstance(payload, dict):
+        raise ValueError("JSON file must contain an object")
+    return payload
 
 
 def run_result_only(args: argparse.Namespace) -> str:

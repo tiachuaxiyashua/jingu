@@ -103,6 +103,7 @@ class RuntimeService:
         parent_job_id: str,
         target: str,
         actor_id: str = "system",
+        acceptance_criteria: str = "",
         required_context_gaps: list[str] | None = None,
     ) -> dict[str, Any]:
         job_id = new_id("job")
@@ -116,6 +117,7 @@ class RuntimeService:
                 target=target,
                 state=STATE_DRAFT,
                 original_wish_appearance_id=parent["original_wish_appearance_id"],
+                acceptance_criteria=acceptance_criteria,
                 required_context_gaps=required_context_gaps,
             )
             self.repository.append_event(
