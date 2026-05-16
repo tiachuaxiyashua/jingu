@@ -50,6 +50,7 @@ OWNED_PROTOCOL_LITERALS = {
     "evidence_submitted",
     "candidate_accepted",
     "candidate_rejected",
+    ".env.deepseek.local",
 }
 
 

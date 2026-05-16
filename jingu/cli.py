@@ -10,6 +10,9 @@ from typing import Any
 
 from jingu.runtime.errors import JinguRuntimeError
 from jingu.runtime.service import RuntimeService
+from jingu.sandbox.flow import tail_flow_events
+from jingu.sandbox.paths import latest_log_pointer_path, resolve_log_dir, resolve_sandbox_path
+from jingu.sandbox.runner import AiSandboxRunner
 
 
 def print_json(value: Any) -> None:
@@ -66,6 +69,18 @@ def build_parser() -> argparse.ArgumentParser:
 
     events_parser = subparsers.add_parser("events", help="Show job event ledger.")
     events_parser.add_argument("job_id")
+
+    ai_parser = subparsers.add_parser("ai", help="AI sandbox commands.")
+    ai_subparsers = ai_parser.add_subparsers(dest="ai_command", required=True)
+    ai_run = ai_subparsers.add_parser("run", help="Run one AI chat in an ephemeral sandbox.")
+    ai_run.add_argument("--message", required=True)
+    ai_run.add_argument("--sandbox", type=Path)
+    ai_run.add_argument("--log-dir", type=Path)
+    ai_run.add_argument("--config", type=Path)
+    ai_monitor = ai_subparsers.add_parser("monitor", help="Monitor the current AI sandbox flow.")
+    ai_monitor.add_argument("--sandbox", type=Path)
+    ai_monitor.add_argument("--log-dir", type=Path)
+    ai_monitor.add_argument("--wait-seconds", type=float, default=30.0)
 
     return parser
 
@@ -126,13 +141,49 @@ def run(args: argparse.Namespace) -> Any:
     raise JinguRuntimeError("unknown command")
 
 
+def run_result_only(args: argparse.Namespace) -> str:
+    if args.command == "ai" and args.ai_command == "run":
+        return AiSandboxRunner(
+            sandbox_path=args.sandbox,
+            log_dir=args.log_dir,
+            config_path=args.config,
+        ).run(args.message)
+    raise JinguRuntimeError("unknown result-only command")
+
+
+def run_monitor(args: argparse.Namespace) -> None:
+    sandbox_path = resolve_sandbox_path(args.sandbox)
+    log_dir = resolve_log_dir(args.log_dir)
+    log_pointer = latest_log_pointer_path(log_dir)
+    if log_pointer.exists():
+        print(f"log_path={log_pointer.read_text(encoding='utf-8').strip()}", flush=True)
+    for event in tail_flow_events(sandbox_path, wait_seconds=args.wait_seconds):
+        print(format_flow_event(event), flush=True)
+
+
+def format_flow_event(event: dict[str, Any]) -> str:
+    data = event.get("data") or {}
+    data_text = " ".join(f"{key}={value}" for key, value in sorted(data.items()))
+    suffix = f" {data_text}" if data_text else ""
+    return f"{event.get('timestamp', '')} {event.get('event_type', '')}: {event.get('message', '')}{suffix}"
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
     try:
+        if args.command == "ai" and args.ai_command == "run":
+            print(run_result_only(args))
+            return 0
+        if args.command == "ai" and args.ai_command == "monitor":
+            run_monitor(args)
+            return 0
         print_json(run(args))
     except (JinguRuntimeError, ValueError, OSError) as exc:
-        print_json({"error": str(exc)})
+        if getattr(args, "command", None) == "ai":
+            print(str(exc), file=sys.stderr)
+        else:
+            print_json({"error": str(exc)})
         return 1
     return 0
 
