@@ -238,5 +238,5 @@ AI 评审
 ## 引用文件
 
 - `references/concept-boundaries.md`：定义层、轮、完整产物、内丹法与负反馈程序的边界。遇到概念争议或测试定义时读取。
-- `references/control-feedback-cycle.md`：用于外部训练、评测和收敛内丹法的完整闭环模板。只有当任务明确要求多轮、压测、收敛、方法迭代时读取。
+- `references/control-feedback-cycle.md`：用于外部训练、评测和收敛内丹法的完整闭环模板。只有当任务明确要求多轮、评测、收敛、方法迭代时读取。
 - `references/extreme-sample-prompts.md`：跨领域极端样例提示。用于测试泛化，不作为内丹法本体规则。
