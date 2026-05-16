@@ -21,6 +21,15 @@ Jingu means the golden headband on Sun Wukong. In this project it represents the
 - Do not treat a document shape, callable API, status label, or demo shell as completion. Mature completion means truth alignment, clear ownership, executable or reviewable path, tests or evidence, and explicit remaining risks.
 - When producing artifacts that the user must judge, test, or use as evidence, output the complete artifact. Do not use excerpts, summaries, ellipses, "omitted for brevity", or partial samples in place of the actual deliverable. Never reduce artifact completeness to save tokens or effort; if the artifact is too large for one response or file, split it into explicit parts or additional files while preserving the full content.
 
+## Anti-Hardcoding Discipline
+
+- Do not hardcode mutable truth in generic code. Hardcoding means writing changeable project, provider, path, model, template, workflow, business, policy, or environment truth into code that does not own it.
+- Keep mutable truth in the correct owner: configuration, manifests, schemas, runtime state, user input, registry modules, or truth documents. If no owner exists, create or propose the owner before adding another local literal fallback.
+- Stable protocol constants, state names, table names, event types, and file names are allowed only when they are part of Jingu's owned runtime contract and are documented or covered by tests.
+- Do not hardcode secrets, API keys, model names, provider URLs, absolute local paths, user-specific paths, external endpoints, test-only fixtures, or business examples into reusable runtime code.
+- After every coding task, run a hardcoding scan before marking the work complete. If the repository has an established scan command, use it. If not, add or run a repo-appropriate scan and report the evidence, remaining literals, ownership rationale, and accepted risks.
+- A change is not complete if the hardcoding scan finds new mutable truth in generic code without an explicit owner, migration reason, and follow-up path.
+
 ## AI Test Runtime
 
 - DeepSeek-backed tests must load local configuration from `.env.deepseek.local` and read `DEEPSEEK_API_KEY`, `DEEPSEEK_BASE_URL`, `DEEPSEEK_MODEL`, and related model settings from that file.

@@ -15,10 +15,12 @@ artifacts/
 .scratch/
 .superdesign/
 .project/
+.金箍/
 codex.json
 build-code-agent-main/
 __pycache__/
 *.py[cod]
+.pytest_cache/
 
 # Binary archives are treated as transfer artifacts, not source.
 *.zip

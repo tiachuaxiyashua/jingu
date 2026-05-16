@@ -1,0 +1,36 @@
+"""Contract constants owned by the minimal runtime kernel."""
+
+RUNTIME_DIR = ".金箍"
+RUNTIME_STATE_DIR = "运行态"
+DATABASE_FILENAME = "金箍运行库.sqlite"
+OBJECT_STORE_DIR = "果库"
+
+STRUCTURE_VERSION = "1"
+
+STATE_DRAFT = "draft"
+STATE_READY = "ready"
+STATE_RUNNING = "running"
+STATE_BLOCKED = "blocked"
+STATE_REVIEWING = "reviewing"
+STATE_ACCEPTED = "accepted"
+STATE_REJECTED = "rejected"
+STATE_WAITING_HUMAN = "waiting_human"
+STATE_ABANDONED = "abandoned"
+
+APPEARANCE_ORIGINAL_WISH = "original_wish"
+APPEARANCE_CANDIDATE_RESULT = "candidate_result"
+APPEARANCE_EVIDENCE = "evidence"
+
+APPEARANCE_STATE_STABLE = "stable"
+APPEARANCE_STATE_CANDIDATE = "candidate"
+APPEARANCE_STATE_ACCEPTED = "accepted"
+APPEARANCE_STATE_REJECTED = "rejected"
+
+EVENT_ROOT_JOB_CREATED = "root_job_created"
+EVENT_CHILD_JOB_CREATED = "child_job_created"
+EVENT_JOB_MARKED_READY = "job_marked_ready"
+EVENT_JOB_STARTED = "job_started"
+EVENT_CANDIDATE_SUBMITTED = "candidate_submitted"
+EVENT_EVIDENCE_SUBMITTED = "evidence_submitted"
+EVENT_CANDIDATE_ACCEPTED = "candidate_accepted"
+EVENT_CANDIDATE_REJECTED = "candidate_rejected"
