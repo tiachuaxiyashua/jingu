@@ -24,6 +24,12 @@ from jingu.sandbox.flow import (
     FLOW_FEEDBACK_JOB_SKIPPED,
     FLOW_JOB_READY,
     FLOW_JOB_RUNNING,
+    FLOW_METHOD_CONTEXT_INJECTED,
+    FLOW_METHOD_CONTEXT_LOADED,
+    FLOW_METHOD_SELF_REVIEW_RECEIVED,
+    FLOW_METHOD_SELF_REVIEW_REQUESTED,
+    FLOW_METHOD_SOURCE_RESOLVED,
+    FLOW_METHOD_UPDATE_CANDIDATE_RECORDED,
     FLOW_RESULT_OUTPUT_RECORDED,
     FLOW_RUN_FAILED,
     FLOW_ROOT_JOB_CREATED,
@@ -35,6 +41,13 @@ from jingu.sandbox.flow import (
     FlowWriter,
     new_diagnostic_log_path,
 )
+from jingu.sandbox.method import (
+    MethodContext,
+    build_method_review_messages,
+    build_method_system_message,
+    load_method_context,
+    method_evidence_payload,
+)
 from jingu.sandbox.paths import latest_log_pointer_path, resolve_log_dir, resolve_sandbox_path
 
 
@@ -45,12 +58,14 @@ class AiSandboxRunner:
         sandbox_path: Path | str | None = None,
         log_dir: Path | str | None = None,
         config_path: Path | str | None = None,
+        method_path: Path | str | None = None,
         client: ChatClient | None = None,
     ) -> None:
         self.sandbox_path = resolve_sandbox_path(sandbox_path)
         self.log_dir = resolve_log_dir(log_dir)
         self.diagnostic_log_path = new_diagnostic_log_path(self.log_dir)
         self.config_path = Path(config_path) if config_path is not None else None
+        self.method_path = Path(method_path) if method_path is not None else None
         self.client = client
         self.flow = FlowWriter(self.sandbox_path, self.diagnostic_log_path)
 
@@ -70,6 +85,7 @@ class AiSandboxRunner:
             service = RuntimeService(self.sandbox_path)
             service.initialize()
             self.flow.write(FLOW_RUNTIME_INITIALIZED, "runtime initialized")
+            method = self._load_method_for_turn()
 
             root = service.create_root_job(wish=message, target=message, actor_id="human")
             job_id = root["job_id"]
@@ -82,8 +98,18 @@ class AiSandboxRunner:
             self.flow.write(FLOW_JOB_RUNNING, "job running", job_id=job_id)
 
             client = self.client or ChatClient(load_ai_config(self.config_path))
+            messages = [build_method_system_message(method), {"role": "user", "content": message}]
+            self.flow.write(
+                FLOW_METHOD_CONTEXT_INJECTED,
+                "method context injected",
+                job_id=job_id,
+                method_name=method.name,
+                method_path=str(method.path),
+                method_checksum=method.checksum,
+                message_count=str(len(messages)),
+            )
             self.flow.write(FLOW_AI_REQUEST_STARTED, "AI request started", job_id=job_id)
-            response = client.complete(message)
+            response = client.complete_messages(messages)
             self.flow.write(
                 FLOW_AI_RESPONSE_RECEIVED,
                 "AI response received",
@@ -103,9 +129,16 @@ class AiSandboxRunner:
                 appearance_id=candidate["appearance_id"],
             )
 
+            review = self._request_method_self_review(
+                client=client,
+                method=method,
+                job_id=job_id,
+                user_input=message,
+                assistant_response=response.content,
+            )
             evidence = service.submit_evidence(
                 job_id,
-                text="provider_response_received",
+                text=method_evidence_payload(method=method, review=review),
                 actor_id="system",
             )["evidence"]
             self.flow.write(
@@ -134,6 +167,49 @@ class AiSandboxRunner:
         if self.sandbox_path.exists():
             shutil.rmtree(self.sandbox_path)
 
+    def _load_method_for_turn(self, *, turn: str | None = None) -> MethodContext:
+        method = load_method_context(method_path=self.method_path)
+        data = {"method_path": str(method.path), "method_checksum": method.checksum}
+        if turn is not None:
+            data["turn"] = turn
+        self.flow.write(FLOW_METHOD_SOURCE_RESOLVED, "method source resolved", **data)
+        self.flow.write(FLOW_METHOD_CONTEXT_LOADED, "method context loaded", **method.log_fields())
+        return method
+
+    def _request_method_self_review(
+        self,
+        *,
+        client: ChatClient,
+        method: MethodContext,
+        job_id: str,
+        user_input: str,
+        assistant_response: str,
+        turn: str | None = None,
+    ) -> str:
+        data = {
+            "job_id": job_id,
+            "method_name": method.name,
+            "method_checksum": method.checksum,
+        }
+        if turn is not None:
+            data["turn"] = turn
+        self.flow.write(FLOW_METHOD_SELF_REVIEW_REQUESTED, "method self-review requested", **data)
+        review = client.complete_messages(
+            build_method_review_messages(
+                method=method,
+                user_input=user_input,
+                assistant_response=assistant_response,
+            )
+        )
+        received = {**data, "review": review.content}
+        self.flow.write(FLOW_METHOD_SELF_REVIEW_RECEIVED, "method self-review received", **received)
+        self.flow.write(
+            FLOW_METHOD_UPDATE_CANDIDATE_RECORDED,
+            "method update candidate recorded",
+            **received,
+        )
+        return review.content
+
     def _write_latest_log_pointer(self) -> None:
         self.log_dir.mkdir(parents=True, exist_ok=True)
         latest_log_pointer_path(self.log_dir).write_text(
@@ -148,12 +224,14 @@ class AiSandboxChatSession:
         sandbox_path: Path | str | None = None,
         log_dir: Path | str | None = None,
         config_path: Path | str | None = None,
+        method_path: Path | str | None = None,
         client: ChatClient | None = None,
     ) -> None:
         self.sandbox_path = resolve_sandbox_path(sandbox_path)
         self.log_dir = resolve_log_dir(log_dir)
         self.diagnostic_log_path = new_diagnostic_log_path(self.log_dir)
         self.config_path = Path(config_path) if config_path is not None else None
+        self.method_path = Path(method_path) if method_path is not None else None
         self.client = client
         self.flow = FlowWriter(self.sandbox_path, self.diagnostic_log_path)
         self.history: list[dict[str, str]] = []
@@ -193,6 +271,7 @@ class AiSandboxChatSession:
         self.last_feedback_job_id = None
         self.last_feedback_judgment = None
         self.flow.write(FLOW_USER_INPUT_RECORDED, "user input recorded", turn=turn, input=user_input)
+        method = self._load_method_for_turn(turn=turn)
 
         root = self.service.create_root_job(wish=user_input, target=user_input, actor_id="human")
         job_id = root["job_id"]
@@ -207,14 +286,25 @@ class AiSandboxChatSession:
 
         self.history.append({"role": "user", "content": user_input})
         client = self.client or ChatClient(load_ai_config(self.config_path))
+        messages = [build_method_system_message(method), *self.history]
+        self.flow.write(
+            FLOW_METHOD_CONTEXT_INJECTED,
+            "method context injected",
+            turn=turn,
+            job_id=job_id,
+            method_name=method.name,
+            method_path=str(method.path),
+            method_checksum=method.checksum,
+            message_count=str(len(messages)),
+        )
         self.flow.write(
             FLOW_AI_REQUEST_STARTED,
             "AI request started",
             turn=turn,
             job_id=job_id,
-            message_count=str(len(self.history)),
+            message_count=str(len(messages)),
         )
-        response = client.complete_messages(self.history)
+        response = client.complete_messages(messages)
         self.history.append({"role": "assistant", "content": response.content})
         self.flow.write(
             FLOW_AI_RESPONSE_RECEIVED,
@@ -237,9 +327,17 @@ class AiSandboxChatSession:
             appearance_id=candidate["appearance_id"],
         )
 
+        review = self._request_method_self_review(
+            client=client,
+            method=method,
+            turn=turn,
+            job_id=job_id,
+            user_input=user_input,
+            assistant_response=response.content,
+        )
         evidence = self.service.submit_evidence(
             job_id,
-            text="provider_response_received",
+            text=method_evidence_payload(method=method, review=review),
             actor_id="system",
         )["evidence"]
         self.flow.write(
@@ -322,6 +420,56 @@ class AiSandboxChatSession:
         latest_log_pointer_path(self.log_dir).write_text(
             str(self.diagnostic_log_path), encoding="utf-8"
         )
+
+    def _load_method_for_turn(self, *, turn: str) -> MethodContext:
+        method = load_method_context(method_path=self.method_path)
+        self.flow.write(
+            FLOW_METHOD_SOURCE_RESOLVED,
+            "method source resolved",
+            turn=turn,
+            method_path=str(method.path),
+            method_checksum=method.checksum,
+        )
+        self.flow.write(
+            FLOW_METHOD_CONTEXT_LOADED,
+            "method context loaded",
+            turn=turn,
+            **method.log_fields(),
+        )
+        return method
+
+    def _request_method_self_review(
+        self,
+        *,
+        client: ChatClient,
+        method: MethodContext,
+        turn: str,
+        job_id: str,
+        user_input: str,
+        assistant_response: str,
+    ) -> str:
+        data = {
+            "turn": turn,
+            "job_id": job_id,
+            "method_name": method.name,
+            "method_checksum": method.checksum,
+        }
+        self.flow.write(FLOW_METHOD_SELF_REVIEW_REQUESTED, "method self-review requested", **data)
+        review = client.complete_messages(
+            build_method_review_messages(
+                method=method,
+                user_input=user_input,
+                assistant_response=assistant_response,
+            )
+        )
+        received = {**data, "review": review.content}
+        self.flow.write(FLOW_METHOD_SELF_REVIEW_RECEIVED, "method self-review received", **received)
+        self.flow.write(
+            FLOW_METHOD_UPDATE_CANDIDATE_RECORDED,
+            "method update candidate recorded",
+            **received,
+        )
+        return review.content
 
     def _request_feedback_judgment(
         self,

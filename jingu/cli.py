@@ -107,6 +107,7 @@ def build_parser() -> argparse.ArgumentParser:
     ai_run.add_argument("--sandbox", type=Path)
     ai_run.add_argument("--log-dir", type=Path)
     ai_run.add_argument("--config", type=Path)
+    ai_run.add_argument("--method", type=Path)
     ai_monitor = ai_subparsers.add_parser("monitor", help="Monitor the current AI sandbox flow.")
     ai_monitor.add_argument("--sandbox", type=Path)
     ai_monitor.add_argument("--log-dir", type=Path)
@@ -115,6 +116,7 @@ def build_parser() -> argparse.ArgumentParser:
     ai_chat.add_argument("--sandbox", type=Path)
     ai_chat.add_argument("--log-dir", type=Path)
     ai_chat.add_argument("--config", type=Path)
+    ai_chat.add_argument("--method", type=Path)
 
     return parser
 
@@ -219,6 +221,7 @@ def run_result_only(args: argparse.Namespace) -> str:
             sandbox_path=args.sandbox,
             log_dir=args.log_dir,
             config_path=args.config,
+            method_path=args.method,
         ).run(args.message)
     raise JinguRuntimeError("unknown result-only command")
 
@@ -238,6 +241,7 @@ def run_chat(args: argparse.Namespace) -> None:
         sandbox_path=args.sandbox,
         log_dir=args.log_dir,
         config_path=args.config,
+        method_path=args.method,
     )
     session.start()
     print("Jingu AI chat started. Type /exit to finish.", flush=True)

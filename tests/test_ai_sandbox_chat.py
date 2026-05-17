@@ -4,6 +4,7 @@ import unittest
 from contextlib import redirect_stdout
 from io import StringIO
 import json
+import subprocess
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
@@ -13,7 +14,26 @@ from jingu.ai.config import load_ai_config
 from jingu.cli import main
 from jingu.runtime.errors import JinguRuntimeError
 from jingu.sandbox.flow import FlowWriter, tail_flow_events
+from jingu.sandbox.method import load_method_context
 from jingu.sandbox.runner import AiSandboxChatSession, AiSandboxRunner
+
+
+def write_method_file(base: Path, content: str | None = None) -> Path:
+    path = base / "method.md"
+    path.write_text(
+        content
+        or "\n".join(
+            [
+                "---",
+                "name: test-method",
+                "---",
+                "# Test Method",
+                "Use this method to preserve the original wish and produce evidence.",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    return path
 
 
 class FakeChatClient:
@@ -50,7 +70,7 @@ class FakeChatClient:
                 ),
                 raw={"ok": True},
             )
-        return ChatResponse(content=f"{self.content} {len(messages)}", raw={"ok": True})
+        return ChatResponse(content=self.content, raw={"ok": True})
 
 
 class AiSandboxChatTest(unittest.TestCase):
@@ -84,25 +104,53 @@ class AiSandboxChatTest(unittest.TestCase):
             with self.assertRaises(JinguRuntimeError):
                 load_ai_config(path)
 
+    def test_method_context_loads_from_repository_pointer(self) -> None:
+        with TemporaryDirectory() as tmp:
+            workspace = Path(tmp)
+            method_path = write_method_file(workspace)
+            (workspace / "jingu-method-source.txt").write_text(
+                method_path.name,
+                encoding="utf-8",
+            )
+
+            method = load_method_context(workspace=workspace)
+
+            self.assertEqual(method.name, "test-method")
+            self.assertEqual(method.path, method_path.resolve())
+            self.assertIn("original wish", method.content)
+
     def test_runner_returns_answer_and_deletes_sandbox(self) -> None:
         with TemporaryDirectory() as tmp:
             sandbox = Path(tmp) / "sandbox"
             log_dir = Path(tmp) / "logs"
+            method_path = write_method_file(Path(tmp))
             client = FakeChatClient("answer only")
 
-            answer = AiSandboxRunner(sandbox_path=sandbox, log_dir=log_dir, client=client).run("hello")
+            answer = AiSandboxRunner(
+                sandbox_path=sandbox,
+                log_dir=log_dir,
+                method_path=method_path,
+                client=client,
+            ).run("hello")
 
             self.assertEqual(answer, "answer only")
             self.assertFalse(sandbox.exists())
-            self.assertEqual(client.messages, ["hello"])
+            self.assertEqual(client.messages[0], "hello")
+            self.assertIn("Test Method", client.message_batches[0][0]["content"])
 
     def test_runner_persists_diagnostic_log_with_input_and_output(self) -> None:
         with TemporaryDirectory() as tmp:
             sandbox = Path(tmp) / "sandbox"
             log_dir = Path(tmp) / "logs"
+            method_path = write_method_file(Path(tmp))
             client = FakeChatClient("diagnostic answer")
 
-            AiSandboxRunner(sandbox_path=sandbox, log_dir=log_dir, client=client).run("diagnostic input")
+            AiSandboxRunner(
+                sandbox_path=sandbox,
+                log_dir=log_dir,
+                method_path=method_path,
+                client=client,
+            ).run("diagnostic input")
 
             log_files = sorted(log_dir.glob("ai-run-*.jsonl"))
             self.assertEqual(len(log_files), 1)
@@ -119,8 +167,30 @@ class AiSandboxChatTest(unittest.TestCase):
             serialized = "\n".join(json.dumps(record, ensure_ascii=False) for record in records)
             self.assertIn("diagnostic input", serialized)
             self.assertIn("diagnostic answer", serialized)
+            self.assertIn("method_context_loaded", event_types)
+            self.assertIn("method_context_injected", event_types)
+            self.assertIn("method_self_review_received", event_types)
+            self.assertIn("method_update_candidate_recorded", event_types)
+            self.assertIn("Test Method", serialized)
             self.assertNotIn("local-key", serialized)
             self.assertNotIn("Authorization", serialized)
+
+    def test_runner_fails_before_provider_when_method_is_missing(self) -> None:
+        with TemporaryDirectory() as tmp:
+            sandbox = Path(tmp) / "sandbox"
+            log_dir = Path(tmp) / "logs"
+            client = FakeChatClient("should not be called")
+
+            with self.assertRaises(JinguRuntimeError):
+                AiSandboxRunner(
+                    sandbox_path=sandbox,
+                    log_dir=log_dir,
+                    method_path=Path(tmp) / "missing-method.md",
+                    client=client,
+                ).run("hello")
+
+            self.assertEqual(client.message_batches, [])
+            self.assertFalse(sandbox.exists())
 
     def test_flow_tail_reads_written_events(self) -> None:
         with TemporaryDirectory() as tmp:
@@ -154,9 +224,20 @@ class AiSandboxChatTest(unittest.TestCase):
         with TemporaryDirectory() as tmp:
             sandbox = Path(tmp) / "sandbox"
             log_dir = Path(tmp) / "logs"
+            method_path = write_method_file(Path(tmp))
             client = FakeChatClient(
                 responses=[
                     "chat answer 1",
+                    json.dumps(
+                        {
+                            "method_use_summary": "used method",
+                            "evidence": ["method context was present"],
+                            "gaps": [],
+                            "observed_failure_modes": [],
+                            "method_update_candidates": [],
+                        },
+                        ensure_ascii=False,
+                    ),
                     "```json\n"
                     + json.dumps(
                         {
@@ -169,7 +250,17 @@ class AiSandboxChatTest(unittest.TestCase):
                         ensure_ascii=False,
                     )
                     + "\n```",
-                    "chat answer 3",
+                    "chat answer 2",
+                    json.dumps(
+                        {
+                            "method_use_summary": "used method again",
+                            "evidence": ["method context was present"],
+                            "gaps": [],
+                            "observed_failure_modes": [],
+                            "method_update_candidates": [],
+                        },
+                        ensure_ascii=False,
+                    ),
                     json.dumps(
                         {
                             "needs_feedback_job": False,
@@ -182,7 +273,12 @@ class AiSandboxChatTest(unittest.TestCase):
                     ),
                 ]
             )
-            session = AiSandboxChatSession(sandbox_path=sandbox, log_dir=log_dir, client=client)
+            session = AiSandboxChatSession(
+                sandbox_path=sandbox,
+                log_dir=log_dir,
+                method_path=method_path,
+                client=client,
+            )
 
             session.start()
             first = session.ask("first task")
@@ -198,7 +294,7 @@ class AiSandboxChatTest(unittest.TestCase):
             session.finish()
 
             self.assertEqual(first, "chat answer 1")
-            self.assertEqual(second, "chat answer 3")
+            self.assertEqual(second, "chat answer 2")
             self.assertFalse(sandbox.exists())
             log_files = sorted(log_dir.glob("ai-run-*.jsonl"))
             records = [
@@ -208,6 +304,11 @@ class AiSandboxChatTest(unittest.TestCase):
             ]
             event_types = [record["event_type"] for record in records]
             self.assertEqual(event_types.count("user_input_recorded"), 2)
+            self.assertEqual(event_types.count("method_context_loaded"), 2)
+            self.assertEqual(event_types.count("method_context_injected"), 2)
+            self.assertEqual(event_types.count("method_self_review_requested"), 2)
+            self.assertEqual(event_types.count("method_self_review_received"), 2)
+            self.assertEqual(event_types.count("method_update_candidate_recorded"), 2)
             self.assertEqual(event_types.count("result_output_recorded"), 2)
             self.assertEqual(event_types.count("candidate_submitted"), 2)
             self.assertEqual(event_types.count("evidence_submitted"), 2)
@@ -220,6 +321,25 @@ class AiSandboxChatTest(unittest.TestCase):
             self.assertNotIn("job_accepted", event_types)
             self.assertNotIn("job_rejected", event_types)
             self.assertIn("chat_session_finished", event_types)
+
+    def test_launcher_dry_run_prints_method_source(self) -> None:
+        completed = subprocess.run(
+            [
+                "powershell",
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+                "scripts\\run_ai_sandbox.ps1",
+                "-DryRun",
+            ],
+            check=True,
+            text=True,
+            capture_output=True,
+        )
+
+        self.assertIn("--method", completed.stdout)
+        self.assertIn("Method:", completed.stdout)
 
 
 if __name__ == "__main__":

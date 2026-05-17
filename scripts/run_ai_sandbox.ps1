@@ -2,6 +2,7 @@ param(
     [string] $Sandbox,
     [string] $LogDir,
     [string] $Config,
+    [string] $Method,
     [switch] $DryRun
 )
 
@@ -12,12 +13,36 @@ function ConvertTo-SingleQuotedLiteral {
     return "'" + ($Value -replace "'", "''") + "'"
 }
 
+function Resolve-MethodFromPointer {
+    param([string] $RepoRoot)
+
+    $Pointer = Join-Path $RepoRoot "jingu-method-source.txt"
+    if (-not (Test-Path -LiteralPath $Pointer)) {
+        return $null
+    }
+
+    $Target = Get-Content -LiteralPath $Pointer -Encoding UTF8 |
+        Where-Object { $_.Trim() -and -not $_.Trim().StartsWith("#") } |
+        Select-Object -First 1
+    if (-not $Target) {
+        return $null
+    }
+
+    if ([System.IO.Path]::IsPathRooted($Target)) {
+        return $Target
+    }
+    return Join-Path $RepoRoot $Target
+}
+
 $RepoRoot = Resolve-Path (Join-Path $PSScriptRoot "..")
 if (-not $Sandbox) {
     $Sandbox = Join-Path $env:TEMP ("jingu-ai-sandbox-" + [guid]::NewGuid().ToString("N"))
 }
 if (-not $LogDir) {
     $LogDir = Join-Path $RepoRoot "local-ai-logs"
+}
+if (-not $Method) {
+    $Method = Resolve-MethodFromPointer $RepoRoot
 }
 
 $RepoLiteral = ConvertTo-SingleQuotedLiteral $RepoRoot
@@ -30,14 +55,21 @@ if ($Config) {
     $ConfigArgs = " --config $ConfigLiteral"
 }
 
+$MethodArgs = ""
+if ($Method) {
+    $MethodLiteral = ConvertTo-SingleQuotedLiteral $Method
+    $MethodArgs = " --method $MethodLiteral"
+}
+
 $MonitorCommand = "& { Set-Location -LiteralPath $RepoLiteral; python -m jingu.cli ai monitor --sandbox $SandboxLiteral --log-dir $LogDirLiteral --wait-seconds 3600 }"
-$ChatCommand = "& { Set-Location -LiteralPath $RepoLiteral; python -m jingu.cli ai chat --sandbox $SandboxLiteral --log-dir $LogDirLiteral$ConfigArgs }"
+$ChatCommand = "& { Set-Location -LiteralPath $RepoLiteral; python -m jingu.cli ai chat --sandbox $SandboxLiteral --log-dir $LogDirLiteral$ConfigArgs$MethodArgs }"
 
 if ($DryRun) {
     Write-Host "Monitor command: $MonitorCommand"
     Write-Host "Chat command: $ChatCommand"
     Write-Host "Sandbox: $Sandbox"
     Write-Host "Logs: $LogDir"
+    Write-Host "Method: $Method"
     exit 0
 }
 
@@ -50,3 +82,4 @@ Write-Host "Chat window: type task requests, decisions, corrections, or /exit."
 Write-Host "Monitor window: prints full flow, inputs, outputs, and diagnostics."
 Write-Host "Sandbox: $Sandbox"
 Write-Host "Logs: $LogDir"
+Write-Host "Method: $Method"
