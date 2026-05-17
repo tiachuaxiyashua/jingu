@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 import time
 import uuid
 from dataclasses import dataclass
@@ -42,6 +43,64 @@ FLOW_RUN_FINISHED = "run_finished"
 FLOW_SANDBOX_DESTROYED = "sandbox_destroyed"
 
 TERMINAL_EVENTS = {FLOW_RUN_FINISHED, FLOW_CHAT_SESSION_FINISHED, FLOW_SANDBOX_DESTROYED}
+SUSPICIOUS_QUESTION_MARKS = re.compile(r"\?{4,}")
+
+EVENT_LABELS = {
+    FLOW_SANDBOX_CREATED: "沙盒已创建",
+    FLOW_RUNTIME_INITIALIZED: "运行库已初始化",
+    FLOW_CHAT_SESSION_STARTED: "对话会话已开始",
+    FLOW_METHOD_SOURCE_RESOLVED: "方法来源已解析",
+    FLOW_METHOD_CONTEXT_LOADED: "方法上下文已加载",
+    FLOW_METHOD_CONTEXT_INJECTED: "方法上下文已注入",
+    FLOW_ROOT_JOB_CREATED: "根业已创建",
+    FLOW_JOB_READY: "业已就绪",
+    FLOW_JOB_RUNNING: "业运行中",
+    FLOW_USER_INPUT_RECORDED: "用户输入已记录",
+    FLOW_AI_REQUEST_STARTED: "AI 请求已开始",
+    FLOW_AI_RESPONSE_RECEIVED: "AI 响应已收到",
+    FLOW_CANDIDATE_SUBMITTED: "候选结果已提交",
+    FLOW_EVIDENCE_SUBMITTED: "证据已提交",
+    FLOW_FEEDBACK_JUDGMENT_REQUESTED: "反馈判断已请求",
+    FLOW_FEEDBACK_JUDGMENT_RECEIVED: "反馈判断已收到",
+    FLOW_FEEDBACK_JOB_CREATED: "反馈业已创建",
+    FLOW_FEEDBACK_JOB_SKIPPED: "反馈业已跳过",
+    FLOW_METHOD_SELF_REVIEW_REQUESTED: "方法自验已请求",
+    FLOW_METHOD_SELF_REVIEW_RECEIVED: "方法自验已收到",
+    FLOW_METHOD_UPDATE_CANDIDATE_RECORDED: "方法更新候选已记录",
+    FLOW_RESULT_OUTPUT_RECORDED: "结果输出已记录",
+    FLOW_CHAT_TURN_FINISHED: "对话轮次已完成",
+    FLOW_CHAT_SESSION_FINISHED: "对话会话已结束",
+    FLOW_RUN_FAILED: "运行失败",
+    FLOW_RUN_FINISHED: "运行已完成",
+    FLOW_SANDBOX_DESTROYED: "沙盒已销毁",
+}
+
+FIELD_LABELS = {
+    "appearance_id": "相编号",
+    "error": "错误",
+    "feedback_job_id": "反馈业编号",
+    "feedback_job_kind": "反馈业类型",
+    "feedback_job_summary": "反馈业摘要",
+    "feedback_job_target": "反馈业目标",
+    "input": "输入内容",
+    "job_id": "业编号",
+    "judgment": "判断结果",
+    "log_path": "JSONL 日志路径",
+    "message_count": "消息数量",
+    "method_checksum": "方法校验码",
+    "method_content": "方法全文",
+    "method_name": "方法名称",
+    "method_path": "方法路径",
+    "method_size": "方法大小",
+    "readable_log_path": "可读日志路径",
+    "reason": "原因",
+    "required_context_gaps": "缺失上下文",
+    "response": "AI 响应",
+    "result": "结果输出",
+    "review": "方法自验",
+    "sandbox_path": "沙盒路径",
+    "turn": "轮次",
+}
 
 
 @dataclass(frozen=True)
@@ -113,11 +172,11 @@ class FlowWriter:
                 if fresh:
                     jsonl_path = self.diagnostic_log_path or self.path
                     stream.write(
-                        "# Jingu AI Sandbox Readable Log\n\n"
-                        f"- JSONL log: `{jsonl_path}`\n"
-                        f"- Live event stream: `{self.path}`\n"
-                        f"- Readable log: `{self.readable_log_path}`\n"
-                        "- Encoding: UTF-8 with BOM\n\n"
+                        "# 金箍 AI 沙盒可读日志\n\n"
+                        f"- JSONL 机器日志：`{jsonl_path}`\n"
+                        f"- 沙盒实时事件流：`{self.path}`\n"
+                        f"- 人类可读日志：`{self.readable_log_path}`\n"
+                        "- 文件编码：UTF-8 with BOM\n\n"
                     )
             self._readable_header_written = True
 
@@ -139,30 +198,56 @@ def readable_log_path_for(diagnostic_log_path: Path) -> Path:
 def format_readable_event(event: dict[str, object]) -> str:
     timestamp = str(event.get("timestamp", ""))
     event_type = str(event.get("event_type", ""))
-    message = str(event.get("message", ""))
+    event_label = EVENT_LABELS.get(event_type, event_type)
+    message = readable_message(event_type, str(event.get("message", "")))
     data = event.get("data") or {}
     if not isinstance(data, dict):
         data = {"data": data}
 
-    lines = [f"## {timestamp} | {event_type}", "", f"{message}"]
+    lines = [f"## {timestamp} | {event_label}（{event_type}）", "", f"说明：{message}"]
     if data:
         lines.append("")
         for key in sorted(data):
             value = "" if data[key] is None else str(data[key])
+            label = readable_field_label(str(key))
             if _should_render_as_block(key, value):
-                lines.append(f"### {key}")
+                lines.append(f"### {label}")
                 lines.append("")
+                lines.extend(_encoding_warning_lines(value))
                 fence = _dynamic_fence(value)
                 lines.append(f"{fence}text")
                 lines.append(value)
                 lines.append(f"{fence}")
                 lines.append("")
             else:
-                lines.append(f"- {key}: {value}")
+                warning = " 编码警告：该字段包含连续问号，原始中文可能在进入系统前已经损坏。" if has_suspicious_question_marks(value) else ""
+                lines.append(f"- {label}: {value}{warning}")
     else:
         lines.append("")
-        lines.append("- data: (none)")
+        lines.append("- 数据：无")
     return "\n".join(lines).rstrip() + "\n"
+
+
+def readable_message(event_type: str, fallback: str) -> str:
+    return EVENT_LABELS.get(event_type, fallback)
+
+
+def readable_field_label(key: str) -> str:
+    label = FIELD_LABELS.get(key, key)
+    return f"{label}（{key}）"
+
+
+def has_suspicious_question_marks(value: str) -> bool:
+    return bool(SUSPICIOUS_QUESTION_MARKS.search(value))
+
+
+def _encoding_warning_lines(value: str) -> list[str]:
+    if not has_suspicious_question_marks(value):
+        return []
+    return [
+        "编码警告：该字段包含连续问号，原始中文可能在进入系统前已经损坏。",
+        "",
+    ]
 
 
 def _should_render_as_block(key: str, value: str) -> bool:

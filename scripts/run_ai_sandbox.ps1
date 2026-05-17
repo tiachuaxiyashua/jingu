@@ -7,9 +7,11 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+[Console]::InputEncoding = [System.Text.Encoding]::UTF8
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 $OutputEncoding = [System.Text.Encoding]::UTF8
 $env:PYTHONUTF8 = "1"
+$env:PYTHONIOENCODING = "utf-8"
 
 function ConvertTo-SingleQuotedLiteral {
     param([string] $Value)
@@ -65,7 +67,7 @@ if ($Method) {
     $MethodArgs = " --method $MethodLiteral"
 }
 
-$Utf8Setup = "[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; `$OutputEncoding = [System.Text.Encoding]::UTF8; `$env:PYTHONUTF8 = '1';"
+$Utf8Setup = "[Console]::InputEncoding = [System.Text.Encoding]::UTF8; [Console]::OutputEncoding = [System.Text.Encoding]::UTF8; `$OutputEncoding = [System.Text.Encoding]::UTF8; `$env:PYTHONUTF8 = '1'; `$env:PYTHONIOENCODING = 'utf-8';"
 $MonitorCommand = "& { $Utf8Setup Set-Location -LiteralPath $RepoLiteral; python -m jingu.cli ai monitor --sandbox $SandboxLiteral --log-dir $LogDirLiteral --wait-seconds 3600 }"
 $ChatCommand = "& { $Utf8Setup Set-Location -LiteralPath $RepoLiteral; python -m jingu.cli ai chat --sandbox $SandboxLiteral --log-dir $LogDirLiteral$ConfigArgs$MethodArgs }"
 

@@ -178,11 +178,13 @@ class AiSandboxChatTest(unittest.TestCase):
             self.assertNotIn("local-key", serialized)
             self.assertNotIn("Authorization", serialized)
             readable_text = readable_files[0].read_text(encoding="utf-8-sig")
-            self.assertIn("Jingu AI Sandbox Readable Log", readable_text)
+            self.assertIn("金箍 AI 沙盒可读日志", readable_text)
             self.assertIn(str(log_files[0]), readable_text)
             self.assertIn("diagnostic input", readable_text)
             self.assertIn("diagnostic answer", readable_text)
             self.assertIn("Test Method", readable_text)
+            self.assertIn("输入内容（input）", readable_text)
+            self.assertIn("方法全文（method_content）", readable_text)
             self.assertTrue(latest_readable_log_pointer_path(log_dir).exists())
 
     def test_runner_fails_before_provider_when_method_is_missing(self) -> None:
@@ -383,6 +385,8 @@ class AiSandboxChatTest(unittest.TestCase):
         self.assertIn("--method", completed.stdout)
         self.assertIn("Method:", completed.stdout)
         self.assertIn("Readable pointer:", completed.stdout)
+        self.assertIn("InputEncoding", completed.stdout)
+        self.assertIn("PYTHONIOENCODING", completed.stdout)
 
     def test_readable_event_format_blocks_long_fields(self) -> None:
         event = {
@@ -398,11 +402,25 @@ class AiSandboxChatTest(unittest.TestCase):
 
         rendered = format_readable_event(event)
 
-        self.assertIn("## 2026-05-17T10:00:00+00:00 | method_context_loaded", rendered)
-        self.assertIn("### method_content", rendered)
+        self.assertIn("## 2026-05-17T10:00:00+00:00 | 方法上下文已加载（method_context_loaded）", rendered)
+        self.assertIn("### 方法全文（method_content）", rendered)
         self.assertIn("```text", rendered)
         self.assertIn("line 1", rendered)
-        self.assertIn("- method_name: test-method", rendered)
+        self.assertIn("- 方法名称（method_name）: test-method", rendered)
+
+    def test_readable_event_warns_about_question_mark_encoding_damage(self) -> None:
+        rendered = format_readable_event(
+            {
+                "timestamp": "2026-05-17T10:00:00+00:00",
+                "event_type": "user_input_recorded",
+                "message": "user input recorded",
+                "data": {"input": "????????????"},
+            }
+        )
+
+        self.assertIn("用户输入已记录（user_input_recorded）", rendered)
+        self.assertIn("输入内容（input）", rendered)
+        self.assertIn("编码警告", rendered)
 
 
 if __name__ == "__main__":
