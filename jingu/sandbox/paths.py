@@ -10,6 +10,7 @@ DEFAULT_SANDBOX_NAME = "jingu-ai-sandbox-current"
 DEFAULT_LOG_DIR_NAME = "jingu-ai-logs"
 FLOW_EVENTS_FILENAME = "flow-events.jsonl"
 LATEST_LOG_POINTER_FILENAME = "latest-log.txt"
+LATEST_READABLE_LOG_POINTER_FILENAME = "latest-readable-log.txt"
 
 
 def default_sandbox_path() -> Path:
@@ -34,3 +35,7 @@ def resolve_log_dir(path: Path | str | None = None) -> Path:
 
 def latest_log_pointer_path(log_dir: Path) -> Path:
     return log_dir / LATEST_LOG_POINTER_FILENAME
+
+
+def latest_readable_log_pointer_path(log_dir: Path) -> Path:
+    return log_dir / LATEST_READABLE_LOG_POINTER_FILENAME

@@ -7,6 +7,9 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+$OutputEncoding = [System.Text.Encoding]::UTF8
+$env:PYTHONUTF8 = "1"
 
 function ConvertTo-SingleQuotedLiteral {
     param([string] $Value)
@@ -48,6 +51,7 @@ if (-not $Method) {
 $RepoLiteral = ConvertTo-SingleQuotedLiteral $RepoRoot
 $SandboxLiteral = ConvertTo-SingleQuotedLiteral $Sandbox
 $LogDirLiteral = ConvertTo-SingleQuotedLiteral $LogDir
+$ReadablePointer = Join-Path $LogDir "latest-readable-log.txt"
 
 $ConfigArgs = ""
 if ($Config) {
@@ -61,14 +65,16 @@ if ($Method) {
     $MethodArgs = " --method $MethodLiteral"
 }
 
-$MonitorCommand = "& { Set-Location -LiteralPath $RepoLiteral; python -m jingu.cli ai monitor --sandbox $SandboxLiteral --log-dir $LogDirLiteral --wait-seconds 3600 }"
-$ChatCommand = "& { Set-Location -LiteralPath $RepoLiteral; python -m jingu.cli ai chat --sandbox $SandboxLiteral --log-dir $LogDirLiteral$ConfigArgs$MethodArgs }"
+$Utf8Setup = "[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; `$OutputEncoding = [System.Text.Encoding]::UTF8; `$env:PYTHONUTF8 = '1';"
+$MonitorCommand = "& { $Utf8Setup Set-Location -LiteralPath $RepoLiteral; python -m jingu.cli ai monitor --sandbox $SandboxLiteral --log-dir $LogDirLiteral --wait-seconds 3600 }"
+$ChatCommand = "& { $Utf8Setup Set-Location -LiteralPath $RepoLiteral; python -m jingu.cli ai chat --sandbox $SandboxLiteral --log-dir $LogDirLiteral$ConfigArgs$MethodArgs }"
 
 if ($DryRun) {
     Write-Host "Monitor command: $MonitorCommand"
     Write-Host "Chat command: $ChatCommand"
     Write-Host "Sandbox: $Sandbox"
     Write-Host "Logs: $LogDir"
+    Write-Host "Readable pointer: $ReadablePointer"
     Write-Host "Method: $Method"
     exit 0
 }
@@ -82,4 +88,5 @@ Write-Host "Chat window: type task requests, decisions, corrections, or /exit."
 Write-Host "Monitor window: prints full flow, inputs, outputs, and diagnostics."
 Write-Host "Sandbox: $Sandbox"
 Write-Host "Logs: $LogDir"
+Write-Host "Readable pointer: $ReadablePointer"
 Write-Host "Method: $Method"

@@ -40,6 +40,7 @@ from jingu.sandbox.flow import (
     FLOW_USER_INPUT_RECORDED,
     FlowWriter,
     new_diagnostic_log_path,
+    readable_log_path_for,
 )
 from jingu.sandbox.method import (
     MethodContext,
@@ -48,7 +49,12 @@ from jingu.sandbox.method import (
     load_method_context,
     method_evidence_payload,
 )
-from jingu.sandbox.paths import latest_log_pointer_path, resolve_log_dir, resolve_sandbox_path
+from jingu.sandbox.paths import (
+    latest_log_pointer_path,
+    latest_readable_log_pointer_path,
+    resolve_log_dir,
+    resolve_sandbox_path,
+)
 
 
 class AiSandboxRunner:
@@ -64,10 +70,15 @@ class AiSandboxRunner:
         self.sandbox_path = resolve_sandbox_path(sandbox_path)
         self.log_dir = resolve_log_dir(log_dir)
         self.diagnostic_log_path = new_diagnostic_log_path(self.log_dir)
+        self.readable_log_path = readable_log_path_for(self.diagnostic_log_path)
         self.config_path = Path(config_path) if config_path is not None else None
         self.method_path = Path(method_path) if method_path is not None else None
         self.client = client
-        self.flow = FlowWriter(self.sandbox_path, self.diagnostic_log_path)
+        self.flow = FlowWriter(
+            self.sandbox_path,
+            self.diagnostic_log_path,
+            self.readable_log_path,
+        )
 
     def run(self, message: str) -> str:
         self._reset_sandbox()
@@ -79,6 +90,7 @@ class AiSandboxRunner:
                 "sandbox created",
                 sandbox_path=str(self.sandbox_path),
                 log_path=str(self.diagnostic_log_path),
+                readable_log_path=str(self.readable_log_path),
             )
             self.flow.write(FLOW_USER_INPUT_RECORDED, "user input recorded", input=message)
 
@@ -160,6 +172,7 @@ class AiSandboxRunner:
                 "sandbox destroyed",
                 sandbox_path=str(self.sandbox_path),
                 log_path=str(self.diagnostic_log_path),
+                readable_log_path=str(self.readable_log_path),
             )
             shutil.rmtree(self.sandbox_path, ignore_errors=True)
 
@@ -215,6 +228,9 @@ class AiSandboxRunner:
         latest_log_pointer_path(self.log_dir).write_text(
             str(self.diagnostic_log_path), encoding="utf-8"
         )
+        latest_readable_log_pointer_path(self.log_dir).write_text(
+            str(self.readable_log_path), encoding="utf-8"
+        )
 
 
 class AiSandboxChatSession:
@@ -230,10 +246,15 @@ class AiSandboxChatSession:
         self.sandbox_path = resolve_sandbox_path(sandbox_path)
         self.log_dir = resolve_log_dir(log_dir)
         self.diagnostic_log_path = new_diagnostic_log_path(self.log_dir)
+        self.readable_log_path = readable_log_path_for(self.diagnostic_log_path)
         self.config_path = Path(config_path) if config_path is not None else None
         self.method_path = Path(method_path) if method_path is not None else None
         self.client = client
-        self.flow = FlowWriter(self.sandbox_path, self.diagnostic_log_path)
+        self.flow = FlowWriter(
+            self.sandbox_path,
+            self.diagnostic_log_path,
+            self.readable_log_path,
+        )
         self.history: list[dict[str, str]] = []
         self.service: RuntimeService | None = None
         self.turn_count = 0
@@ -256,6 +277,7 @@ class AiSandboxChatSession:
             "sandbox created",
             sandbox_path=str(self.sandbox_path),
             log_path=str(self.diagnostic_log_path),
+            readable_log_path=str(self.readable_log_path),
         )
         self.service = RuntimeService(self.sandbox_path)
         self.service.initialize()
@@ -403,6 +425,7 @@ class AiSandboxChatSession:
             "sandbox destroyed",
             sandbox_path=str(self.sandbox_path),
             log_path=str(self.diagnostic_log_path),
+            readable_log_path=str(self.readable_log_path),
         )
         shutil.rmtree(self.sandbox_path, ignore_errors=True)
         self.service = None
@@ -419,6 +442,9 @@ class AiSandboxChatSession:
         self.log_dir.mkdir(parents=True, exist_ok=True)
         latest_log_pointer_path(self.log_dir).write_text(
             str(self.diagnostic_log_path), encoding="utf-8"
+        )
+        latest_readable_log_pointer_path(self.log_dir).write_text(
+            str(self.readable_log_path), encoding="utf-8"
         )
 
     def _load_method_for_turn(self, *, turn: str) -> MethodContext:

@@ -13,8 +13,9 @@ from jingu.ai.client import ChatResponse
 from jingu.ai.config import load_ai_config
 from jingu.cli import main
 from jingu.runtime.errors import JinguRuntimeError
-from jingu.sandbox.flow import FlowWriter, tail_flow_events
+from jingu.sandbox.flow import FlowWriter, format_readable_event, tail_flow_events
 from jingu.sandbox.method import load_method_context
+from jingu.sandbox.paths import latest_readable_log_pointer_path
 from jingu.sandbox.runner import AiSandboxChatSession, AiSandboxRunner
 
 
@@ -154,6 +155,8 @@ class AiSandboxChatTest(unittest.TestCase):
 
             log_files = sorted(log_dir.glob("ai-run-*.jsonl"))
             self.assertEqual(len(log_files), 1)
+            readable_files = sorted(log_dir.glob("ai-run-*.md"))
+            self.assertEqual(len(readable_files), 1)
             self.assertFalse(sandbox.exists())
             records = [
                 json.loads(line)
@@ -174,6 +177,13 @@ class AiSandboxChatTest(unittest.TestCase):
             self.assertIn("Test Method", serialized)
             self.assertNotIn("local-key", serialized)
             self.assertNotIn("Authorization", serialized)
+            readable_text = readable_files[0].read_text(encoding="utf-8-sig")
+            self.assertIn("Jingu AI Sandbox Readable Log", readable_text)
+            self.assertIn(str(log_files[0]), readable_text)
+            self.assertIn("diagnostic input", readable_text)
+            self.assertIn("diagnostic answer", readable_text)
+            self.assertIn("Test Method", readable_text)
+            self.assertTrue(latest_readable_log_pointer_path(log_dir).exists())
 
     def test_runner_fails_before_provider_when_method_is_missing(self) -> None:
         with TemporaryDirectory() as tmp:
@@ -191,6 +201,38 @@ class AiSandboxChatTest(unittest.TestCase):
 
             self.assertEqual(client.message_batches, [])
             self.assertFalse(sandbox.exists())
+
+    def test_readable_log_preserves_chinese_text(self) -> None:
+        with TemporaryDirectory() as tmp:
+            sandbox = Path(tmp) / "sandbox"
+            log_dir = Path(tmp) / "logs"
+            method_path = write_method_file(
+                Path(tmp),
+                "\n".join(
+                    [
+                        "---",
+                        "name: 中文方法",
+                        "---",
+                        "# 中文方法",
+                        "保留中文输入、输出和自验。",
+                    ]
+                ),
+            )
+            client = FakeChatClient("中文回答已保存。")
+
+            AiSandboxRunner(
+                sandbox_path=sandbox,
+                log_dir=log_dir,
+                method_path=method_path,
+                client=client,
+            ).run("验证中文日志是否正常显示。")
+
+            readable_files = sorted(log_dir.glob("ai-run-*.md"))
+            self.assertEqual(len(readable_files), 1)
+            readable_text = readable_files[0].read_text(encoding="utf-8-sig")
+            self.assertIn("验证中文日志是否正常显示。", readable_text)
+            self.assertIn("中文回答已保存。", readable_text)
+            self.assertIn("中文方法", readable_text)
 
     def test_flow_tail_reads_written_events(self) -> None:
         with TemporaryDirectory() as tmp:
@@ -340,6 +382,27 @@ class AiSandboxChatTest(unittest.TestCase):
 
         self.assertIn("--method", completed.stdout)
         self.assertIn("Method:", completed.stdout)
+        self.assertIn("Readable pointer:", completed.stdout)
+
+    def test_readable_event_format_blocks_long_fields(self) -> None:
+        event = {
+            "timestamp": "2026-05-17T10:00:00+00:00",
+            "event_type": "method_context_loaded",
+            "message": "method context loaded",
+            "data": {
+                "method_name": "test-method",
+                "method_content": "line 1\nline 2",
+                "result": "x" * 140,
+            },
+        }
+
+        rendered = format_readable_event(event)
+
+        self.assertIn("## 2026-05-17T10:00:00+00:00 | method_context_loaded", rendered)
+        self.assertIn("### method_content", rendered)
+        self.assertIn("```text", rendered)
+        self.assertIn("line 1", rendered)
+        self.assertIn("- method_name: test-method", rendered)
 
 
 if __name__ == "__main__":

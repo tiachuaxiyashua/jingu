@@ -63,11 +63,26 @@ class FlowEvent:
             sort_keys=True,
         )
 
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "event_type": self.event_type,
+            "message": self.message,
+            "timestamp": self.timestamp,
+            "data": self.data,
+        }
+
 
 class FlowWriter:
-    def __init__(self, sandbox_path: Path, diagnostic_log_path: Path | None = None) -> None:
+    def __init__(
+        self,
+        sandbox_path: Path,
+        diagnostic_log_path: Path | None = None,
+        readable_log_path: Path | None = None,
+    ) -> None:
         self.path = flow_events_path(sandbox_path)
         self.diagnostic_log_path = diagnostic_log_path
+        self.readable_log_path = readable_log_path
+        self._readable_header_written = False
 
     def write(self, event_type: str, message: str, **data: str) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -85,12 +100,99 @@ class FlowWriter:
             with self.diagnostic_log_path.open("a", encoding="utf-8") as stream:
                 stream.write(event.to_json())
                 stream.write("\n")
+        if self.readable_log_path is not None:
+            self._write_readable_event(event)
+
+    def _write_readable_event(self, event: FlowEvent) -> None:
+        self.readable_log_path.parent.mkdir(parents=True, exist_ok=True)
+        if not self._readable_header_written:
+            fresh = not self.readable_log_path.exists()
+            with self.readable_log_path.open(
+                "a", encoding="utf-8-sig" if fresh else "utf-8"
+            ) as stream:
+                if fresh:
+                    jsonl_path = self.diagnostic_log_path or self.path
+                    stream.write(
+                        "# Jingu AI Sandbox Readable Log\n\n"
+                        f"- JSONL log: `{jsonl_path}`\n"
+                        f"- Live event stream: `{self.path}`\n"
+                        f"- Readable log: `{self.readable_log_path}`\n"
+                        "- Encoding: UTF-8 with BOM\n\n"
+                    )
+            self._readable_header_written = True
+
+        with self.readable_log_path.open("a", encoding="utf-8") as stream:
+            stream.write(format_readable_event(event.to_dict()))
+            stream.write("\n")
 
 
 def new_diagnostic_log_path(log_dir: Path) -> Path:
     log_dir.mkdir(parents=True, exist_ok=True)
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S")
     return log_dir / f"ai-run-{timestamp}-{uuid.uuid4().hex}.jsonl"
+
+
+def readable_log_path_for(diagnostic_log_path: Path) -> Path:
+    return diagnostic_log_path.with_suffix(".md")
+
+
+def format_readable_event(event: dict[str, object]) -> str:
+    timestamp = str(event.get("timestamp", ""))
+    event_type = str(event.get("event_type", ""))
+    message = str(event.get("message", ""))
+    data = event.get("data") or {}
+    if not isinstance(data, dict):
+        data = {"data": data}
+
+    lines = [f"## {timestamp} | {event_type}", "", f"{message}"]
+    if data:
+        lines.append("")
+        for key in sorted(data):
+            value = "" if data[key] is None else str(data[key])
+            if _should_render_as_block(key, value):
+                lines.append(f"### {key}")
+                lines.append("")
+                fence = _dynamic_fence(value)
+                lines.append(f"{fence}text")
+                lines.append(value)
+                lines.append(f"{fence}")
+                lines.append("")
+            else:
+                lines.append(f"- {key}: {value}")
+    else:
+        lines.append("")
+        lines.append("- data: (none)")
+    return "\n".join(lines).rstrip() + "\n"
+
+
+def _should_render_as_block(key: str, value: str) -> bool:
+    if "\n" in value:
+        return True
+    if len(value) > 120:
+        return True
+    return key in {
+        "input",
+        "response",
+        "result",
+        "review",
+        "method_content",
+        "judgment",
+        "required_context_gaps",
+        "feedback_job_target",
+        "feedback_job_summary",
+    }
+
+
+def _dynamic_fence(value: str) -> str:
+    longest_run = 0
+    current = 0
+    for char in value:
+        if char == "`":
+            current += 1
+            longest_run = max(longest_run, current)
+        else:
+            current = 0
+    return "`" * max(3, longest_run + 1)
 
 
 def tail_flow_events(

@@ -11,8 +11,13 @@ from typing import Any
 from jingu.runtime.errors import JinguRuntimeError
 from jingu.runtime.service import RuntimeService
 from jingu.runtime.tree import TreeService
-from jingu.sandbox.flow import tail_flow_events
-from jingu.sandbox.paths import latest_log_pointer_path, resolve_log_dir, resolve_sandbox_path
+from jingu.sandbox.flow import format_readable_event, tail_flow_events
+from jingu.sandbox.paths import (
+    latest_log_pointer_path,
+    latest_readable_log_pointer_path,
+    resolve_log_dir,
+    resolve_sandbox_path,
+)
 from jingu.sandbox.runner import AiSandboxChatSession, AiSandboxRunner
 
 
@@ -230,10 +235,17 @@ def run_monitor(args: argparse.Namespace) -> None:
     sandbox_path = resolve_sandbox_path(args.sandbox)
     log_dir = resolve_log_dir(args.log_dir)
     log_pointer = latest_log_pointer_path(log_dir)
+    readable_pointer = latest_readable_log_pointer_path(log_dir)
     if log_pointer.exists():
-        print(f"log_path={log_pointer.read_text(encoding='utf-8').strip()}", flush=True)
+        print(f"jsonl_log_path={log_pointer.read_text(encoding='utf-8').strip()}", flush=True)
+    if readable_pointer.exists():
+        print(
+            f"readable_log_path={readable_pointer.read_text(encoding='utf-8').strip()}",
+            flush=True,
+        )
     for event in tail_flow_events(sandbox_path, wait_seconds=args.wait_seconds):
-        print(format_flow_event(event), flush=True)
+        sys.stdout.write(format_readable_event(event))
+        sys.stdout.flush()
 
 
 def run_chat(args: argparse.Namespace) -> None:
@@ -262,13 +274,6 @@ def run_chat(args: argparse.Namespace) -> None:
     except Exception as exc:
         session.fail(exc)
         raise
-
-
-def format_flow_event(event: dict[str, Any]) -> str:
-    data = event.get("data") or {}
-    data_text = " ".join(f"{key}={value}" for key, value in sorted(data.items()))
-    suffix = f" {data_text}" if data_text else ""
-    return f"{event.get('timestamp', '')} {event.get('event_type', '')}: {event.get('message', '')}{suffix}"
 
 
 def main(argv: list[str] | None = None) -> int:
