@@ -42,6 +42,14 @@ Jingu means the golden headband on Sun Wukong. In this project it represents the
 - If a referenced skill path is stale but the same skill exists in another approved local location, use the valid local path and record or repair the stale path before continuing.
 - When the current local skills do not cover a problem well enough, and a specialized skill would materially improve correctness or safety, search online or the curated skill index for a suitable skill. Prefer official or trusted sources, inspect the source and purpose before installing, use the `skill-installer` workflow when applicable, and report any restart requirement.
 
+## Parallel Sub-agent Development
+
+- During concrete code implementation, the main coding agent may spawn enough sub-agents to develop, inspect, or verify independent work in parallel when doing so materially improves speed or quality.
+- Sub-agents may use lower-cost models and lower reasoning effort when their assigned task is bounded enough for that choice. The main coding agent decides the model, effort level, role, task split, and write ownership for each sub-agent based on task risk, complexity, coupling, and verification needs.
+- The main coding agent remains responsible for final integration and acceptance. Sub-agent output is never accepted blindly; the main coding agent must review changed files, check consistency with `truth/`, repo rules, OpenSpec artifacts when applicable, and run the relevant verification before reporting completion.
+- Parallel delegation must not create uncontrolled edits. Each sub-agent must receive a concrete scope, clear ownership of files or questions, and the instruction not to revert or overwrite unrelated work.
+- Use sub-agents for work that can proceed independently. Keep tightly coupled, high-risk, or immediately blocking decisions under the main coding agent unless explicit delegation is still the safer path.
+
 ## GitHub Synchronization
 
 - The GitHub repository is the source-controlled handoff path for this project. Durable docs, code, tests, scripts, skills, and configuration changes must be committed through git and pushed to the GitHub remote.
