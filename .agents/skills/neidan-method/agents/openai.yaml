@@ -1,4 +1,4 @@
 interface:
   display_name: "内丹法"
   short_description: "把模糊愿望转成可执行能力闭环"
-  default_prompt: "使用内丹法：先做复用扫描，再递归下钻概念到原子动作，生成临时法、证据、验收标准和完整产物，并用反馈修正。"
+  default_prompt: "使用 $neidan-method：先做复用扫描和思路地图，再用事实/假设/推论/逻辑链条支撑结论，生成可执行、可量化验收的临时法、证据和完整产物。"
