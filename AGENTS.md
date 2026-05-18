@@ -36,6 +36,13 @@ Jingu means the golden headband on Sun Wukong. In this project it represents the
 - Do not hardcode API keys or model names in scripts, tests, docs, command history, or committed files; keep local secret files covered by `.gitignore`.
 - Use the configured DeepSeek model for AI runtime tests unless the user explicitly requests another provider or model for a specific test.
 
+## Encoding Discipline
+
+- When reading Chinese, Markdown, truth-source, skill, OpenSpec, log, or configuration files through PowerShell, explicitly use UTF-8, for example `Get-Content -Encoding utf8 -Path <path>`.
+- Do not rely on PowerShell's default encoding for project files. Mojibake from default decoding is not evidence about the file contents.
+- If any read output shows garbled Chinese, replacement characters, or suspicious question-mark runs, immediately reread the source with UTF-8 or a UTF-8-SIG capable reader before interpreting, summarizing, editing, or making conclusions from it.
+- When writing project text files, preserve UTF-8 unless a file has an explicit different encoding contract.
+
 ## Skill Usage
 
 - When a task matches a local skill, first use the exact `SKILL.md` path provided by the current session. If that path is missing, do not declare the skill unavailable until checking these fallback locations in order: repository `.agents/skills/<skill-name>/SKILL.md`, legacy repository `.codex/skills/<skill-name>/SKILL.md`, user `%USERPROFILE%\.codex\skills\<skill-name>\SKILL.md`, and system `%USERPROFILE%\.codex\skills\.system\<skill-name>\SKILL.md`.
