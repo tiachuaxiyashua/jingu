@@ -9,6 +9,8 @@ from typing import Any
 
 from jingu.ai.client import ChatClient
 from jingu.ai.config import load_ai_config
+from jingu.runtime.constants import STATE_ABANDONED, STATE_ACCEPTED, STATE_REJECTED
+from jingu.runtime.repository import decode_json
 from jingu.runtime.service import RuntimeService
 from jingu.sandbox.flow import (
     FLOW_AI_REQUEST_STARTED,
@@ -22,14 +24,19 @@ from jingu.sandbox.flow import (
     FLOW_FEEDBACK_JUDGMENT_REQUESTED,
     FLOW_FEEDBACK_JOB_CREATED,
     FLOW_FEEDBACK_JOB_SKIPPED,
+    FLOW_INPUT_PROVENANCE_RECORDED,
     FLOW_JOB_READY,
     FLOW_JOB_RUNNING,
+    FLOW_JOB_TREE_MANAGEMENT_RECORDED,
+    FLOW_JOB_TREE_SNAPSHOT_RECORDED,
     FLOW_METHOD_CONTEXT_INJECTED,
     FLOW_METHOD_CONTEXT_LOADED,
     FLOW_METHOD_SELF_REVIEW_RECEIVED,
     FLOW_METHOD_SELF_REVIEW_REQUESTED,
     FLOW_METHOD_SOURCE_RESOLVED,
     FLOW_METHOD_UPDATE_CANDIDATE_RECORDED,
+    FLOW_PROCESS_STEP_RECORDED,
+    FLOW_PROVIDER_MESSAGES_RECORDED,
     FLOW_RESULT_OUTPUT_RECORDED,
     FLOW_RUN_FAILED,
     FLOW_ROOT_JOB_CREATED,
@@ -39,6 +46,7 @@ from jingu.sandbox.flow import (
     FLOW_SANDBOX_DESTROYED,
     FLOW_USER_INPUT_RECORDED,
     FlowWriter,
+    input_provenance_fields,
     new_diagnostic_log_path,
     readable_log_path_for,
 )
@@ -55,6 +63,150 @@ from jingu.sandbox.paths import (
     resolve_log_dir,
     resolve_sandbox_path,
 )
+
+
+TERMINAL_JOB_STATES = {STATE_ACCEPTED, STATE_REJECTED, STATE_ABANDONED}
+
+
+def write_process_step(
+    *,
+    flow: FlowWriter,
+    step: str,
+    phase: str,
+    action: str,
+    status: str = "completed",
+    **data: Any,
+) -> None:
+    event_data = {
+        "process_step": step,
+        "process_phase": phase,
+        "process_action": action,
+        "process_status": status,
+    }
+    event_data.update({key: str(value) for key, value in data.items() if value is not None})
+    flow.write(FLOW_PROCESS_STEP_RECORDED, "process step recorded", **event_data)
+
+
+def write_provider_messages(
+    *,
+    flow: FlowWriter,
+    call_kind: str,
+    messages: list[dict[str, str]],
+    turn: str | None = None,
+    job_id: str | None = None,
+) -> None:
+    event_data = {
+        "provider_call_kind": call_kind,
+        "provider_message_count": str(len(messages)),
+        "provider_message_roles": ",".join(message.get("role", "") for message in messages),
+        "provider_messages": json.dumps(messages, ensure_ascii=False, indent=2),
+    }
+    if turn is not None:
+        event_data["turn"] = turn
+    if job_id is not None:
+        event_data["job_id"] = job_id
+    flow.write(FLOW_PROVIDER_MESSAGES_RECORDED, "provider messages recorded", **event_data)
+
+
+def write_job_tree_mirror(
+    *,
+    flow: FlowWriter,
+    service: RuntimeService,
+    job_id: str,
+    action: str,
+    turn: str | None = None,
+    appearance_id: str | None = None,
+    child_job_id: str | None = None,
+    feedback_job_kind: str | None = None,
+    reason: str | None = None,
+) -> None:
+    job = service.get_status(job_id)
+    root_job_id = str(job["root_job_id"])
+    event_data = {
+        "job_tree_action": action,
+        "job_id": str(job["job_id"]),
+        "root_job_id": root_job_id,
+        "job_state": str(job["state"]),
+        "job_target": str(job["target"]),
+    }
+    optional_fields = {
+        "turn": turn,
+        "parent_job_id": job.get("parent_job_id"),
+        "appearance_id": appearance_id,
+        "child_job_id": child_job_id,
+        "feedback_job_kind": feedback_job_kind,
+        "reason": reason,
+    }
+    event_data.update({key: str(value) for key, value in optional_fields.items() if value})
+    flow.write(
+        FLOW_JOB_TREE_MANAGEMENT_RECORDED,
+        "job tree management recorded",
+        **event_data,
+    )
+    flow.write(
+        FLOW_JOB_TREE_SNAPSHOT_RECORDED,
+        "job tree snapshot recorded",
+        **{
+            key: value
+            for key, value in {
+                "turn": turn,
+                "job_id": str(job["job_id"]),
+                "root_job_id": root_job_id,
+                "tree_snapshot": json.dumps(
+                    job_tree_snapshot(service, root_job_id),
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    indent=2,
+                ),
+            }.items()
+            if value
+        },
+    )
+
+
+def job_tree_snapshot(service: RuntimeService, root_job_id: str) -> dict[str, Any]:
+    with service.repository.transaction() as connection:
+        rows = service.repository.list_jobs_by_root(connection, root_job_id)
+
+    nodes = [job_tree_node(row) for row in rows]
+    active_job_ids = {
+        str(node["job_id"])
+        for node in nodes
+        if str(node["state"]) not in TERMINAL_JOB_STATES
+    }
+    active_parent_ids = {
+        str(node["parent_job_id"])
+        for node in nodes
+        if node.get("parent_job_id") and str(node["job_id"]) in active_job_ids
+    }
+    return {
+        "root_job_id": root_job_id,
+        "nodes": nodes,
+        "links": [
+            {"parent_job_id": node["parent_job_id"], "child_job_id": node["job_id"]}
+            for node in nodes
+            if node.get("parent_job_id")
+        ],
+        "frontier_job_ids": [
+            node["job_id"]
+            for node in nodes
+            if node["job_id"] in active_job_ids and node["job_id"] not in active_parent_ids
+        ],
+    }
+
+
+def job_tree_node(job: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "job_id": job["job_id"],
+        "parent_job_id": job.get("parent_job_id"),
+        "root_job_id": job["root_job_id"],
+        "state": job["state"],
+        "target": job["target"],
+        "candidate_appearance_id": job.get("candidate_appearance_id"),
+        "evidence_appearance_id": job.get("evidence_appearance_id"),
+        "result_appearance_id": job.get("result_appearance_id"),
+        "required_context_gaps": decode_json(job.get("required_context_gaps"), []),
+    }
 
 
 class AiSandboxRunner:
@@ -92,22 +244,87 @@ class AiSandboxRunner:
                 log_path=str(self.diagnostic_log_path),
                 readable_log_path=str(self.readable_log_path),
             )
+            write_process_step(
+                flow=self.flow,
+                step="sandbox.create",
+                phase="sandbox",
+                action="created ephemeral sandbox and log files",
+                sandbox_path=str(self.sandbox_path),
+                log_path=str(self.diagnostic_log_path),
+                readable_log_path=str(self.readable_log_path),
+            )
             self.flow.write(FLOW_USER_INPUT_RECORDED, "user input recorded", input=message)
+            self.flow.write(
+                FLOW_INPUT_PROVENANCE_RECORDED,
+                "input provenance recorded",
+                **input_provenance_fields(message, input_source="ai_run_message"),
+            )
+            write_process_step(
+                flow=self.flow,
+                step="input.record",
+                phase="input",
+                action="recorded user input and provenance",
+            )
 
             service = RuntimeService(self.sandbox_path)
             service.initialize()
             self.flow.write(FLOW_RUNTIME_INITIALIZED, "runtime initialized")
+            write_process_step(
+                flow=self.flow,
+                step="runtime.initialize",
+                phase="runtime",
+                action="initialized runtime repository inside sandbox",
+            )
             method = self._load_method_for_turn()
 
             root = service.create_root_job(wish=message, target=message, actor_id="human")
             job_id = root["job_id"]
             self.flow.write(FLOW_ROOT_JOB_CREATED, "root job created", job_id=job_id)
+            write_job_tree_mirror(
+                flow=self.flow,
+                service=service,
+                job_id=job_id,
+                action="root_created",
+            )
+            write_process_step(
+                flow=self.flow,
+                step="job.root_create",
+                phase="job",
+                action="created root job from user input",
+                job_id=job_id,
+            )
 
             service.mark_ready(job_id, actor_id="system")
             self.flow.write(FLOW_JOB_READY, "job marked ready", job_id=job_id)
+            write_job_tree_mirror(
+                flow=self.flow,
+                service=service,
+                job_id=job_id,
+                action="job_ready",
+            )
+            write_process_step(
+                flow=self.flow,
+                step="job.ready",
+                phase="job",
+                action="marked root job ready",
+                job_id=job_id,
+            )
 
             service.start_job(job_id, actor_id="system")
             self.flow.write(FLOW_JOB_RUNNING, "job running", job_id=job_id)
+            write_job_tree_mirror(
+                flow=self.flow,
+                service=service,
+                job_id=job_id,
+                action="job_running",
+            )
+            write_process_step(
+                flow=self.flow,
+                step="job.run",
+                phase="job",
+                action="started root job execution",
+                job_id=job_id,
+            )
 
             client = self.client or ChatClient(load_ai_config(self.config_path))
             messages = [build_method_system_message(method), {"role": "user", "content": message}]
@@ -120,13 +337,43 @@ class AiSandboxRunner:
                 method_checksum=method.checksum,
                 message_count=str(len(messages)),
             )
+            write_process_step(
+                flow=self.flow,
+                step="method.inject",
+                phase="method",
+                action="assembled provider messages with method context",
+                job_id=job_id,
+                message_count=str(len(messages)),
+            )
             self.flow.write(FLOW_AI_REQUEST_STARTED, "AI request started", job_id=job_id)
+            write_provider_messages(
+                flow=self.flow,
+                call_kind="candidate_generation",
+                messages=messages,
+                job_id=job_id,
+            )
+            write_process_step(
+                flow=self.flow,
+                step="provider.request",
+                phase="provider",
+                action="sent messages to AI provider",
+                status="started",
+                job_id=job_id,
+                message_count=str(len(messages)),
+            )
             response = client.complete_messages(messages)
             self.flow.write(
                 FLOW_AI_RESPONSE_RECEIVED,
                 "AI response received",
                 job_id=job_id,
                 response=response.content,
+            )
+            write_process_step(
+                flow=self.flow,
+                step="provider.response",
+                phase="provider",
+                action="received AI provider response",
+                job_id=job_id,
             )
 
             candidate = service.submit_candidate(
@@ -137,6 +384,21 @@ class AiSandboxRunner:
             self.flow.write(
                 FLOW_CANDIDATE_SUBMITTED,
                 "candidate submitted",
+                job_id=job_id,
+                appearance_id=candidate["appearance_id"],
+            )
+            write_job_tree_mirror(
+                flow=self.flow,
+                service=service,
+                job_id=job_id,
+                action="candidate_attached",
+                appearance_id=candidate["appearance_id"],
+            )
+            write_process_step(
+                flow=self.flow,
+                step="candidate.submit",
+                phase="candidate",
+                action="stored AI response as candidate result",
                 job_id=job_id,
                 appearance_id=candidate["appearance_id"],
             )
@@ -159,14 +421,53 @@ class AiSandboxRunner:
                 job_id=job_id,
                 appearance_id=evidence["appearance_id"],
             )
+            write_job_tree_mirror(
+                flow=self.flow,
+                service=service,
+                job_id=job_id,
+                action="evidence_attached",
+                appearance_id=evidence["appearance_id"],
+            )
+            write_process_step(
+                flow=self.flow,
+                step="evidence.submit",
+                phase="evidence",
+                action="stored method self-review as evidence",
+                job_id=job_id,
+                appearance_id=evidence["appearance_id"],
+            )
 
             self.flow.write(FLOW_RESULT_OUTPUT_RECORDED, "result output recorded", result=response.content)
+            write_process_step(
+                flow=self.flow,
+                step="output.record",
+                phase="output",
+                action="recorded result output for CLI return",
+                job_id=job_id,
+            )
             self.flow.write(FLOW_RUN_FINISHED, "run finished", job_id=job_id)
             return response.content
         except Exception as exc:
+            write_process_step(
+                flow=self.flow,
+                step="run.fail",
+                phase="error",
+                action="run failed before normal completion",
+                status="failed",
+                process_detail=str(exc),
+            )
             self.flow.write(FLOW_RUN_FAILED, "run failed", error=str(exc))
             raise
         finally:
+            write_process_step(
+                flow=self.flow,
+                step="sandbox.destroy",
+                phase="cleanup",
+                action="destroyed ephemeral sandbox",
+                sandbox_path=str(self.sandbox_path),
+                log_path=str(self.diagnostic_log_path),
+                readable_log_path=str(self.readable_log_path),
+            )
             self.flow.write(
                 FLOW_SANDBOX_DESTROYED,
                 "sandbox destroyed",
@@ -187,6 +488,16 @@ class AiSandboxRunner:
             data["turn"] = turn
         self.flow.write(FLOW_METHOD_SOURCE_RESOLVED, "method source resolved", **data)
         self.flow.write(FLOW_METHOD_CONTEXT_LOADED, "method context loaded", **method.log_fields())
+        write_process_step(
+            flow=self.flow,
+            step="method.load",
+            phase="method",
+            action="loaded method source",
+            status="completed",
+            turn=turn,
+            method_path=str(method.path),
+            method_checksum=method.checksum,
+        )
         return method
 
     def _request_method_self_review(
@@ -207,12 +518,28 @@ class AiSandboxRunner:
         if turn is not None:
             data["turn"] = turn
         self.flow.write(FLOW_METHOD_SELF_REVIEW_REQUESTED, "method self-review requested", **data)
+        write_process_step(
+            flow=self.flow,
+            step="method.self_review.request",
+            phase="method",
+            action="requested method self-review for candidate",
+            status="started",
+            **data,
+        )
+        review_messages = build_method_review_messages(
+            method=method,
+            user_input=user_input,
+            assistant_response=assistant_response,
+        )
+        write_provider_messages(
+            flow=self.flow,
+            call_kind="method_self_review",
+            messages=review_messages,
+            turn=turn,
+            job_id=job_id,
+        )
         review = client.complete_messages(
-            build_method_review_messages(
-                method=method,
-                user_input=user_input,
-                assistant_response=assistant_response,
-            )
+            review_messages
         )
         received = {**data, "review": review.content}
         self.flow.write(FLOW_METHOD_SELF_REVIEW_RECEIVED, "method self-review received", **received)
@@ -220,6 +547,13 @@ class AiSandboxRunner:
             FLOW_METHOD_UPDATE_CANDIDATE_RECORDED,
             "method update candidate recorded",
             **received,
+        )
+        write_process_step(
+            flow=self.flow,
+            step="method.self_review.receive",
+            phase="method",
+            action="recorded method self-review and update candidates",
+            **data,
         )
         return review.content
 
@@ -279,10 +613,25 @@ class AiSandboxChatSession:
             log_path=str(self.diagnostic_log_path),
             readable_log_path=str(self.readable_log_path),
         )
+        write_process_step(
+            flow=self.flow,
+            step="chat.sandbox.create",
+            phase="sandbox",
+            action="created interactive chat sandbox and log files",
+            sandbox_path=str(self.sandbox_path),
+            log_path=str(self.diagnostic_log_path),
+            readable_log_path=str(self.readable_log_path),
+        )
         self.service = RuntimeService(self.sandbox_path)
         self.service.initialize()
         self.flow.write(FLOW_RUNTIME_INITIALIZED, "runtime initialized")
         self.flow.write(FLOW_CHAT_SESSION_STARTED, "chat session started")
+        write_process_step(
+            flow=self.flow,
+            step="chat.session.start",
+            phase="runtime",
+            action="initialized interactive chat session",
+        )
 
     def ask(self, user_input: str) -> str:
         if self.service is None:
@@ -293,18 +642,76 @@ class AiSandboxChatSession:
         self.last_feedback_job_id = None
         self.last_feedback_judgment = None
         self.flow.write(FLOW_USER_INPUT_RECORDED, "user input recorded", turn=turn, input=user_input)
+        self.flow.write(
+            FLOW_INPUT_PROVENANCE_RECORDED,
+            "input provenance recorded",
+            turn=turn,
+            **input_provenance_fields(user_input, input_source="ai_chat_message"),
+        )
+        write_process_step(
+            flow=self.flow,
+            step="chat.input.record",
+            phase="input",
+            action="recorded chat turn input and provenance",
+            turn=turn,
+        )
         method = self._load_method_for_turn(turn=turn)
 
         root = self.service.create_root_job(wish=user_input, target=user_input, actor_id="human")
         job_id = root["job_id"]
         self.last_job_id = job_id
         self.flow.write(FLOW_ROOT_JOB_CREATED, "root job created", turn=turn, job_id=job_id)
+        write_job_tree_mirror(
+            flow=self.flow,
+            service=self.service,
+            turn=turn,
+            job_id=job_id,
+            action="root_created",
+        )
+        write_process_step(
+            flow=self.flow,
+            step="chat.job.root_create",
+            phase="job",
+            action="created root job for chat turn",
+            turn=turn,
+            job_id=job_id,
+        )
 
         self.service.mark_ready(job_id, actor_id="system")
         self.flow.write(FLOW_JOB_READY, "job marked ready", turn=turn, job_id=job_id)
+        write_job_tree_mirror(
+            flow=self.flow,
+            service=self.service,
+            turn=turn,
+            job_id=job_id,
+            action="job_ready",
+        )
+        write_process_step(
+            flow=self.flow,
+            step="chat.job.ready",
+            phase="job",
+            action="marked chat turn job ready",
+            turn=turn,
+            job_id=job_id,
+        )
 
         self.service.start_job(job_id, actor_id="system")
         self.flow.write(FLOW_JOB_RUNNING, "job running", turn=turn, job_id=job_id)
+        write_job_tree_mirror(
+            flow=self.flow,
+            service=self.service,
+            turn=turn,
+            job_id=job_id,
+            action="job_running",
+        )
+        write_process_step(
+            flow=self.flow,
+            step="chat.job.run",
+            phase="job",
+            action="started chat turn job execution",
+            turn=turn,
+            job_id=job_id,
+        )
 
         self.history.append({"role": "user", "content": user_input})
         client = self.client or ChatClient(load_ai_config(self.config_path))
@@ -319,9 +726,35 @@ class AiSandboxChatSession:
             method_checksum=method.checksum,
             message_count=str(len(messages)),
         )
+        write_process_step(
+            flow=self.flow,
+            step="chat.method.inject",
+            phase="method",
+            action="assembled chat provider messages with method context and history",
+            turn=turn,
+            job_id=job_id,
+            message_count=str(len(messages)),
+        )
         self.flow.write(
             FLOW_AI_REQUEST_STARTED,
             "AI request started",
+            turn=turn,
+            job_id=job_id,
+            message_count=str(len(messages)),
+        )
+        write_provider_messages(
+            flow=self.flow,
+            call_kind="candidate_generation",
+            messages=messages,
+            turn=turn,
+            job_id=job_id,
+        )
+        write_process_step(
+            flow=self.flow,
+            step="chat.provider.request",
+            phase="provider",
+            action="sent chat turn messages to AI provider",
+            status="started",
             turn=turn,
             job_id=job_id,
             message_count=str(len(messages)),
@@ -335,6 +768,14 @@ class AiSandboxChatSession:
             job_id=job_id,
             response=response.content,
         )
+        write_process_step(
+            flow=self.flow,
+            step="chat.provider.response",
+            phase="provider",
+            action="received chat turn provider response",
+            turn=turn,
+            job_id=job_id,
+        )
 
         candidate = self.service.submit_candidate(
             job_id,
@@ -344,6 +785,23 @@ class AiSandboxChatSession:
         self.flow.write(
             FLOW_CANDIDATE_SUBMITTED,
             "candidate submitted",
+            turn=turn,
+            job_id=job_id,
+            appearance_id=candidate["appearance_id"],
+        )
+        write_job_tree_mirror(
+            flow=self.flow,
+            service=self.service,
+            turn=turn,
+            job_id=job_id,
+            action="candidate_attached",
+            appearance_id=candidate["appearance_id"],
+        )
+        write_process_step(
+            flow=self.flow,
+            step="chat.candidate.submit",
+            phase="candidate",
+            action="stored chat response as candidate result",
             turn=turn,
             job_id=job_id,
             appearance_id=candidate["appearance_id"],
@@ -369,12 +827,37 @@ class AiSandboxChatSession:
             job_id=job_id,
             appearance_id=evidence["appearance_id"],
         )
+        write_job_tree_mirror(
+            flow=self.flow,
+            service=self.service,
+            turn=turn,
+            job_id=job_id,
+            action="evidence_attached",
+            appearance_id=evidence["appearance_id"],
+        )
+        write_process_step(
+            flow=self.flow,
+            step="chat.evidence.submit",
+            phase="evidence",
+            action="stored chat method self-review as evidence",
+            turn=turn,
+            job_id=job_id,
+            appearance_id=evidence["appearance_id"],
+        )
 
         self.flow.write(
             FLOW_RESULT_OUTPUT_RECORDED,
             "result output recorded",
             turn=turn,
             result=response.content,
+        )
+        write_process_step(
+            flow=self.flow,
+            step="chat.output.record",
+            phase="output",
+            action="recorded chat result output",
+            turn=turn,
+            job_id=job_id,
         )
 
         judgment = self._request_feedback_judgment(
@@ -405,6 +888,25 @@ class AiSandboxChatSession:
                     judgment["required_context_gaps"], ensure_ascii=False, sort_keys=True
                 ),
             )
+            write_job_tree_mirror(
+                flow=self.flow,
+                service=self.service,
+                turn=turn,
+                job_id=feedback_job["job_id"],
+                action="feedback_child_created",
+                child_job_id=feedback_job["job_id"],
+                feedback_job_kind=judgment["feedback_job_kind"],
+            )
+            write_process_step(
+                flow=self.flow,
+                step="chat.feedback_job.create",
+                phase="feedback",
+                action="created feedback child job from AI judgment",
+                turn=turn,
+                job_id=job_id,
+                feedback_job_id=feedback_job["job_id"],
+                feedback_job_kind=judgment["feedback_job_kind"],
+            )
         else:
             self.flow.write(
                 FLOW_FEEDBACK_JOB_SKIPPED,
@@ -414,12 +916,54 @@ class AiSandboxChatSession:
                 feedback_job_kind=judgment["feedback_job_kind"],
                 reason=judgment["reason"],
             )
+            write_job_tree_mirror(
+                flow=self.flow,
+                service=self.service,
+                turn=turn,
+                job_id=job_id,
+                action="feedback_child_skipped",
+                feedback_job_kind=judgment["feedback_job_kind"],
+                reason=judgment["reason"],
+            )
+            write_process_step(
+                flow=self.flow,
+                step="chat.feedback_job.skip",
+                phase="feedback",
+                action="skipped feedback child job from AI judgment",
+                turn=turn,
+                job_id=job_id,
+                feedback_job_kind=judgment["feedback_job_kind"],
+                reason=judgment["reason"],
+            )
 
         self.flow.write(FLOW_CHAT_TURN_FINISHED, "chat turn finished", turn=turn, job_id=job_id)
+        write_process_step(
+            flow=self.flow,
+            step="chat.turn.finish",
+            phase="chat",
+            action="finished chat turn",
+            turn=turn,
+            job_id=job_id,
+        )
         return response.content
 
     def finish(self) -> None:
         self.flow.write(FLOW_CHAT_SESSION_FINISHED, "chat session finished")
+        write_process_step(
+            flow=self.flow,
+            step="chat.session.finish",
+            phase="chat",
+            action="finished interactive chat session",
+        )
+        write_process_step(
+            flow=self.flow,
+            step="chat.sandbox.destroy",
+            phase="cleanup",
+            action="destroyed interactive chat sandbox",
+            sandbox_path=str(self.sandbox_path),
+            log_path=str(self.diagnostic_log_path),
+            readable_log_path=str(self.readable_log_path),
+        )
         self.flow.write(
             FLOW_SANDBOX_DESTROYED,
             "sandbox destroyed",
@@ -431,6 +975,14 @@ class AiSandboxChatSession:
         self.service = None
 
     def fail(self, exc: Exception) -> None:
+        write_process_step(
+            flow=self.flow,
+            step="chat.session.fail",
+            phase="error",
+            action="chat session failed before normal completion",
+            status="failed",
+            process_detail=str(exc),
+        )
         self.flow.write(FLOW_RUN_FAILED, "chat session failed", error=str(exc))
         self.finish()
 
@@ -462,6 +1014,15 @@ class AiSandboxChatSession:
             turn=turn,
             **method.log_fields(),
         )
+        write_process_step(
+            flow=self.flow,
+            step="chat.method.load",
+            phase="method",
+            action="loaded method source for chat turn",
+            turn=turn,
+            method_path=str(method.path),
+            method_checksum=method.checksum,
+        )
         return method
 
     def _request_method_self_review(
@@ -481,12 +1042,28 @@ class AiSandboxChatSession:
             "method_checksum": method.checksum,
         }
         self.flow.write(FLOW_METHOD_SELF_REVIEW_REQUESTED, "method self-review requested", **data)
+        write_process_step(
+            flow=self.flow,
+            step="chat.method.self_review.request",
+            phase="method",
+            action="requested chat method self-review for candidate",
+            status="started",
+            **data,
+        )
+        review_messages = build_method_review_messages(
+            method=method,
+            user_input=user_input,
+            assistant_response=assistant_response,
+        )
+        write_provider_messages(
+            flow=self.flow,
+            call_kind="method_self_review",
+            messages=review_messages,
+            turn=turn,
+            job_id=job_id,
+        )
         review = client.complete_messages(
-            build_method_review_messages(
-                method=method,
-                user_input=user_input,
-                assistant_response=assistant_response,
-            )
+            review_messages
         )
         received = {**data, "review": review.content}
         self.flow.write(FLOW_METHOD_SELF_REVIEW_RECEIVED, "method self-review received", **received)
@@ -494,6 +1071,13 @@ class AiSandboxChatSession:
             FLOW_METHOD_UPDATE_CANDIDATE_RECORDED,
             "method update candidate recorded",
             **received,
+        )
+        write_process_step(
+            flow=self.flow,
+            step="chat.method.self_review.receive",
+            phase="method",
+            action="recorded chat method self-review and update candidates",
+            **data,
         )
         return review.content
 
@@ -527,12 +1111,30 @@ class AiSandboxChatSession:
             job_id=job_id,
             message_count=str(len(self.history)),
         )
+        feedback_messages = [
+            {"role": "system", "content": system_prompt},
+            *self.history,
+            {"role": "user", "content": json.dumps(request_payload, ensure_ascii=False, sort_keys=True)},
+        ]
+        write_provider_messages(
+            flow=self.flow,
+            call_kind="feedback_judgment",
+            messages=feedback_messages,
+            turn=turn,
+            job_id=job_id,
+        )
+        write_process_step(
+            flow=self.flow,
+            step="chat.feedback_judgment.request",
+            phase="feedback",
+            action="requested AI judgment about feedback child job",
+            status="started",
+            turn=turn,
+            job_id=job_id,
+            message_count=str(len(self.history)),
+        )
         judgment_response = client.complete_messages(
-            [
-                {"role": "system", "content": system_prompt},
-                *self.history,
-                {"role": "user", "content": json.dumps(request_payload, ensure_ascii=False, sort_keys=True)},
-            ]
+            feedback_messages
         )
         self.flow.write(
             FLOW_FEEDBACK_JUDGMENT_RECEIVED,
@@ -540,6 +1142,14 @@ class AiSandboxChatSession:
             turn=turn,
             job_id=job_id,
             judgment=judgment_response.content,
+        )
+        write_process_step(
+            flow=self.flow,
+            step="chat.feedback_judgment.receive",
+            phase="feedback",
+            action="received AI judgment about feedback child job",
+            turn=turn,
+            job_id=job_id,
         )
         return self._parse_feedback_judgment(judgment_response.content)
 

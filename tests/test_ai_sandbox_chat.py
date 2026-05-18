@@ -13,7 +13,12 @@ from jingu.ai.client import ChatResponse
 from jingu.ai.config import load_ai_config
 from jingu.cli import main
 from jingu.runtime.errors import JinguRuntimeError
-from jingu.sandbox.flow import FlowWriter, format_readable_event, tail_flow_events
+from jingu.sandbox.flow import (
+    FlowWriter,
+    format_readable_event,
+    input_provenance_fields,
+    tail_flow_events,
+)
 from jingu.sandbox.method import load_method_context
 from jingu.sandbox.paths import latest_readable_log_pointer_path
 from jingu.sandbox.runner import AiSandboxChatSession, AiSandboxRunner
@@ -167,9 +172,46 @@ class AiSandboxChatTest(unittest.TestCase):
             self.assertIn("user_input_recorded", event_types)
             self.assertIn("result_output_recorded", event_types)
             self.assertIn("sandbox_destroyed", event_types)
+            self.assertIn("job_tree_management_recorded", event_types)
+            self.assertIn("job_tree_snapshot_recorded", event_types)
+            self.assertIn("process_step_recorded", event_types)
+            self.assertIn("input_provenance_recorded", event_types)
+            self.assertIn("provider_messages_recorded", event_types)
             serialized = "\n".join(json.dumps(record, ensure_ascii=False) for record in records)
             self.assertIn("diagnostic input", serialized)
             self.assertIn("diagnostic answer", serialized)
+            self.assertIn("candidate_attached", serialized)
+            self.assertIn("tree_snapshot", serialized)
+            provenance = next(
+                record for record in records if record["event_type"] == "input_provenance_recorded"
+            )
+            self.assertEqual(provenance["data"]["input_source"], "ai_run_message")
+            self.assertEqual(provenance["data"]["input_character_count"], str(len("diagnostic input")))
+            self.assertEqual(provenance["data"]["input_line_count"], "1")
+            self.assertEqual(provenance["data"]["input_has_markdown_heading"], "false")
+            self.assertEqual(provenance["data"]["input_has_fenced_block"], "false")
+            self.assertIn("input_sha256", provenance["data"])
+            process_steps = [
+                record["data"]["process_step"]
+                for record in records
+                if record["event_type"] == "process_step_recorded"
+            ]
+            self.assertIn("input.record", process_steps)
+            self.assertIn("method.load", process_steps)
+            self.assertIn("provider.request", process_steps)
+            self.assertIn("candidate.submit", process_steps)
+            self.assertIn("evidence.submit", process_steps)
+            self.assertIn("output.record", process_steps)
+            provider_messages = [
+                record for record in records if record["event_type"] == "provider_messages_recorded"
+            ]
+            self.assertEqual(
+                [record["data"]["provider_call_kind"] for record in provider_messages],
+                ["candidate_generation", "method_self_review"],
+            )
+            self.assertIn("system,user", provider_messages[0]["data"]["provider_message_roles"])
+            self.assertIn("Test Method", provider_messages[0]["data"]["provider_messages"])
+            self.assertIn("diagnostic input", provider_messages[0]["data"]["provider_messages"])
             self.assertIn("method_context_loaded", event_types)
             self.assertIn("method_context_injected", event_types)
             self.assertIn("method_self_review_received", event_types)
@@ -185,7 +227,44 @@ class AiSandboxChatTest(unittest.TestCase):
             self.assertIn("Test Method", readable_text)
             self.assertIn("输入内容（input）", readable_text)
             self.assertIn("方法全文（method_content）", readable_text)
+            self.assertIn("业树快照（tree_snapshot）", readable_text)
+            self.assertIn("候选结果已挂载（candidate_attached）", readable_text)
+            self.assertIn("运行步骤已记录（process_step_recorded）", readable_text)
+            self.assertIn("输入来源已记录（input_provenance_recorded）", readable_text)
+            self.assertIn("输入来源（input_source）: ai_run_message", readable_text)
+            self.assertIn("输入 SHA-256（input_sha256）", readable_text)
+            self.assertIn("Provider 请求消息已记录（provider_messages_recorded）", readable_text)
+            self.assertIn("Provider 请求消息（provider_messages）", readable_text)
             self.assertTrue(latest_readable_log_pointer_path(log_dir).exists())
+
+    def test_runner_preserves_existing_saved_logs_in_log_dir(self) -> None:
+        with TemporaryDirectory() as tmp:
+            sandbox = Path(tmp) / "sandbox"
+            log_dir = Path(tmp) / "logs"
+            method_path = write_method_file(Path(tmp))
+            old_log = log_dir / "ai-run-existing.jsonl"
+            old_readable = log_dir / "ai-run-existing.md"
+            log_dir.mkdir()
+            old_log.write_text("old-jsonl\n", encoding="utf-8")
+            old_readable.write_text("old-readable\n", encoding="utf-8")
+
+            AiSandboxRunner(
+                sandbox_path=sandbox,
+                log_dir=log_dir,
+                method_path=method_path,
+                client=FakeChatClient("first answer"),
+            ).run("first input")
+            AiSandboxRunner(
+                sandbox_path=sandbox,
+                log_dir=log_dir,
+                method_path=method_path,
+                client=FakeChatClient("second answer"),
+            ).run("second input")
+
+            self.assertEqual(old_log.read_text(encoding="utf-8"), "old-jsonl\n")
+            self.assertEqual(old_readable.read_text(encoding="utf-8"), "old-readable\n")
+            self.assertGreaterEqual(len(list(log_dir.glob("ai-run-*.jsonl"))), 3)
+            self.assertGreaterEqual(len(list(log_dir.glob("ai-run-*.md"))), 3)
 
     def test_runner_fails_before_provider_when_method_is_missing(self) -> None:
         with TemporaryDirectory() as tmp:
@@ -247,6 +326,18 @@ class AiSandboxChatTest(unittest.TestCase):
             events = list(tail_flow_events(sandbox, wait_seconds=0.1))
 
             self.assertEqual([event["event_type"] for event in events], ["sandbox_created", "run_finished"])
+
+    def test_input_provenance_flags_embedded_markdown_without_domain_assumptions(self) -> None:
+        text = "# 标题\n\n正文\n```text\n片段\n```"
+
+        fields = input_provenance_fields(text, input_source="manual-test")
+
+        self.assertEqual(fields["input_source"], "manual-test")
+        self.assertEqual(fields["input_character_count"], str(len(text)))
+        self.assertEqual(fields["input_line_count"], "6")
+        self.assertEqual(fields["input_has_markdown_heading"], "true")
+        self.assertEqual(fields["input_has_fenced_block"], "true")
+        self.assertEqual(len(fields["input_sha256"]), 64)
 
     def test_ai_run_cli_prints_only_answer(self) -> None:
         class FakeRunner:
@@ -348,6 +439,7 @@ class AiSandboxChatTest(unittest.TestCase):
             ]
             event_types = [record["event_type"] for record in records]
             self.assertEqual(event_types.count("user_input_recorded"), 2)
+            self.assertEqual(event_types.count("input_provenance_recorded"), 2)
             self.assertEqual(event_types.count("method_context_loaded"), 2)
             self.assertEqual(event_types.count("method_context_injected"), 2)
             self.assertEqual(event_types.count("method_self_review_requested"), 2)
@@ -360,11 +452,34 @@ class AiSandboxChatTest(unittest.TestCase):
             self.assertEqual(event_types.count("feedback_judgment_received"), 2)
             self.assertEqual(event_types.count("feedback_job_created"), 1)
             self.assertEqual(event_types.count("feedback_job_skipped"), 1)
+            self.assertEqual(event_types.count("provider_messages_recorded"), 6)
+            self.assertGreaterEqual(event_types.count("process_step_recorded"), 20)
+            self.assertGreaterEqual(event_types.count("job_tree_management_recorded"), 12)
+            self.assertGreaterEqual(event_types.count("job_tree_snapshot_recorded"), 12)
             self.assertNotIn("human_verdict_requested", event_types)
             self.assertNotIn("human_verdict_recorded", event_types)
             self.assertNotIn("job_accepted", event_types)
             self.assertNotIn("job_rejected", event_types)
             self.assertIn("chat_session_finished", event_types)
+            tree_actions = [
+                record["data"]["job_tree_action"]
+                for record in records
+                if record["event_type"] == "job_tree_management_recorded"
+            ]
+            self.assertIn("feedback_child_created", tree_actions)
+            self.assertIn("feedback_child_skipped", tree_actions)
+            tree_snapshots = [
+                json.loads(record["data"]["tree_snapshot"])
+                for record in records
+                if record["event_type"] == "job_tree_snapshot_recorded"
+            ]
+            self.assertTrue(
+                any(
+                    link["child_job_id"] == feedback_job_id
+                    for snapshot in tree_snapshots
+                    for link in snapshot["links"]
+                )
+            )
 
     def test_launcher_dry_run_prints_method_source(self) -> None:
         completed = subprocess.run(
@@ -407,6 +522,23 @@ class AiSandboxChatTest(unittest.TestCase):
         self.assertIn("```text", rendered)
         self.assertIn("line 1", rendered)
         self.assertIn("- 方法名称（method_name）: test-method", rendered)
+
+    def test_readable_event_translates_job_tree_action(self) -> None:
+        rendered = format_readable_event(
+            {
+                "timestamp": "2026-05-17T10:00:00+00:00",
+                "event_type": "job_tree_management_recorded",
+                "message": "job tree management recorded",
+                "data": {
+                    "job_tree_action": "feedback_child_created",
+                    "child_job_id": "job_child",
+                },
+            }
+        )
+
+        self.assertIn("业树管理已记录（job_tree_management_recorded）", rendered)
+        self.assertIn("反馈子业已创建（feedback_child_created）", rendered)
+        self.assertIn("子业编号（child_job_id）: job_child", rendered)
 
     def test_readable_event_warns_about_question_mark_encoding_damage(self) -> None:
         rendered = format_readable_event(

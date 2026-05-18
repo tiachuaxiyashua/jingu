@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+import hashlib
 import time
 import uuid
 from dataclasses import dataclass
@@ -23,7 +24,12 @@ FLOW_METHOD_CONTEXT_INJECTED = "method_context_injected"
 FLOW_ROOT_JOB_CREATED = "root_job_created"
 FLOW_JOB_READY = "job_ready"
 FLOW_JOB_RUNNING = "job_running"
+FLOW_JOB_TREE_MANAGEMENT_RECORDED = "job_tree_management_recorded"
+FLOW_JOB_TREE_SNAPSHOT_RECORDED = "job_tree_snapshot_recorded"
+FLOW_PROCESS_STEP_RECORDED = "process_step_recorded"
 FLOW_USER_INPUT_RECORDED = "user_input_recorded"
+FLOW_INPUT_PROVENANCE_RECORDED = "input_provenance_recorded"
+FLOW_PROVIDER_MESSAGES_RECORDED = "provider_messages_recorded"
 FLOW_AI_REQUEST_STARTED = "ai_request_started"
 FLOW_AI_RESPONSE_RECEIVED = "ai_response_received"
 FLOW_CANDIDATE_SUBMITTED = "candidate_submitted"
@@ -44,6 +50,8 @@ FLOW_SANDBOX_DESTROYED = "sandbox_destroyed"
 
 TERMINAL_EVENTS = {FLOW_RUN_FINISHED, FLOW_CHAT_SESSION_FINISHED, FLOW_SANDBOX_DESTROYED}
 SUSPICIOUS_QUESTION_MARKS = re.compile(r"\?{4,}")
+MARKDOWN_HEADING = re.compile(r"(?m)^#{1,6}\s+\S")
+FENCED_BLOCK = re.compile(r"(?m)^```")
 
 EVENT_LABELS = {
     FLOW_SANDBOX_CREATED: "沙盒已创建",
@@ -55,7 +63,12 @@ EVENT_LABELS = {
     FLOW_ROOT_JOB_CREATED: "根业已创建",
     FLOW_JOB_READY: "业已就绪",
     FLOW_JOB_RUNNING: "业运行中",
+    FLOW_JOB_TREE_MANAGEMENT_RECORDED: "业树管理已记录",
+    FLOW_JOB_TREE_SNAPSHOT_RECORDED: "业树快照已记录",
+    FLOW_PROCESS_STEP_RECORDED: "运行步骤已记录",
     FLOW_USER_INPUT_RECORDED: "用户输入已记录",
+    FLOW_INPUT_PROVENANCE_RECORDED: "输入来源已记录",
+    FLOW_PROVIDER_MESSAGES_RECORDED: "Provider 请求消息已记录",
     FLOW_AI_REQUEST_STARTED: "AI 请求已开始",
     FLOW_AI_RESPONSE_RECEIVED: "AI 响应已收到",
     FLOW_CANDIDATE_SUBMITTED: "候选结果已提交",
@@ -82,8 +95,18 @@ FIELD_LABELS = {
     "feedback_job_kind": "反馈业类型",
     "feedback_job_summary": "反馈业摘要",
     "feedback_job_target": "反馈业目标",
+    "child_job_id": "子业编号",
     "input": "输入内容",
+    "input_character_count": "输入字符数",
+    "input_has_fenced_block": "输入含代码块",
+    "input_has_markdown_heading": "输入含 Markdown 标题",
+    "input_line_count": "输入行数",
+    "input_sha256": "输入 SHA-256",
+    "input_source": "输入来源",
     "job_id": "业编号",
+    "job_state": "业状态",
+    "job_target": "业目标",
+    "job_tree_action": "业树动作",
     "judgment": "判断结果",
     "log_path": "JSONL 日志路径",
     "message_count": "消息数量",
@@ -92,14 +115,36 @@ FIELD_LABELS = {
     "method_name": "方法名称",
     "method_path": "方法路径",
     "method_size": "方法大小",
+    "parent_job_id": "父业编号",
+    "process_action": "运行动作",
+    "process_detail": "运行细节",
+    "process_phase": "运行阶段",
+    "process_status": "运行状态",
+    "process_step": "运行步骤",
+    "provider_call_kind": "Provider 调用类型",
+    "provider_messages": "Provider 请求消息",
+    "provider_message_count": "Provider 消息数量",
+    "provider_message_roles": "Provider 消息角色",
     "readable_log_path": "可读日志路径",
     "reason": "原因",
     "required_context_gaps": "缺失上下文",
     "response": "AI 响应",
     "result": "结果输出",
     "review": "方法自验",
+    "root_job_id": "根业编号",
     "sandbox_path": "沙盒路径",
+    "tree_snapshot": "业树快照",
     "turn": "轮次",
+}
+
+JOB_TREE_ACTION_LABELS = {
+    "candidate_attached": "候选结果已挂载",
+    "evidence_attached": "证据已挂载",
+    "feedback_child_created": "反馈子业已创建",
+    "feedback_child_skipped": "反馈子业已跳过",
+    "job_ready": "业已就绪",
+    "job_running": "业运行中",
+    "root_created": "根业已创建",
 }
 
 
@@ -209,6 +254,7 @@ def format_readable_event(event: dict[str, object]) -> str:
         lines.append("")
         for key in sorted(data):
             value = "" if data[key] is None else str(data[key])
+            value = readable_field_value(str(key), value)
             label = readable_field_label(str(key))
             if _should_render_as_block(key, value):
                 lines.append(f"### {label}")
@@ -235,6 +281,25 @@ def readable_message(event_type: str, fallback: str) -> str:
 def readable_field_label(key: str) -> str:
     label = FIELD_LABELS.get(key, key)
     return f"{label}（{key}）"
+
+
+def readable_field_value(key: str, value: str) -> str:
+    if key == "job_tree_action":
+        label = JOB_TREE_ACTION_LABELS.get(value)
+        if label:
+            return f"{label}（{value}）"
+    return value
+
+
+def input_provenance_fields(input_text: str, *, input_source: str) -> dict[str, str]:
+    return {
+        "input_source": input_source,
+        "input_character_count": str(len(input_text)),
+        "input_line_count": str(len(input_text.splitlines()) or (1 if input_text else 0)),
+        "input_sha256": hashlib.sha256(input_text.encode("utf-8")).hexdigest(),
+        "input_has_markdown_heading": str(bool(MARKDOWN_HEADING.search(input_text))).lower(),
+        "input_has_fenced_block": str(bool(FENCED_BLOCK.search(input_text))).lower(),
+    }
 
 
 def has_suspicious_question_marks(value: str) -> bool:
@@ -265,6 +330,9 @@ def _should_render_as_block(key: str, value: str) -> bool:
         "required_context_gaps",
         "feedback_job_target",
         "feedback_job_summary",
+        "job_target",
+        "tree_snapshot",
+        "provider_messages",
     }
 
 
