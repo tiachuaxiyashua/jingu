@@ -20,6 +20,8 @@ FLOW_RUNTIME_INITIALIZED = "runtime_initialized"
 FLOW_CHAT_SESSION_STARTED = "chat_session_started"
 FLOW_METHOD_SOURCE_RESOLVED = "method_source_resolved"
 FLOW_METHOD_CONTEXT_LOADED = "method_context_loaded"
+FLOW_METHOD_LAW_FRAGMENT_LOADED = "method_law_fragment_loaded"
+FLOW_METHOD_LAW_FRAGMENT_BOUND = "method_law_fragment_bound"
 FLOW_METHOD_CONTEXT_INJECTED = "method_context_injected"
 FLOW_ROOT_JOB_CREATED = "root_job_created"
 FLOW_JOB_READY = "job_ready"
@@ -30,6 +32,8 @@ FLOW_PROCESS_STEP_RECORDED = "process_step_recorded"
 FLOW_USER_INPUT_RECORDED = "user_input_recorded"
 FLOW_INPUT_PROVENANCE_RECORDED = "input_provenance_recorded"
 FLOW_PROVIDER_MESSAGES_RECORDED = "provider_messages_recorded"
+FLOW_PROVIDER_STREAM_DELTA_RECEIVED = "provider_stream_delta_received"
+FLOW_PROVIDER_STREAM_FINISHED = "provider_stream_finished"
 FLOW_AI_REQUEST_STARTED = "ai_request_started"
 FLOW_AI_RESPONSE_RECEIVED = "ai_response_received"
 FLOW_CANDIDATE_SUBMITTED = "candidate_submitted"
@@ -59,6 +63,8 @@ EVENT_LABELS = {
     FLOW_CHAT_SESSION_STARTED: "对话会话已开始",
     FLOW_METHOD_SOURCE_RESOLVED: "方法来源已解析",
     FLOW_METHOD_CONTEXT_LOADED: "方法上下文已加载",
+    FLOW_METHOD_LAW_FRAGMENT_LOADED: "法片段已加载",
+    FLOW_METHOD_LAW_FRAGMENT_BOUND: "法片段已绑定",
     FLOW_METHOD_CONTEXT_INJECTED: "方法上下文已注入",
     FLOW_ROOT_JOB_CREATED: "根业已创建",
     FLOW_JOB_READY: "业已就绪",
@@ -69,6 +75,8 @@ EVENT_LABELS = {
     FLOW_USER_INPUT_RECORDED: "用户输入已记录",
     FLOW_INPUT_PROVENANCE_RECORDED: "输入来源已记录",
     FLOW_PROVIDER_MESSAGES_RECORDED: "Provider 请求消息已记录",
+    FLOW_PROVIDER_STREAM_DELTA_RECEIVED: "Provider 流式增量已收到",
+    FLOW_PROVIDER_STREAM_FINISHED: "Provider 流式输出已结束",
     FLOW_AI_REQUEST_STARTED: "AI 请求已开始",
     FLOW_AI_RESPONSE_RECEIVED: "AI 响应已收到",
     FLOW_CANDIDATE_SUBMITTED: "候选结果已提交",
@@ -111,7 +119,16 @@ FIELD_LABELS = {
     "log_path": "JSONL 日志路径",
     "message_count": "消息数量",
     "method_checksum": "方法校验码",
-    "method_content": "方法全文",
+    "method_law_appearance_refs": "法片段相引用",
+    "method_law_appearance_id": "法片段相编号",
+    "method_law_checksum": "法片段校验码",
+    "method_law_content": "法片段内容",
+    "method_law_fragment_count": "法片段数量",
+    "method_law_id": "法片段编号",
+    "method_law_level": "法片段标题层级",
+    "method_law_manifest": "法片段清单",
+    "method_law_order": "法片段顺序",
+    "method_law_title": "法片段标题",
     "method_name": "方法名称",
     "method_path": "方法路径",
     "method_size": "方法大小",
@@ -122,9 +139,17 @@ FIELD_LABELS = {
     "process_status": "运行状态",
     "process_step": "运行步骤",
     "provider_call_kind": "Provider 调用类型",
+    "provider_content_character_count": "Provider 正文字符数",
+    "provider_delta_character_count": "Provider 增量字符数",
+    "provider_delta_index": "Provider 增量序号",
+    "provider_delta_kind": "Provider 增量类型",
+    "provider_delta_text": "Provider 增量内容",
+    "provider_finish_reason": "Provider 结束原因",
     "provider_messages": "Provider 请求消息",
     "provider_message_count": "Provider 消息数量",
     "provider_message_roles": "Provider 消息角色",
+    "provider_reasoning_character_count": "Provider 思考字符数",
+    "provider_stream_chunk_count": "Provider 流式块数量",
     "readable_log_path": "可读日志路径",
     "reason": "原因",
     "required_context_gaps": "缺失上下文",
@@ -325,7 +350,10 @@ def _should_render_as_block(key: str, value: str) -> bool:
         "response",
         "result",
         "review",
-        "method_content",
+        "method_law_content",
+        "method_law_manifest",
+        "method_law_appearance_refs",
+        "provider_delta_text",
         "judgment",
         "required_context_gaps",
         "feedback_job_target",

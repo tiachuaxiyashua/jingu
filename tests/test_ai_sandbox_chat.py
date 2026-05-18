@@ -9,8 +9,8 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
-from jingu.ai.client import ChatResponse
-from jingu.ai.config import load_ai_config
+from jingu.ai.client import ChatClient, ChatResponse
+from jingu.ai.config import AiConfig, load_ai_config
 from jingu.cli import main
 from jingu.runtime.errors import JinguRuntimeError
 from jingu.sandbox.flow import (
@@ -53,7 +53,7 @@ class FakeChatClient:
         self.messages.append(message)
         return ChatResponse(content=self.content, raw={"ok": True})
 
-    def complete_messages(self, messages: list[dict[str, str]]) -> ChatResponse:
+    def complete_messages(self, messages: list[dict[str, str]], **kwargs) -> ChatResponse:
         self.message_batches.append(messages)
         self.messages.append(messages[-1]["content"])
         if self.responses:
@@ -90,6 +90,8 @@ class AiSandboxChatTest(unittest.TestCase):
                         "DEEPSEEK_BASE_URL=local-provider",
                         "DEEPSEEK_MODEL=local-model",
                         "DEEPSEEK_TIMEOUT_SECONDS=12",
+                        "DEEPSEEK_STREAM_IDLE_TIMEOUT_SECONDS=34",
+                        'DEEPSEEK_EXTRA_BODY_JSON={"custom_provider_option":"enabled"}',
                     ]
                 ),
                 encoding="utf-8",
@@ -101,6 +103,84 @@ class AiSandboxChatTest(unittest.TestCase):
             self.assertEqual(config.base_url, "local-provider")
             self.assertEqual(config.model, "local-model")
             self.assertEqual(config.timeout_seconds, 12.0)
+            self.assertTrue(config.stream)
+            self.assertEqual(config.stream_idle_timeout_seconds, 34.0)
+            self.assertEqual(config.extra_body, {"custom_provider_option": "enabled"})
+
+    def test_ai_config_rejects_extra_body_runtime_overrides(self) -> None:
+        with TemporaryDirectory() as tmp:
+            path = Path(tmp) / ".env.deepseek.local"
+            path.write_text(
+                "\n".join(
+                    [
+                        "DEEPSEEK_API_KEY=local-key",
+                        "DEEPSEEK_BASE_URL=local-provider",
+                        "DEEPSEEK_MODEL=local-model",
+                        'DEEPSEEK_EXTRA_BODY_JSON={"stream":false}',
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            with self.assertRaises(JinguRuntimeError):
+                load_ai_config(path)
+
+    def test_chat_client_streams_reasoning_and_content_deltas(self) -> None:
+        class FakeStreamingResponse:
+            def __init__(self) -> None:
+                self.lines = iter(
+                    [
+                        b'data: {"choices":[{"delta":{"reasoning_content":"think "}}]}\n',
+                        b'data: {"choices":[{"delta":{"content":"answer"}}]}\n',
+                        b'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n',
+                        b"data: [DONE]\n",
+                        b"",
+                    ]
+                )
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def readline(self):
+                return next(self.lines)
+
+        captured = {}
+
+        def fake_urlopen(request, timeout):
+            captured["body"] = json.loads(request.data.decode("utf-8"))
+            captured["timeout"] = timeout
+            return FakeStreamingResponse()
+
+        config = AiConfig(
+            api_key="local-key",
+            base_url="https:" + "//provider.example",
+            model="local-model",
+            timeout_seconds=12,
+            stream=True,
+            stream_idle_timeout_seconds=34,
+            extra_body={"custom_provider_option": "enabled"},
+        )
+        events = []
+        with patch("urllib.request.urlopen", fake_urlopen):
+            response = ChatClient(config).complete_messages(
+                [{"role": "user", "content": "hello"}],
+                on_stream_event=events.append,
+            )
+
+        self.assertEqual(response.content, "answer")
+        self.assertEqual(response.reasoning_content, "think ")
+        self.assertEqual(captured["timeout"], 34)
+        self.assertTrue(captured["body"]["stream"])
+        self.assertEqual(captured["body"]["custom_provider_option"], "enabled")
+        self.assertEqual(
+            [event["event"] for event in events],
+            ["stream_delta", "stream_delta", "stream_finished"],
+        )
+        self.assertEqual(events[0]["provider_delta_kind"], "reasoning")
+        self.assertEqual(events[1]["provider_delta_kind"], "content")
 
     def test_missing_ai_config_fails_before_provider_request(self) -> None:
         with TemporaryDirectory() as tmp:
@@ -124,6 +204,8 @@ class AiSandboxChatTest(unittest.TestCase):
             self.assertEqual(method.name, "test-method")
             self.assertEqual(method.path, method_path.resolve())
             self.assertIn("original wish", method.content)
+            self.assertGreaterEqual(len(method.fragments), 1)
+            self.assertIn("Test Method", method.fragments[0].content)
 
     def test_runner_returns_answer_and_deletes_sandbox(self) -> None:
         with TemporaryDirectory() as tmp:
@@ -142,7 +224,13 @@ class AiSandboxChatTest(unittest.TestCase):
             self.assertEqual(answer, "answer only")
             self.assertFalse(sandbox.exists())
             self.assertEqual(client.messages[0], "hello")
-            self.assertIn("Test Method", client.message_batches[0][0]["content"])
+            first_batch = client.message_batches[0]
+            self.assertGreaterEqual(len(first_batch), 3)
+            self.assertIn("Method manifest", first_batch[0]["content"])
+            self.assertIn("Method law id", first_batch[1]["content"])
+            self.assertIn("Method law content", first_batch[1]["content"])
+            self.assertNotIn("Method content:", first_batch[0]["content"])
+            self.assertIn("Test Method", first_batch[0]["content"])
 
     def test_runner_persists_diagnostic_log_with_input_and_output(self) -> None:
         with TemporaryDirectory() as tmp:
@@ -177,6 +265,8 @@ class AiSandboxChatTest(unittest.TestCase):
             self.assertIn("process_step_recorded", event_types)
             self.assertIn("input_provenance_recorded", event_types)
             self.assertIn("provider_messages_recorded", event_types)
+            self.assertIn("method_law_fragment_loaded", event_types)
+            self.assertIn("method_law_fragment_bound", event_types)
             serialized = "\n".join(json.dumps(record, ensure_ascii=False) for record in records)
             self.assertIn("diagnostic input", serialized)
             self.assertIn("diagnostic answer", serialized)
@@ -216,6 +306,8 @@ class AiSandboxChatTest(unittest.TestCase):
             self.assertIn("method_context_injected", event_types)
             self.assertIn("method_self_review_received", event_types)
             self.assertIn("method_update_candidate_recorded", event_types)
+            self.assertIn("method_law_fragment_count", serialized)
+            self.assertIn("method_law_appearance_refs", serialized)
             self.assertIn("Test Method", serialized)
             self.assertNotIn("local-key", serialized)
             self.assertNotIn("Authorization", serialized)
@@ -226,7 +318,9 @@ class AiSandboxChatTest(unittest.TestCase):
             self.assertIn("diagnostic answer", readable_text)
             self.assertIn("Test Method", readable_text)
             self.assertIn("输入内容（input）", readable_text)
-            self.assertIn("方法全文（method_content）", readable_text)
+            self.assertIn("法片段内容（method_law_content）", readable_text)
+            self.assertIn("法片段清单（method_law_manifest）", readable_text)
+            self.assertIn("法片段已绑定（method_law_fragment_bound）", readable_text)
             self.assertIn("业树快照（tree_snapshot）", readable_text)
             self.assertIn("候选结果已挂载（candidate_attached）", readable_text)
             self.assertIn("运行步骤已记录（process_step_recorded）", readable_text)
@@ -422,6 +516,12 @@ class AiSandboxChatTest(unittest.TestCase):
             self.assertIsNotNone(session.service)
             assert feedback_job_id is not None
             assert session.service is not None
+            assert session.last_job_id is not None
+            first_job_events = session.service.list_events(session.last_job_id)
+            self.assertIn(
+                "method_law_bound",
+                [event["event_type"] for event in first_job_events],
+            )
             feedback_job = session.service.get_status(feedback_job_id)
             self.assertEqual(feedback_job["target"], "Clarify the next direction before continuing.")
             second = session.ask("second decision")
@@ -442,6 +542,7 @@ class AiSandboxChatTest(unittest.TestCase):
             self.assertEqual(event_types.count("input_provenance_recorded"), 2)
             self.assertEqual(event_types.count("method_context_loaded"), 2)
             self.assertEqual(event_types.count("method_context_injected"), 2)
+            self.assertEqual(event_types.count("method_law_fragment_bound"), 2)
             self.assertEqual(event_types.count("method_self_review_requested"), 2)
             self.assertEqual(event_types.count("method_self_review_received"), 2)
             self.assertEqual(event_types.count("method_update_candidate_recorded"), 2)
@@ -510,7 +611,7 @@ class AiSandboxChatTest(unittest.TestCase):
             "message": "method context loaded",
             "data": {
                 "method_name": "test-method",
-                "method_content": "line 1\nline 2",
+                "method_law_content": "line 1\nline 2",
                 "result": "x" * 140,
             },
         }
@@ -518,7 +619,7 @@ class AiSandboxChatTest(unittest.TestCase):
         rendered = format_readable_event(event)
 
         self.assertIn("## 2026-05-17T10:00:00+00:00 | 方法上下文已加载（method_context_loaded）", rendered)
-        self.assertIn("### 方法全文（method_content）", rendered)
+        self.assertIn("### 法片段内容（method_law_content）", rendered)
         self.assertIn("```text", rendered)
         self.assertIn("line 1", rendered)
         self.assertIn("- 方法名称（method_name）: test-method", rendered)

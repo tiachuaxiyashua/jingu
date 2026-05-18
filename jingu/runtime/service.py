@@ -8,6 +8,7 @@ from typing import Any
 from jingu.runtime.constants import (
     APPEARANCE_CANDIDATE_RESULT,
     APPEARANCE_EVIDENCE,
+    APPEARANCE_METHOD_LAW_FRAGMENT,
     APPEARANCE_ORIGINAL_WISH,
     APPEARANCE_STATE_ACCEPTED,
     APPEARANCE_STATE_CANDIDATE,
@@ -20,6 +21,7 @@ from jingu.runtime.constants import (
     EVENT_EVIDENCE_SUBMITTED,
     EVENT_JOB_MARKED_READY,
     EVENT_JOB_STARTED,
+    EVENT_METHOD_LAW_BOUND,
     EVENT_ROOT_JOB_CREATED,
     STATE_ACCEPTED,
     STATE_DRAFT,
@@ -146,6 +148,66 @@ class RuntimeService:
             actor_id=actor_id,
             payload={},
         )
+
+    def bind_method_law_fragments(
+        self,
+        job_id: str,
+        *,
+        fragments: list[dict[str, Any]],
+        actor_id: str = "system",
+    ) -> dict[str, Any]:
+        if not fragments:
+            raise ValueError("fragments are required")
+
+        appearance_refs: list[dict[str, Any]] = []
+        with self.repository.transaction() as connection:
+            self.repository.require_job(connection, job_id)
+            for fragment in fragments:
+                content = str(fragment.get("content") or "")
+                if not content.strip():
+                    raise ValueError("method law fragment content is required")
+                appearance_id = new_id("appearance")
+                stored = self.object_store.write_text(appearance_id, content, suffix=".md")
+                metadata = {
+                    key: value
+                    for key, value in fragment.items()
+                    if key != "content" and value is not None
+                }
+                appearance = self.repository.create_appearance(
+                    connection,
+                    appearance_id=appearance_id,
+                    appearance_type=APPEARANCE_METHOD_LAW_FRAGMENT,
+                    state=APPEARANCE_STATE_STABLE,
+                    checksum=stored.checksum,
+                    location=stored.location,
+                    summary=str(fragment.get("method_law_title") or fragment.get("method_law_id") or ""),
+                    source_job_id=job_id,
+                    applicable_scope="method_law_fragment",
+                    metadata=metadata,
+                )
+                appearance_refs.append(
+                    {
+                        "appearance_id": appearance["appearance_id"],
+                        "method_law_id": fragment.get("method_law_id"),
+                        "method_law_title": fragment.get("method_law_title"),
+                        "checksum": appearance["checksum"],
+                    }
+                )
+
+            self.repository.append_event(
+                connection,
+                job_id=job_id,
+                event_type=EVENT_METHOD_LAW_BOUND,
+                actor_id=actor_id,
+                payload={
+                    "method_law_fragment_count": len(appearance_refs),
+                    "method_law_fragment_refs": appearance_refs,
+                },
+            )
+            return {
+                "job": self._hydrate_job(connection, self.repository.require_job(connection, job_id)),
+                "method_law_fragments": appearance_refs,
+            }
 
     def submit_candidate(
         self,

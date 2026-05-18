@@ -31,12 +31,16 @@ from jingu.sandbox.flow import (
     FLOW_JOB_TREE_SNAPSHOT_RECORDED,
     FLOW_METHOD_CONTEXT_INJECTED,
     FLOW_METHOD_CONTEXT_LOADED,
+    FLOW_METHOD_LAW_FRAGMENT_BOUND,
+    FLOW_METHOD_LAW_FRAGMENT_LOADED,
     FLOW_METHOD_SELF_REVIEW_RECEIVED,
     FLOW_METHOD_SELF_REVIEW_REQUESTED,
     FLOW_METHOD_SOURCE_RESOLVED,
     FLOW_METHOD_UPDATE_CANDIDATE_RECORDED,
     FLOW_PROCESS_STEP_RECORDED,
     FLOW_PROVIDER_MESSAGES_RECORDED,
+    FLOW_PROVIDER_STREAM_DELTA_RECEIVED,
+    FLOW_PROVIDER_STREAM_FINISHED,
     FLOW_RESULT_OUTPUT_RECORDED,
     FLOW_RUN_FAILED,
     FLOW_ROOT_JOB_CREATED,
@@ -53,7 +57,7 @@ from jingu.sandbox.flow import (
 from jingu.sandbox.method import (
     MethodContext,
     build_method_review_messages,
-    build_method_system_message,
+    build_method_system_messages,
     load_method_context,
     method_evidence_payload,
 )
@@ -106,6 +110,87 @@ def write_provider_messages(
     if job_id is not None:
         event_data["job_id"] = job_id
     flow.write(FLOW_PROVIDER_MESSAGES_RECORDED, "provider messages recorded", **event_data)
+
+
+def write_method_law_fragment_events(
+    *,
+    flow: FlowWriter,
+    method: MethodContext,
+    turn: str | None = None,
+) -> None:
+    for fragment in method.fragments:
+        data = {
+            "method_name": method.name,
+            "method_checksum": method.checksum,
+            **fragment.log_fields(),
+        }
+        if turn is not None:
+            data["turn"] = turn
+        flow.write(FLOW_METHOD_LAW_FRAGMENT_LOADED, "method law fragment loaded", **data)
+
+
+def bind_method_law_fragments_to_job(
+    *,
+    flow: FlowWriter,
+    service: RuntimeService,
+    method: MethodContext,
+    job_id: str,
+    step: str,
+    turn: str | None = None,
+) -> None:
+    result = service.bind_method_law_fragments(
+        job_id,
+        fragments=[fragment.binding_payload(method=method) for fragment in method.fragments],
+    )
+    refs = result["method_law_fragments"]
+    data = {
+        "job_id": job_id,
+        "method_name": method.name,
+        "method_checksum": method.checksum,
+        "method_law_fragment_count": str(len(refs)),
+        "method_law_appearance_refs": json.dumps(refs, ensure_ascii=False, sort_keys=True, indent=2),
+    }
+    if turn is not None:
+        data["turn"] = turn
+    flow.write(FLOW_METHOD_LAW_FRAGMENT_BOUND, "method law fragments bound", **data)
+    write_process_step(
+        flow=flow,
+        step=step,
+        phase="method",
+        action="bound method-law fragments to current job as appearances",
+        **data,
+    )
+
+
+def complete_with_provider_logging(
+    *,
+    flow: FlowWriter,
+    client: ChatClient,
+    messages: list[dict[str, str]],
+    call_kind: str,
+    turn: str | None = None,
+    job_id: str | None = None,
+):
+    def on_stream_event(event: dict[str, str]) -> None:
+        data = {
+            "provider_call_kind": call_kind,
+            **{key: str(value) for key, value in event.items() if key != "event"},
+        }
+        if turn is not None:
+            data["turn"] = turn
+        if job_id is not None:
+            data["job_id"] = job_id
+        event_kind = event.get("event")
+        if event_kind == "stream_finished":
+            flow.write(FLOW_PROVIDER_STREAM_FINISHED, "provider stream finished", **data)
+            return
+        flow.write(
+            FLOW_PROVIDER_STREAM_DELTA_RECEIVED,
+            "provider stream delta received",
+            **data,
+        )
+
+    return client.complete_messages(messages, on_stream_event=on_stream_event)
 
 
 def write_job_tree_mirror(
@@ -293,6 +378,13 @@ class AiSandboxRunner:
                 action="created root job from user input",
                 job_id=job_id,
             )
+            bind_method_law_fragments_to_job(
+                flow=self.flow,
+                service=service,
+                method=method,
+                job_id=job_id,
+                step="method.law.bind",
+            )
 
             service.mark_ready(job_id, actor_id="system")
             self.flow.write(FLOW_JOB_READY, "job marked ready", job_id=job_id)
@@ -327,7 +419,8 @@ class AiSandboxRunner:
             )
 
             client = self.client or ChatClient(load_ai_config(self.config_path))
-            messages = [build_method_system_message(method), {"role": "user", "content": message}]
+            method_messages = build_method_system_messages(method)
+            messages = [*method_messages, {"role": "user", "content": message}]
             self.flow.write(
                 FLOW_METHOD_CONTEXT_INJECTED,
                 "method context injected",
@@ -335,6 +428,7 @@ class AiSandboxRunner:
                 method_name=method.name,
                 method_path=str(method.path),
                 method_checksum=method.checksum,
+                method_law_fragment_count=str(len(method.fragments)),
                 message_count=str(len(messages)),
             )
             write_process_step(
@@ -344,6 +438,7 @@ class AiSandboxRunner:
                 action="assembled provider messages with method context",
                 job_id=job_id,
                 message_count=str(len(messages)),
+                method_law_fragment_count=str(len(method.fragments)),
             )
             self.flow.write(FLOW_AI_REQUEST_STARTED, "AI request started", job_id=job_id)
             write_provider_messages(
@@ -361,7 +456,13 @@ class AiSandboxRunner:
                 job_id=job_id,
                 message_count=str(len(messages)),
             )
-            response = client.complete_messages(messages)
+            response = complete_with_provider_logging(
+                flow=self.flow,
+                client=client,
+                messages=messages,
+                call_kind="candidate_generation",
+                job_id=job_id,
+            )
             self.flow.write(
                 FLOW_AI_RESPONSE_RECEIVED,
                 "AI response received",
@@ -488,6 +589,7 @@ class AiSandboxRunner:
             data["turn"] = turn
         self.flow.write(FLOW_METHOD_SOURCE_RESOLVED, "method source resolved", **data)
         self.flow.write(FLOW_METHOD_CONTEXT_LOADED, "method context loaded", **method.log_fields())
+        write_method_law_fragment_events(flow=self.flow, method=method, turn=turn)
         write_process_step(
             flow=self.flow,
             step="method.load",
@@ -538,8 +640,13 @@ class AiSandboxRunner:
             turn=turn,
             job_id=job_id,
         )
-        review = client.complete_messages(
-            review_messages
+        review = complete_with_provider_logging(
+            flow=self.flow,
+            client=client,
+            messages=review_messages,
+            call_kind="method_self_review",
+            turn=turn,
+            job_id=job_id,
         )
         received = {**data, "review": review.content}
         self.flow.write(FLOW_METHOD_SELF_REVIEW_RECEIVED, "method self-review received", **received)
@@ -676,6 +783,14 @@ class AiSandboxChatSession:
             turn=turn,
             job_id=job_id,
         )
+        bind_method_law_fragments_to_job(
+            flow=self.flow,
+            service=self.service,
+            method=method,
+            job_id=job_id,
+            step="chat.method.law.bind",
+            turn=turn,
+        )
 
         self.service.mark_ready(job_id, actor_id="system")
         self.flow.write(FLOW_JOB_READY, "job marked ready", turn=turn, job_id=job_id)
@@ -715,7 +830,8 @@ class AiSandboxChatSession:
 
         self.history.append({"role": "user", "content": user_input})
         client = self.client or ChatClient(load_ai_config(self.config_path))
-        messages = [build_method_system_message(method), *self.history]
+        method_messages = build_method_system_messages(method)
+        messages = [*method_messages, *self.history]
         self.flow.write(
             FLOW_METHOD_CONTEXT_INJECTED,
             "method context injected",
@@ -724,6 +840,7 @@ class AiSandboxChatSession:
             method_name=method.name,
             method_path=str(method.path),
             method_checksum=method.checksum,
+            method_law_fragment_count=str(len(method.fragments)),
             message_count=str(len(messages)),
         )
         write_process_step(
@@ -734,6 +851,7 @@ class AiSandboxChatSession:
             turn=turn,
             job_id=job_id,
             message_count=str(len(messages)),
+            method_law_fragment_count=str(len(method.fragments)),
         )
         self.flow.write(
             FLOW_AI_REQUEST_STARTED,
@@ -759,7 +877,14 @@ class AiSandboxChatSession:
             job_id=job_id,
             message_count=str(len(messages)),
         )
-        response = client.complete_messages(messages)
+        response = complete_with_provider_logging(
+            flow=self.flow,
+            client=client,
+            messages=messages,
+            call_kind="candidate_generation",
+            turn=turn,
+            job_id=job_id,
+        )
         self.history.append({"role": "assistant", "content": response.content})
         self.flow.write(
             FLOW_AI_RESPONSE_RECEIVED,
@@ -1014,6 +1139,7 @@ class AiSandboxChatSession:
             turn=turn,
             **method.log_fields(),
         )
+        write_method_law_fragment_events(flow=self.flow, method=method, turn=turn)
         write_process_step(
             flow=self.flow,
             step="chat.method.load",
@@ -1062,8 +1188,13 @@ class AiSandboxChatSession:
             turn=turn,
             job_id=job_id,
         )
-        review = client.complete_messages(
-            review_messages
+        review = complete_with_provider_logging(
+            flow=self.flow,
+            client=client,
+            messages=review_messages,
+            call_kind="method_self_review",
+            turn=turn,
+            job_id=job_id,
         )
         received = {**data, "review": review.content}
         self.flow.write(FLOW_METHOD_SELF_REVIEW_RECEIVED, "method self-review received", **received)
@@ -1133,8 +1264,13 @@ class AiSandboxChatSession:
             job_id=job_id,
             message_count=str(len(self.history)),
         )
-        judgment_response = client.complete_messages(
-            feedback_messages
+        judgment_response = complete_with_provider_logging(
+            flow=self.flow,
+            client=client,
+            messages=feedback_messages,
+            call_kind="feedback_judgment",
+            turn=turn,
+            job_id=job_id,
         )
         self.flow.write(
             FLOW_FEEDBACK_JUDGMENT_RECEIVED,
