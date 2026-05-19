@@ -267,10 +267,19 @@ class AiSandboxChatTest(unittest.TestCase):
             self.assertIn("provider_messages_recorded", event_types)
             self.assertIn("method_law_fragment_loaded", event_types)
             self.assertIn("method_law_fragment_bound", event_types)
+            self.assertIn("verification_job_created", event_types)
+            self.assertIn("verification_tool_started", event_types)
+            self.assertIn("verification_result_recorded", event_types)
+            self.assertIn("verification_evidence_submitted", event_types)
+            self.assertIn("parent_verification_evidence_submitted", event_types)
             serialized = "\n".join(json.dumps(record, ensure_ascii=False) for record in records)
             self.assertIn("diagnostic input", serialized)
             self.assertIn("diagnostic answer", serialized)
             self.assertIn("candidate_attached", serialized)
+            self.assertIn("verification_child_created", serialized)
+            self.assertIn("candidate_verification_report", serialized)
+            self.assertIn("candidate_verification_summary", serialized)
+            self.assertIn("does_not_auto_accept_or_reject", serialized)
             self.assertIn("tree_snapshot", serialized)
             provenance = next(
                 record for record in records if record["event_type"] == "input_provenance_recorded"
@@ -291,6 +300,11 @@ class AiSandboxChatTest(unittest.TestCase):
             self.assertIn("provider.request", process_steps)
             self.assertIn("candidate.submit", process_steps)
             self.assertIn("evidence.submit", process_steps)
+            self.assertIn("candidate.verify.create", process_steps)
+            self.assertIn("candidate.verify.run", process_steps)
+            self.assertIn("candidate.verify.result", process_steps)
+            self.assertIn("candidate.verify.evidence", process_steps)
+            self.assertIn("candidate.verify.parent_evidence", process_steps)
             self.assertIn("output.record", process_steps)
             provider_messages = [
                 record for record in records if record["event_type"] == "provider_messages_recorded"
@@ -329,6 +343,11 @@ class AiSandboxChatTest(unittest.TestCase):
             self.assertIn("输入 SHA-256（input_sha256）", readable_text)
             self.assertIn("Provider 请求消息已记录（provider_messages_recorded）", readable_text)
             self.assertIn("Provider 请求消息（provider_messages）", readable_text)
+            self.assertIn("候选校验业已创建（verification_job_created）", readable_text)
+            self.assertIn("候选校验结果已记录（verification_result_recorded）", readable_text)
+            self.assertIn("父业校验证据已回流（parent_verification_evidence_submitted）", readable_text)
+            self.assertIn("校验报告（verification_report）", readable_text)
+            self.assertIn("校验子业已创建（verification_child_created）", readable_text)
             self.assertTrue(latest_readable_log_pointer_path(log_dir).exists())
 
     def test_runner_preserves_existing_saved_logs_in_log_dir(self) -> None:
@@ -549,6 +568,11 @@ class AiSandboxChatTest(unittest.TestCase):
             self.assertEqual(event_types.count("result_output_recorded"), 2)
             self.assertEqual(event_types.count("candidate_submitted"), 2)
             self.assertEqual(event_types.count("evidence_submitted"), 2)
+            self.assertEqual(event_types.count("verification_job_created"), 2)
+            self.assertEqual(event_types.count("verification_tool_started"), 2)
+            self.assertEqual(event_types.count("verification_result_recorded"), 2)
+            self.assertEqual(event_types.count("verification_evidence_submitted"), 2)
+            self.assertEqual(event_types.count("parent_verification_evidence_submitted"), 2)
             self.assertEqual(event_types.count("feedback_judgment_requested"), 2)
             self.assertEqual(event_types.count("feedback_judgment_received"), 2)
             self.assertEqual(event_types.count("feedback_job_created"), 1)
@@ -569,14 +593,31 @@ class AiSandboxChatTest(unittest.TestCase):
             ]
             self.assertIn("feedback_child_created", tree_actions)
             self.assertIn("feedback_child_skipped", tree_actions)
+            self.assertIn("verification_child_created", tree_actions)
+            self.assertIn("verification_candidate_attached", tree_actions)
+            self.assertIn("verification_evidence_attached", tree_actions)
+            self.assertIn("parent_verification_evidence_attached", tree_actions)
             tree_snapshots = [
                 json.loads(record["data"]["tree_snapshot"])
                 for record in records
                 if record["event_type"] == "job_tree_snapshot_recorded"
             ]
+            verification_child_ids = [
+                record["data"]["verification_job_id"]
+                for record in records
+                if record["event_type"] == "verification_job_created"
+            ]
+            self.assertTrue(verification_child_ids)
             self.assertTrue(
                 any(
                     link["child_job_id"] == feedback_job_id
+                    for snapshot in tree_snapshots
+                    for link in snapshot["links"]
+                )
+            )
+            self.assertTrue(
+                any(
+                    link["child_job_id"] in verification_child_ids
                     for snapshot in tree_snapshots
                     for link in snapshot["links"]
                 )

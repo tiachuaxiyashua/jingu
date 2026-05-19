@@ -38,6 +38,11 @@ FLOW_AI_REQUEST_STARTED = "ai_request_started"
 FLOW_AI_RESPONSE_RECEIVED = "ai_response_received"
 FLOW_CANDIDATE_SUBMITTED = "candidate_submitted"
 FLOW_EVIDENCE_SUBMITTED = "evidence_submitted"
+FLOW_VERIFICATION_JOB_CREATED = "verification_job_created"
+FLOW_VERIFICATION_TOOL_STARTED = "verification_tool_started"
+FLOW_VERIFICATION_RESULT_RECORDED = "verification_result_recorded"
+FLOW_VERIFICATION_EVIDENCE_SUBMITTED = "verification_evidence_submitted"
+FLOW_PARENT_VERIFICATION_EVIDENCE_SUBMITTED = "parent_verification_evidence_submitted"
 FLOW_FEEDBACK_JUDGMENT_REQUESTED = "feedback_judgment_requested"
 FLOW_FEEDBACK_JUDGMENT_RECEIVED = "feedback_judgment_received"
 FLOW_FEEDBACK_JOB_CREATED = "feedback_job_created"
@@ -81,6 +86,11 @@ EVENT_LABELS = {
     FLOW_AI_RESPONSE_RECEIVED: "AI 响应已收到",
     FLOW_CANDIDATE_SUBMITTED: "候选结果已提交",
     FLOW_EVIDENCE_SUBMITTED: "证据已提交",
+    FLOW_VERIFICATION_JOB_CREATED: "候选校验业已创建",
+    FLOW_VERIFICATION_TOOL_STARTED: "候选校验工具已启动",
+    FLOW_VERIFICATION_RESULT_RECORDED: "候选校验结果已记录",
+    FLOW_VERIFICATION_EVIDENCE_SUBMITTED: "候选校验证据已提交",
+    FLOW_PARENT_VERIFICATION_EVIDENCE_SUBMITTED: "父业校验证据已回流",
     FLOW_FEEDBACK_JUDGMENT_REQUESTED: "反馈判断已请求",
     FLOW_FEEDBACK_JUDGMENT_RECEIVED: "反馈判断已收到",
     FLOW_FEEDBACK_JOB_CREATED: "反馈业已创建",
@@ -160,6 +170,17 @@ FIELD_LABELS = {
     "sandbox_path": "沙盒路径",
     "tree_snapshot": "业树快照",
     "turn": "轮次",
+    "verification_candidate_appearance_id": "校验候选相编号",
+    "verification_check_count": "校验项数量",
+    "verification_child_job_id": "校验子业编号",
+    "verification_evidence_appearance_id": "校验证据相编号",
+    "verification_gaps": "校验缺口",
+    "verification_job_id": "校验业编号",
+    "verification_parent_evidence": "父业校验证据",
+    "verification_parent_evidence_appearance_id": "父业校验证据相编号",
+    "verification_report": "校验报告",
+    "verification_status": "校验状态",
+    "verification_target": "校验目标",
 }
 
 JOB_TREE_ACTION_LABELS = {
@@ -169,7 +190,13 @@ JOB_TREE_ACTION_LABELS = {
     "feedback_child_skipped": "反馈子业已跳过",
     "job_ready": "业已就绪",
     "job_running": "业运行中",
+    "parent_verification_evidence_attached": "父业校验证据已挂载",
     "root_created": "根业已创建",
+    "verification_candidate_attached": "校验报告候选已挂载",
+    "verification_child_created": "校验子业已创建",
+    "verification_child_ready": "校验子业已就绪",
+    "verification_child_running": "校验子业运行中",
+    "verification_evidence_attached": "校验证据已挂载",
 }
 
 
@@ -361,6 +388,9 @@ def _should_render_as_block(key: str, value: str) -> bool:
         "job_target",
         "tree_snapshot",
         "provider_messages",
+        "verification_gaps",
+        "verification_parent_evidence",
+        "verification_report",
     }
 
 

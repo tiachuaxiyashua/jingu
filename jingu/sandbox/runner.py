@@ -41,6 +41,7 @@ from jingu.sandbox.flow import (
     FLOW_PROVIDER_MESSAGES_RECORDED,
     FLOW_PROVIDER_STREAM_DELTA_RECEIVED,
     FLOW_PROVIDER_STREAM_FINISHED,
+    FLOW_PARENT_VERIFICATION_EVIDENCE_SUBMITTED,
     FLOW_RESULT_OUTPUT_RECORDED,
     FLOW_RUN_FAILED,
     FLOW_ROOT_JOB_CREATED,
@@ -49,6 +50,10 @@ from jingu.sandbox.flow import (
     FLOW_SANDBOX_CREATED,
     FLOW_SANDBOX_DESTROYED,
     FLOW_USER_INPUT_RECORDED,
+    FLOW_VERIFICATION_EVIDENCE_SUBMITTED,
+    FLOW_VERIFICATION_JOB_CREATED,
+    FLOW_VERIFICATION_RESULT_RECORDED,
+    FLOW_VERIFICATION_TOOL_STARTED,
     FlowWriter,
     input_provenance_fields,
     new_diagnostic_log_path,
@@ -67,9 +72,16 @@ from jingu.sandbox.paths import (
     resolve_log_dir,
     resolve_sandbox_path,
 )
+from jingu.sandbox.verification import (
+    build_parent_verification_evidence,
+    verification_report_to_json,
+    verify_candidate_text,
+)
 
 
 TERMINAL_JOB_STATES = {STATE_ACCEPTED, STATE_REJECTED, STATE_ABANDONED}
+VERIFICATION_JOB_TARGET = "校验候选结果中的可判定文本约束"
+VERIFICATION_JOB_ACCEPTANCE_CRITERIA = "输出结构化校验报告，记录可执行检查、实际计数、证据和无法自动判定的缺口。"
 
 
 def write_process_step(
@@ -160,6 +172,237 @@ def bind_method_law_fragments_to_job(
         action="bound method-law fragments to current job as appearances",
         **data,
     )
+
+
+def run_candidate_verification(
+    *,
+    flow: FlowWriter,
+    service: RuntimeService,
+    parent_job_id: str,
+    user_input: str,
+    candidate_text: str,
+    parent_candidate_appearance_id: str,
+    step_prefix: str,
+    turn: str | None = None,
+) -> dict[str, Any]:
+    base_data: dict[str, str] = {}
+    if turn is not None:
+        base_data["turn"] = turn
+
+    verification_job = service.create_child_job(
+        parent_job_id=parent_job_id,
+        target=VERIFICATION_JOB_TARGET,
+        actor_id="system",
+        acceptance_criteria=VERIFICATION_JOB_ACCEPTANCE_CRITERIA,
+    )
+    verification_job_id = verification_job["job_id"]
+    created_data = {
+        **base_data,
+        "job_id": parent_job_id,
+        "parent_job_id": parent_job_id,
+        "verification_child_job_id": verification_job_id,
+        "verification_job_id": verification_job_id,
+        "verification_target": VERIFICATION_JOB_TARGET,
+        "appearance_id": parent_candidate_appearance_id,
+    }
+    child_job_data = {
+        **base_data,
+        "job_id": verification_job_id,
+        "parent_job_id": parent_job_id,
+        "verification_child_job_id": verification_job_id,
+        "verification_job_id": verification_job_id,
+        "verification_target": VERIFICATION_JOB_TARGET,
+        "appearance_id": parent_candidate_appearance_id,
+    }
+    flow.write(
+        FLOW_VERIFICATION_JOB_CREATED,
+        "verification job created",
+        **created_data,
+    )
+    write_job_tree_mirror(
+        flow=flow,
+        service=service,
+        turn=turn,
+        job_id=verification_job_id,
+        action="verification_child_created",
+        child_job_id=verification_job_id,
+        appearance_id=parent_candidate_appearance_id,
+    )
+    write_process_step(
+        flow=flow,
+        step=f"{step_prefix}.create",
+        phase="verification",
+        action="创建候选校验子业",
+        **created_data,
+    )
+
+    service.mark_ready(verification_job_id, actor_id="system")
+    flow.write(FLOW_JOB_READY, "verification job marked ready", **child_job_data)
+    write_job_tree_mirror(
+        flow=flow,
+        service=service,
+        turn=turn,
+        job_id=verification_job_id,
+        action="verification_child_ready",
+        child_job_id=verification_job_id,
+    )
+    write_process_step(
+        flow=flow,
+        step=f"{step_prefix}.ready",
+        phase="verification",
+        action="标记候选校验子业就绪",
+        **child_job_data,
+    )
+
+    service.start_job(verification_job_id, actor_id="system")
+    flow.write(FLOW_JOB_RUNNING, "verification job running", **child_job_data)
+    write_job_tree_mirror(
+        flow=flow,
+        service=service,
+        turn=turn,
+        job_id=verification_job_id,
+        action="verification_child_running",
+        child_job_id=verification_job_id,
+    )
+    write_process_step(
+        flow=flow,
+        step=f"{step_prefix}.run",
+        phase="verification",
+        action="启动确定性候选校验工具",
+        status="started",
+        **child_job_data,
+    )
+    flow.write(
+        FLOW_VERIFICATION_TOOL_STARTED,
+        "verification tool started",
+        **child_job_data,
+    )
+
+    report = verify_candidate_text(
+        task_text=user_input,
+        candidate_text=candidate_text,
+        candidate_appearance_id=parent_candidate_appearance_id,
+    )
+    report_json = verification_report_to_json(report)
+    verification_candidate = service.submit_candidate(
+        verification_job_id,
+        text=report_json,
+        actor_id="system",
+    )["candidate"]
+    result_data = {
+        **child_job_data,
+        "verification_status": str(report["overall_status"]),
+        "verification_check_count": str(len(report["checks"])),
+        "verification_candidate_appearance_id": verification_candidate["appearance_id"],
+        "verification_report": report_json,
+        "verification_gaps": json.dumps(report["gaps"], ensure_ascii=False, sort_keys=True),
+    }
+    flow.write(
+        FLOW_VERIFICATION_RESULT_RECORDED,
+        "verification result recorded",
+        **result_data,
+    )
+    write_job_tree_mirror(
+        flow=flow,
+        service=service,
+        turn=turn,
+        job_id=verification_job_id,
+        action="verification_candidate_attached",
+        appearance_id=verification_candidate["appearance_id"],
+        child_job_id=verification_job_id,
+    )
+    write_process_step(
+        flow=flow,
+        step=f"{step_prefix}.result",
+        phase="verification",
+        action="记录候选校验报告为校验子业候选结果",
+        status=str(report["overall_status"]),
+        **result_data,
+    )
+
+    verification_evidence = service.submit_evidence(
+        verification_job_id,
+        text=report_json,
+        actor_id="system",
+    )["evidence"]
+    child_evidence_data = {
+        **child_job_data,
+        "verification_status": str(report["overall_status"]),
+        "verification_candidate_appearance_id": verification_candidate["appearance_id"],
+        "verification_evidence_appearance_id": verification_evidence["appearance_id"],
+    }
+    flow.write(
+        FLOW_VERIFICATION_EVIDENCE_SUBMITTED,
+        "verification evidence submitted",
+        **child_evidence_data,
+    )
+    write_job_tree_mirror(
+        flow=flow,
+        service=service,
+        turn=turn,
+        job_id=verification_job_id,
+        action="verification_evidence_attached",
+        appearance_id=verification_evidence["appearance_id"],
+        child_job_id=verification_job_id,
+    )
+    write_process_step(
+        flow=flow,
+        step=f"{step_prefix}.evidence",
+        phase="verification",
+        action="提交校验报告为校验子业证据",
+        **child_evidence_data,
+    )
+
+    parent_evidence_text = build_parent_verification_evidence(
+        report=report,
+        verification_job_id=verification_job_id,
+        verification_candidate_appearance_id=verification_candidate["appearance_id"],
+        verification_evidence_appearance_id=verification_evidence["appearance_id"],
+        parent_candidate_appearance_id=parent_candidate_appearance_id,
+    )
+    parent_evidence = service.submit_evidence(
+        parent_job_id,
+        text=parent_evidence_text,
+        actor_id="system",
+    )["evidence"]
+    parent_evidence_data = {
+        **base_data,
+        "job_id": parent_job_id,
+        "parent_job_id": parent_job_id,
+        "verification_job_id": verification_job_id,
+        "verification_child_job_id": verification_job_id,
+        "verification_status": str(report["overall_status"]),
+        "verification_parent_evidence_appearance_id": parent_evidence["appearance_id"],
+        "verification_parent_evidence": parent_evidence_text,
+    }
+    flow.write(
+        FLOW_PARENT_VERIFICATION_EVIDENCE_SUBMITTED,
+        "parent verification evidence submitted",
+        **parent_evidence_data,
+    )
+    write_job_tree_mirror(
+        flow=flow,
+        service=service,
+        turn=turn,
+        job_id=parent_job_id,
+        action="parent_verification_evidence_attached",
+        appearance_id=parent_evidence["appearance_id"],
+        child_job_id=verification_job_id,
+    )
+    write_process_step(
+        flow=flow,
+        step=f"{step_prefix}.parent_evidence",
+        phase="verification",
+        action="将候选校验摘要证据回流到父业",
+        **parent_evidence_data,
+    )
+    return {
+        "verification_job_id": verification_job_id,
+        "verification_candidate_appearance_id": verification_candidate["appearance_id"],
+        "verification_evidence_appearance_id": verification_evidence["appearance_id"],
+        "parent_evidence_appearance_id": parent_evidence["appearance_id"],
+        "report": report,
+    }
 
 
 def complete_with_provider_logging(
@@ -536,6 +779,15 @@ class AiSandboxRunner:
                 action="stored method self-review as evidence",
                 job_id=job_id,
                 appearance_id=evidence["appearance_id"],
+            )
+            run_candidate_verification(
+                flow=self.flow,
+                service=service,
+                parent_job_id=job_id,
+                user_input=message,
+                candidate_text=response.content,
+                parent_candidate_appearance_id=candidate["appearance_id"],
+                step_prefix="candidate.verify",
             )
 
             self.flow.write(FLOW_RESULT_OUTPUT_RECORDED, "result output recorded", result=response.content)
@@ -968,6 +1220,16 @@ class AiSandboxChatSession:
             turn=turn,
             job_id=job_id,
             appearance_id=evidence["appearance_id"],
+        )
+        run_candidate_verification(
+            flow=self.flow,
+            service=self.service,
+            parent_job_id=job_id,
+            user_input=user_input,
+            candidate_text=response.content,
+            parent_candidate_appearance_id=candidate["appearance_id"],
+            step_prefix="chat.candidate.verify",
+            turn=turn,
         )
 
         self.flow.write(
