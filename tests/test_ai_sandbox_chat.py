@@ -350,6 +350,106 @@ class AiSandboxChatTest(unittest.TestCase):
             self.assertIn("校验子业已创建（verification_child_created）", readable_text)
             self.assertTrue(latest_readable_log_pointer_path(log_dir).exists())
 
+    def test_runner_repairs_failed_verification_candidate(self) -> None:
+        with TemporaryDirectory() as tmp:
+            sandbox = Path(tmp) / "sandbox"
+            log_dir = Path(tmp) / "logs"
+            method_path = write_method_file(Path(tmp))
+            short_candidate = "字" * 2600
+            repaired_candidate = "字" * 4500
+            client = FakeChatClient(
+                responses=[
+                    short_candidate,
+                    json.dumps(
+                        {
+                            "method_use_summary": "checked method use",
+                            "evidence": ["candidate generated"],
+                            "gaps": [],
+                            "observed_failure_modes": [],
+                            "method_update_candidates": [],
+                        },
+                        ensure_ascii=False,
+                    ),
+                    repaired_candidate,
+                ]
+            )
+
+            answer = AiSandboxRunner(
+                sandbox_path=sandbox,
+                log_dir=log_dir,
+                method_path=method_path,
+                client=client,
+                max_repair_attempts=1,
+            ).run("请输出4500到6000汉字。")
+
+            self.assertEqual(answer, repaired_candidate)
+            records = [
+                json.loads(line)
+                for line in next(log_dir.glob("ai-run-*.jsonl")).read_text(encoding="utf-8").splitlines()
+                if line.strip()
+            ]
+            event_types = [record["event_type"] for record in records]
+            self.assertEqual(event_types.count("repair_job_created"), 1)
+            self.assertEqual(event_types.count("repair_candidate_submitted"), 1)
+            self.assertEqual(event_types.count("verification_job_created"), 2)
+            self.assertIn("repair_loop_finished", event_types)
+            serialized = "\n".join(json.dumps(record, ensure_ascii=False) for record in records)
+            self.assertIn("candidate_repair", serialized)
+            self.assertIn("candidate_repair_loop_summary", serialized)
+            self.assertIn("repair_child_created", serialized)
+            self.assertIn("verification_passed", serialized)
+            self.assertNotIn("job_accepted", event_types)
+            self.assertNotIn("job_rejected", event_types)
+
+    def test_runner_creates_feedback_decision_job_when_repair_is_exhausted(self) -> None:
+        with TemporaryDirectory() as tmp:
+            sandbox = Path(tmp) / "sandbox"
+            log_dir = Path(tmp) / "logs"
+            method_path = write_method_file(Path(tmp))
+            short_candidate = "字" * 2600
+            still_short_candidate = "字" * 2700
+            client = FakeChatClient(
+                responses=[
+                    short_candidate,
+                    json.dumps(
+                        {
+                            "method_use_summary": "checked method use",
+                            "evidence": ["candidate generated"],
+                            "gaps": [],
+                            "observed_failure_modes": [],
+                            "method_update_candidates": [],
+                        },
+                        ensure_ascii=False,
+                    ),
+                    still_short_candidate,
+                ]
+            )
+
+            answer = AiSandboxRunner(
+                sandbox_path=sandbox,
+                log_dir=log_dir,
+                method_path=method_path,
+                client=client,
+                max_repair_attempts=1,
+            ).run("请输出4500到6000汉字。")
+
+            self.assertEqual(answer, still_short_candidate)
+            records = [
+                json.loads(line)
+                for line in next(log_dir.glob("ai-run-*.jsonl")).read_text(encoding="utf-8").splitlines()
+                if line.strip()
+            ]
+            event_types = [record["event_type"] for record in records]
+            self.assertEqual(event_types.count("repair_job_created"), 1)
+            self.assertEqual(event_types.count("verification_feedback_job_created"), 1)
+            serialized = "\n".join(json.dumps(record, ensure_ascii=False) for record in records)
+            self.assertIn("attempt_limit_exhausted", serialized)
+            self.assertIn("verification_feedback_child_created", serialized)
+            self.assertIn("verification_feedback_decision_context", serialized)
+            self.assertIn("does_not_auto_accept_or_reject", serialized)
+            self.assertNotIn("job_accepted", event_types)
+            self.assertNotIn("job_rejected", event_types)
+
     def test_runner_preserves_existing_saved_logs_in_log_dir(self) -> None:
         with TemporaryDirectory() as tmp:
             sandbox = Path(tmp) / "sandbox"

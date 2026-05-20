@@ -43,6 +43,11 @@ from jingu.sandbox.flow import (
     FLOW_PROVIDER_STREAM_FINISHED,
     FLOW_PARENT_VERIFICATION_EVIDENCE_SUBMITTED,
     FLOW_RESULT_OUTPUT_RECORDED,
+    FLOW_REPAIR_CANDIDATE_SUBMITTED,
+    FLOW_REPAIR_JOB_CREATED,
+    FLOW_REPAIR_LOOP_FINISHED,
+    FLOW_REPAIR_REQUEST_PREPARED,
+    FLOW_REPAIR_RESPONSE_RECEIVED,
     FLOW_RUN_FAILED,
     FLOW_ROOT_JOB_CREATED,
     FLOW_RUN_FINISHED,
@@ -51,6 +56,7 @@ from jingu.sandbox.flow import (
     FLOW_SANDBOX_DESTROYED,
     FLOW_USER_INPUT_RECORDED,
     FLOW_VERIFICATION_EVIDENCE_SUBMITTED,
+    FLOW_VERIFICATION_FEEDBACK_JOB_CREATED,
     FLOW_VERIFICATION_JOB_CREATED,
     FLOW_VERIFICATION_RESULT_RECORDED,
     FLOW_VERIFICATION_TOOL_STARTED,
@@ -82,6 +88,19 @@ from jingu.sandbox.verification import (
 TERMINAL_JOB_STATES = {STATE_ACCEPTED, STATE_REJECTED, STATE_ABANDONED}
 VERIFICATION_JOB_TARGET = "校验候选结果中的可判定文本约束"
 VERIFICATION_JOB_ACCEPTANCE_CRITERIA = "输出结构化校验报告，记录可执行检查、实际计数、证据和无法自动判定的缺口。"
+REPAIR_JOB_TARGET = "修复候选结果中的可判定校验失败"
+REPAIR_JOB_ACCEPTANCE_CRITERIA = "输出修订后的完整候选结果，并让修订点可以被再次校验。"
+VERIFICATION_FEEDBACK_JOB_TARGET = "处理候选校验未解决问题"
+VERIFICATION_FEEDBACK_JOB_ACCEPTANCE_CRITERIA = "产出下一步修复方向、人工反馈问题或方法更新候选，并引用校验证据。"
+DEFAULT_MAX_REPAIR_ATTEMPTS = 1
+REPAIRABLE_CHECK_KINDS = frozenset(
+    {
+        "cjk_length_range",
+        "cjk_length_minimum",
+        "cjk_length_maximum",
+        "incomplete_output_signal",
+    }
+)
 
 
 def write_process_step(
@@ -405,6 +424,608 @@ def run_candidate_verification(
     }
 
 
+def normalize_max_repair_attempts(value: int) -> int:
+    if value < 0:
+        raise ValueError("max repair attempts must be zero or greater")
+    return value
+
+
+def repairable_failed_checks(report: dict[str, Any]) -> list[dict[str, Any]]:
+    return [
+        check
+        for check in report.get("checks") or []
+        if check.get("status") == "failed" and check.get("check_kind") in REPAIRABLE_CHECK_KINDS
+    ]
+
+
+def compact_verification_check(check: dict[str, Any]) -> dict[str, Any]:
+    return {
+        key: value
+        for key, value in {
+            "check_id": check.get("check_id"),
+            "check_kind": check.get("check_kind"),
+            "status": check.get("status"),
+            "source_text": check.get("source_text"),
+            "actual_cjk_characters": check.get("actual_cjk_characters"),
+            "min_cjk_characters": check.get("min_cjk_characters"),
+            "max_cjk_characters": check.get("max_cjk_characters"),
+            "signals": check.get("signals"),
+        }.items()
+        if value is not None and value != ""
+    }
+
+
+def compact_verification_report(report: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "overall_status": report.get("overall_status"),
+        "verification_kind": report.get("verification_kind"),
+        "candidate_appearance_id": report.get("candidate_appearance_id"),
+        "selected_region": (report.get("facts") or {}).get("selected_region"),
+        "checks": [compact_verification_check(check) for check in report.get("checks") or []],
+        "gaps": report.get("gaps") or [],
+    }
+
+
+def build_candidate_repair_messages(
+    *,
+    method: MethodContext,
+    user_input: str,
+    previous_candidate_text: str,
+    verification_result: dict[str, Any],
+    attempt: int,
+    max_attempts: int,
+) -> list[dict[str, str]]:
+    repair_payload = {
+        "task": user_input,
+        "attempt": attempt,
+        "max_attempts": max_attempts,
+        "previous_candidate": previous_candidate_text,
+        "verification_report": compact_verification_report(verification_result["report"]),
+        "repairable_failed_checks": [
+            compact_verification_check(check)
+            for check in repairable_failed_checks(verification_result["report"])
+        ],
+        "requirements": [
+            "保持用户原始任务意图，不自行改写目标。",
+            "只针对校验报告中的具体失败项修订候选结果。",
+            "输出完整修订候选结果，不输出省略、占位或只说明修改思路。",
+            "不要声明候选已被接收或最终完成。",
+        ],
+    }
+    return [
+        *build_method_system_messages(method),
+        {
+            "role": "system",
+            "content": (
+                "你是金箍运行时中的候选修复行者。"
+                "你只能提交修订候选结果，不能接收、拒收或宣告父业完成。"
+            ),
+        },
+        {
+            "role": "user",
+            "content": json.dumps(repair_payload, ensure_ascii=False, sort_keys=True, indent=2),
+        },
+    ]
+
+
+def run_candidate_repair_loop(
+    *,
+    flow: FlowWriter,
+    service: RuntimeService,
+    client: ChatClient,
+    method: MethodContext,
+    parent_job_id: str,
+    user_input: str,
+    initial_candidate_text: str,
+    initial_candidate_appearance_id: str,
+    initial_verification_result: dict[str, Any],
+    max_repair_attempts: int,
+    step_prefix: str,
+    turn: str | None = None,
+) -> dict[str, Any]:
+    max_attempts = normalize_max_repair_attempts(max_repair_attempts)
+    latest_candidate_text = initial_candidate_text
+    latest_candidate_appearance_id = initial_candidate_appearance_id
+    latest_verification_result = initial_verification_result
+    attempts: list[dict[str, Any]] = []
+    feedback_job_id: str | None = None
+    outcome = "not_needed"
+    reason = "verification did not expose a repairable failed check"
+
+    while True:
+        report = latest_verification_result["report"]
+        status = str(report.get("overall_status") or "")
+        repairable_checks = repairable_failed_checks(report)
+
+        if status == "passed":
+            outcome = "verification_passed"
+            reason = "latest candidate passed deterministic verification"
+            break
+        if status != "failed":
+            outcome = "not_repairable"
+            reason = "verification did not fail with a concrete repairable check"
+            break
+        if not repairable_checks:
+            outcome = "not_repairable"
+            reason = "failed verification contains no repairable check kind"
+            break
+        if len(attempts) >= max_attempts:
+            outcome = "attempt_limit_exhausted"
+            reason = "configured repair attempt limit reached"
+            break
+
+        attempt_number = len(attempts) + 1
+        repair_result = run_single_repair_attempt(
+            flow=flow,
+            service=service,
+            client=client,
+            method=method,
+            parent_job_id=parent_job_id,
+            user_input=user_input,
+            previous_candidate_text=latest_candidate_text,
+            previous_candidate_appearance_id=latest_candidate_appearance_id,
+            previous_verification_result=latest_verification_result,
+            attempt=attempt_number,
+            max_attempts=max_attempts,
+            step_prefix=step_prefix,
+            turn=turn,
+        )
+        attempts.append(repair_result)
+        latest_candidate_text = repair_result["candidate_text"]
+        latest_candidate_appearance_id = repair_result["candidate_appearance_id"]
+        latest_verification_result = repair_result["verification_result"]
+
+    if should_create_verification_feedback_job(
+        latest_verification_result=latest_verification_result,
+        attempts=attempts,
+        outcome=outcome,
+    ):
+        feedback_job_id = create_verification_feedback_job(
+            flow=flow,
+            service=service,
+            parent_job_id=parent_job_id,
+            latest_verification_result=latest_verification_result,
+            attempts=attempts,
+            outcome=outcome,
+            reason=reason,
+            turn=turn,
+            step_prefix=step_prefix,
+        )
+
+    summary_text = build_repair_loop_summary_evidence(
+        latest_verification_result=latest_verification_result,
+        latest_candidate_appearance_id=latest_candidate_appearance_id,
+        attempts=attempts,
+        outcome=outcome,
+        reason=reason,
+        feedback_job_id=feedback_job_id,
+        max_attempts=max_attempts,
+    )
+    summary_evidence = service.submit_evidence(
+        parent_job_id,
+        text=summary_text,
+        actor_id="system",
+    )["evidence"]
+    event_data = {
+        **turn_field(turn),
+        "job_id": parent_job_id,
+        "repair_loop_outcome": outcome,
+        "repair_reason": reason,
+        "repair_attempt_count": str(len(attempts)),
+        "repair_max_attempts": str(max_attempts),
+        "repair_latest_status": str(latest_verification_result["report"].get("overall_status")),
+        "repair_latest_candidate_appearance_id": latest_candidate_appearance_id,
+        "repair_loop_summary": summary_text,
+        "appearance_id": summary_evidence["appearance_id"],
+    }
+    if feedback_job_id is not None:
+        event_data["repair_feedback_job_id"] = feedback_job_id
+    flow.write(FLOW_REPAIR_LOOP_FINISHED, "repair loop finished", **event_data)
+    write_job_tree_mirror(
+        flow=flow,
+        service=service,
+        turn=turn,
+        job_id=parent_job_id,
+        action="repair_verification_evidence_attached",
+        appearance_id=summary_evidence["appearance_id"],
+        child_job_id=feedback_job_id,
+        reason=reason,
+    )
+    write_process_step(
+        flow=flow,
+        step=f"{step_prefix}.repair_loop.finish",
+        phase="repair",
+        action="记录候选修复循环摘要证据",
+        **event_data,
+    )
+
+    return {
+        "latest_candidate_text": latest_candidate_text,
+        "latest_candidate_appearance_id": latest_candidate_appearance_id,
+        "latest_verification_result": latest_verification_result,
+        "attempts": attempts,
+        "outcome": outcome,
+        "reason": reason,
+        "feedback_job_id": feedback_job_id,
+        "summary_evidence_appearance_id": summary_evidence["appearance_id"],
+    }
+
+
+def run_single_repair_attempt(
+    *,
+    flow: FlowWriter,
+    service: RuntimeService,
+    client: ChatClient,
+    method: MethodContext,
+    parent_job_id: str,
+    user_input: str,
+    previous_candidate_text: str,
+    previous_candidate_appearance_id: str,
+    previous_verification_result: dict[str, Any],
+    attempt: int,
+    max_attempts: int,
+    step_prefix: str,
+    turn: str | None = None,
+) -> dict[str, Any]:
+    repair_checks = repairable_failed_checks(previous_verification_result["report"])
+    repair_job = service.create_child_job(
+        parent_job_id=parent_job_id,
+        target=REPAIR_JOB_TARGET,
+        actor_id="system",
+        acceptance_criteria=REPAIR_JOB_ACCEPTANCE_CRITERIA,
+    )
+    repair_job_id = repair_job["job_id"]
+    base_data = {
+        **turn_field(turn),
+        "job_id": repair_job_id,
+        "parent_job_id": parent_job_id,
+        "repair_child_job_id": repair_job_id,
+        "repair_attempt": str(attempt),
+        "repair_max_attempts": str(max_attempts),
+        "repairable_check_count": str(len(repair_checks)),
+        "repairable_checks": json.dumps(
+            [compact_verification_check(check) for check in repair_checks],
+            ensure_ascii=False,
+            sort_keys=True,
+            indent=2,
+        ),
+        "appearance_id": previous_candidate_appearance_id,
+    }
+    flow.write(FLOW_REPAIR_JOB_CREATED, "repair job created", **base_data)
+    write_job_tree_mirror(
+        flow=flow,
+        service=service,
+        turn=turn,
+        job_id=repair_job_id,
+        action="repair_child_created",
+        child_job_id=repair_job_id,
+        appearance_id=previous_candidate_appearance_id,
+    )
+    write_process_step(
+        flow=flow,
+        step=f"{step_prefix}.repair_{attempt}.create",
+        phase="repair",
+        action="创建候选修复子业",
+        **base_data,
+    )
+
+    service.mark_ready(repair_job_id, actor_id="system")
+    flow.write(FLOW_JOB_READY, "repair job marked ready", **base_data)
+    write_job_tree_mirror(
+        flow=flow,
+        service=service,
+        turn=turn,
+        job_id=repair_job_id,
+        action="repair_child_ready",
+        child_job_id=repair_job_id,
+    )
+    write_process_step(
+        flow=flow,
+        step=f"{step_prefix}.repair_{attempt}.ready",
+        phase="repair",
+        action="标记候选修复子业就绪",
+        **base_data,
+    )
+
+    service.start_job(repair_job_id, actor_id="system")
+    flow.write(FLOW_JOB_RUNNING, "repair job running", **base_data)
+    write_job_tree_mirror(
+        flow=flow,
+        service=service,
+        turn=turn,
+        job_id=repair_job_id,
+        action="repair_child_running",
+        child_job_id=repair_job_id,
+    )
+    write_process_step(
+        flow=flow,
+        step=f"{step_prefix}.repair_{attempt}.run",
+        phase="repair",
+        action="启动候选修复子业",
+        status="started",
+        **base_data,
+    )
+
+    repair_messages = build_candidate_repair_messages(
+        method=method,
+        user_input=user_input,
+        previous_candidate_text=previous_candidate_text,
+        verification_result=previous_verification_result,
+        attempt=attempt,
+        max_attempts=max_attempts,
+    )
+    flow.write(
+        FLOW_REPAIR_REQUEST_PREPARED,
+        "repair request prepared",
+        **{
+            **base_data,
+            "repair_prompt": repair_messages[-1]["content"],
+            "provider_message_count": str(len(repair_messages)),
+        },
+    )
+    write_provider_messages(
+        flow=flow,
+        call_kind="candidate_repair",
+        messages=repair_messages,
+        turn=turn,
+        job_id=repair_job_id,
+    )
+    write_process_step(
+        flow=flow,
+        step=f"{step_prefix}.repair_{attempt}.provider_request",
+        phase="repair",
+        action="向 AI 行者发送候选修复请求",
+        status="started",
+        **base_data,
+    )
+    repair_response = complete_with_provider_logging(
+        flow=flow,
+        client=client,
+        messages=repair_messages,
+        call_kind="candidate_repair",
+        turn=turn,
+        job_id=repair_job_id,
+    )
+    flow.write(
+        FLOW_REPAIR_RESPONSE_RECEIVED,
+        "repair response received",
+        **{**base_data, "repair_response": repair_response.content},
+    )
+    write_process_step(
+        flow=flow,
+        step=f"{step_prefix}.repair_{attempt}.provider_response",
+        phase="repair",
+        action="收到候选修复响应",
+        **base_data,
+    )
+
+    repair_candidate = service.submit_candidate(
+        repair_job_id,
+        text=repair_response.content,
+        actor_id="ai",
+    )["candidate"]
+    candidate_data = {
+        **base_data,
+        "repair_candidate_appearance_id": repair_candidate["appearance_id"],
+        "appearance_id": repair_candidate["appearance_id"],
+    }
+    flow.write(FLOW_CANDIDATE_SUBMITTED, "repair candidate submitted", **candidate_data)
+    flow.write(FLOW_REPAIR_CANDIDATE_SUBMITTED, "repair candidate submitted", **candidate_data)
+    write_job_tree_mirror(
+        flow=flow,
+        service=service,
+        turn=turn,
+        job_id=repair_job_id,
+        action="repair_candidate_attached",
+        appearance_id=repair_candidate["appearance_id"],
+        child_job_id=repair_job_id,
+    )
+    write_process_step(
+        flow=flow,
+        step=f"{step_prefix}.repair_{attempt}.candidate_submit",
+        phase="repair",
+        action="提交修复响应为修复子业候选结果",
+        **candidate_data,
+    )
+
+    repair_verification = run_candidate_verification(
+        flow=flow,
+        service=service,
+        parent_job_id=repair_job_id,
+        user_input=user_input,
+        candidate_text=repair_response.content,
+        parent_candidate_appearance_id=repair_candidate["appearance_id"],
+        step_prefix=f"{step_prefix}.repair_{attempt}.verify",
+        turn=turn,
+    )
+    return {
+        "attempt": attempt,
+        "repair_job_id": repair_job_id,
+        "candidate_text": repair_response.content,
+        "candidate_appearance_id": repair_candidate["appearance_id"],
+        "verification_result": repair_verification,
+    }
+
+
+def should_create_verification_feedback_job(
+    *,
+    latest_verification_result: dict[str, Any],
+    attempts: list[dict[str, Any]],
+    outcome: str,
+) -> bool:
+    status = str(latest_verification_result["report"].get("overall_status") or "")
+    if status == "passed":
+        return False
+    if not attempts and status != "failed":
+        return False
+    return outcome in {"attempt_limit_exhausted", "not_repairable"}
+
+
+def create_verification_feedback_job(
+    *,
+    flow: FlowWriter,
+    service: RuntimeService,
+    parent_job_id: str,
+    latest_verification_result: dict[str, Any],
+    attempts: list[dict[str, Any]],
+    outcome: str,
+    reason: str,
+    step_prefix: str,
+    turn: str | None = None,
+) -> str:
+    feedback_job = service.create_child_job(
+        parent_job_id=parent_job_id,
+        target=VERIFICATION_FEEDBACK_JOB_TARGET,
+        actor_id="system",
+        acceptance_criteria=VERIFICATION_FEEDBACK_JOB_ACCEPTANCE_CRITERIA,
+        required_context_gaps=verification_feedback_gaps(
+            latest_verification_result["report"], outcome=outcome, reason=reason
+        ),
+    )
+    feedback_job_id = feedback_job["job_id"]
+    data = {
+        **turn_field(turn),
+        "job_id": parent_job_id,
+        "feedback_job_id": feedback_job_id,
+        "repair_feedback_job_id": feedback_job_id,
+        "feedback_job_kind": "verification_unresolved",
+        "feedback_job_target": VERIFICATION_FEEDBACK_JOB_TARGET,
+        "repair_loop_outcome": outcome,
+        "repair_reason": reason,
+        "repair_attempt_count": str(len(attempts)),
+        "verification_status": str(latest_verification_result["report"].get("overall_status")),
+    }
+    flow.write(
+        FLOW_VERIFICATION_FEEDBACK_JOB_CREATED,
+        "verification feedback job created",
+        **data,
+    )
+    write_job_tree_mirror(
+        flow=flow,
+        service=service,
+        turn=turn,
+        job_id=feedback_job_id,
+        action="verification_feedback_child_created",
+        child_job_id=feedback_job_id,
+        feedback_job_kind="verification_unresolved",
+        reason=reason,
+    )
+    feedback_evidence_text = build_verification_feedback_evidence(
+        latest_verification_result=latest_verification_result,
+        attempts=attempts,
+        outcome=outcome,
+        reason=reason,
+    )
+    evidence = service.submit_evidence(
+        feedback_job_id,
+        text=feedback_evidence_text,
+        actor_id="system",
+    )["evidence"]
+    flow.write(
+        FLOW_EVIDENCE_SUBMITTED,
+        "verification feedback evidence submitted",
+        **{
+            **turn_field(turn),
+            "job_id": feedback_job_id,
+            "parent_job_id": parent_job_id,
+            "appearance_id": evidence["appearance_id"],
+            "repair_loop_outcome": outcome,
+            "repair_reason": reason,
+            "verification_feedback_evidence": feedback_evidence_text,
+        },
+    )
+    write_job_tree_mirror(
+        flow=flow,
+        service=service,
+        turn=turn,
+        job_id=feedback_job_id,
+        action="evidence_attached",
+        appearance_id=evidence["appearance_id"],
+        child_job_id=feedback_job_id,
+    )
+    write_process_step(
+        flow=flow,
+        step=f"{step_prefix}.feedback_decision.create",
+        phase="feedback",
+        action="创建候选校验未解决反馈裁决业并提交证据",
+        **data,
+    )
+    return feedback_job_id
+
+
+def verification_feedback_gaps(report: dict[str, Any], *, outcome: str, reason: str) -> list[str]:
+    gaps = [str(item) for item in report.get("gaps") or [] if str(item).strip()]
+    failed_checks = [
+        compact_verification_check(check)
+        for check in report.get("checks") or []
+        if check.get("status") == "failed"
+    ]
+    for check in failed_checks:
+        gaps.append("未解决校验项：" + json.dumps(check, ensure_ascii=False, sort_keys=True))
+    gaps.append("修复循环停止原因：" + outcome + " / " + reason)
+    return gaps
+
+
+def build_verification_feedback_evidence(
+    *,
+    latest_verification_result: dict[str, Any],
+    attempts: list[dict[str, Any]],
+    outcome: str,
+    reason: str,
+) -> str:
+    payload = {
+        "evidence_kind": "verification_feedback_decision_context",
+        "repair_loop_outcome": outcome,
+        "repair_reason": reason,
+        "attempts": repair_attempt_summaries(attempts),
+        "latest_verification": compact_verification_report(latest_verification_result["report"]),
+        "does_not_auto_accept_or_reject": True,
+    }
+    return json.dumps(payload, ensure_ascii=False, sort_keys=True, indent=2)
+
+
+def build_repair_loop_summary_evidence(
+    *,
+    latest_verification_result: dict[str, Any],
+    latest_candidate_appearance_id: str,
+    attempts: list[dict[str, Any]],
+    outcome: str,
+    reason: str,
+    feedback_job_id: str | None,
+    max_attempts: int,
+) -> str:
+    payload = {
+        "evidence_kind": "candidate_repair_loop_summary",
+        "repair_loop_outcome": outcome,
+        "repair_reason": reason,
+        "repair_attempt_count": len(attempts),
+        "repair_max_attempts": max_attempts,
+        "latest_candidate_appearance_id": latest_candidate_appearance_id,
+        "latest_verification": compact_verification_report(latest_verification_result["report"]),
+        "attempts": repair_attempt_summaries(attempts),
+        "feedback_job_id": feedback_job_id,
+        "does_not_auto_accept_or_reject": True,
+    }
+    return json.dumps(payload, ensure_ascii=False, sort_keys=True, indent=2)
+
+
+def repair_attempt_summaries(attempts: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [
+        {
+            "attempt": attempt["attempt"],
+            "repair_job_id": attempt["repair_job_id"],
+            "candidate_appearance_id": attempt["candidate_appearance_id"],
+            "verification_job_id": attempt["verification_result"]["verification_job_id"],
+            "verification_status": attempt["verification_result"]["report"].get("overall_status"),
+        }
+        for attempt in attempts
+    ]
+
+
+def turn_field(turn: str | None) -> dict[str, str]:
+    return {"turn": turn} if turn is not None else {}
+
+
 def complete_with_provider_logging(
     *,
     flow: FlowWriter,
@@ -546,6 +1167,7 @@ class AiSandboxRunner:
         config_path: Path | str | None = None,
         method_path: Path | str | None = None,
         client: ChatClient | None = None,
+        max_repair_attempts: int = DEFAULT_MAX_REPAIR_ATTEMPTS,
     ) -> None:
         self.sandbox_path = resolve_sandbox_path(sandbox_path)
         self.log_dir = resolve_log_dir(log_dir)
@@ -554,6 +1176,7 @@ class AiSandboxRunner:
         self.config_path = Path(config_path) if config_path is not None else None
         self.method_path = Path(method_path) if method_path is not None else None
         self.client = client
+        self.max_repair_attempts = normalize_max_repair_attempts(max_repair_attempts)
         self.flow = FlowWriter(
             self.sandbox_path,
             self.diagnostic_log_path,
@@ -780,7 +1403,7 @@ class AiSandboxRunner:
                 job_id=job_id,
                 appearance_id=evidence["appearance_id"],
             )
-            run_candidate_verification(
+            verification_result = run_candidate_verification(
                 flow=self.flow,
                 service=service,
                 parent_job_id=job_id,
@@ -789,8 +1412,22 @@ class AiSandboxRunner:
                 parent_candidate_appearance_id=candidate["appearance_id"],
                 step_prefix="candidate.verify",
             )
+            repair_result = run_candidate_repair_loop(
+                flow=self.flow,
+                service=service,
+                client=client,
+                method=method,
+                parent_job_id=job_id,
+                user_input=message,
+                initial_candidate_text=response.content,
+                initial_candidate_appearance_id=candidate["appearance_id"],
+                initial_verification_result=verification_result,
+                max_repair_attempts=self.max_repair_attempts,
+                step_prefix="candidate.verify",
+            )
+            output_text = str(repair_result["latest_candidate_text"])
 
-            self.flow.write(FLOW_RESULT_OUTPUT_RECORDED, "result output recorded", result=response.content)
+            self.flow.write(FLOW_RESULT_OUTPUT_RECORDED, "result output recorded", result=output_text)
             write_process_step(
                 flow=self.flow,
                 step="output.record",
@@ -799,7 +1436,7 @@ class AiSandboxRunner:
                 job_id=job_id,
             )
             self.flow.write(FLOW_RUN_FINISHED, "run finished", job_id=job_id)
-            return response.content
+            return output_text
         except Exception as exc:
             write_process_step(
                 flow=self.flow,
@@ -935,6 +1572,7 @@ class AiSandboxChatSession:
         config_path: Path | str | None = None,
         method_path: Path | str | None = None,
         client: ChatClient | None = None,
+        max_repair_attempts: int = DEFAULT_MAX_REPAIR_ATTEMPTS,
     ) -> None:
         self.sandbox_path = resolve_sandbox_path(sandbox_path)
         self.log_dir = resolve_log_dir(log_dir)
@@ -943,6 +1581,7 @@ class AiSandboxChatSession:
         self.config_path = Path(config_path) if config_path is not None else None
         self.method_path = Path(method_path) if method_path is not None else None
         self.client = client
+        self.max_repair_attempts = normalize_max_repair_attempts(max_repair_attempts)
         self.flow = FlowWriter(
             self.sandbox_path,
             self.diagnostic_log_path,
@@ -1221,7 +1860,7 @@ class AiSandboxChatSession:
             job_id=job_id,
             appearance_id=evidence["appearance_id"],
         )
-        run_candidate_verification(
+        verification_result = run_candidate_verification(
             flow=self.flow,
             service=self.service,
             parent_job_id=job_id,
@@ -1231,12 +1870,29 @@ class AiSandboxChatSession:
             step_prefix="chat.candidate.verify",
             turn=turn,
         )
+        repair_result = run_candidate_repair_loop(
+            flow=self.flow,
+            service=self.service,
+            client=client,
+            method=method,
+            parent_job_id=job_id,
+            user_input=user_input,
+            initial_candidate_text=response.content,
+            initial_candidate_appearance_id=candidate["appearance_id"],
+            initial_verification_result=verification_result,
+            max_repair_attempts=self.max_repair_attempts,
+            step_prefix="chat.candidate.verify",
+            turn=turn,
+        )
+        output_text = str(repair_result["latest_candidate_text"])
+        if self.history and self.history[-1].get("role") == "assistant":
+            self.history[-1]["content"] = output_text
 
         self.flow.write(
             FLOW_RESULT_OUTPUT_RECORDED,
             "result output recorded",
             turn=turn,
-            result=response.content,
+            result=output_text,
         )
         write_process_step(
             flow=self.flow,
@@ -1252,7 +1908,7 @@ class AiSandboxChatSession:
             turn=turn,
             job_id=job_id,
             user_input=user_input,
-            assistant_response=response.content,
+            assistant_response=output_text,
         )
         self.last_feedback_judgment = judgment
         if judgment["needs_feedback_job"]:
@@ -1332,7 +1988,7 @@ class AiSandboxChatSession:
             turn=turn,
             job_id=job_id,
         )
-        return response.content
+        return output_text
 
     def finish(self) -> None:
         self.flow.write(FLOW_CHAT_SESSION_FINISHED, "chat session finished")

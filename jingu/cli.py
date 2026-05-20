@@ -18,7 +18,11 @@ from jingu.sandbox.paths import (
     resolve_log_dir,
     resolve_sandbox_path,
 )
-from jingu.sandbox.runner import AiSandboxChatSession, AiSandboxRunner
+from jingu.sandbox.runner import (
+    DEFAULT_MAX_REPAIR_ATTEMPTS,
+    AiSandboxChatSession,
+    AiSandboxRunner,
+)
 
 
 def print_json(value: Any) -> None:
@@ -113,6 +117,7 @@ def build_parser() -> argparse.ArgumentParser:
     ai_run.add_argument("--log-dir", type=Path)
     ai_run.add_argument("--config", type=Path)
     ai_run.add_argument("--method", type=Path)
+    ai_run.add_argument("--max-repair-attempts", type=int, default=DEFAULT_MAX_REPAIR_ATTEMPTS)
     ai_monitor = ai_subparsers.add_parser("monitor", help="Monitor the current AI sandbox flow.")
     ai_monitor.add_argument("--sandbox", type=Path)
     ai_monitor.add_argument("--log-dir", type=Path)
@@ -122,6 +127,7 @@ def build_parser() -> argparse.ArgumentParser:
     ai_chat.add_argument("--log-dir", type=Path)
     ai_chat.add_argument("--config", type=Path)
     ai_chat.add_argument("--method", type=Path)
+    ai_chat.add_argument("--max-repair-attempts", type=int, default=DEFAULT_MAX_REPAIR_ATTEMPTS)
 
     return parser
 
@@ -227,6 +233,7 @@ def run_result_only(args: argparse.Namespace) -> str:
             log_dir=args.log_dir,
             config_path=args.config,
             method_path=args.method,
+            max_repair_attempts=args.max_repair_attempts,
         ).run(args.message)
     raise JinguRuntimeError("unknown result-only command")
 
@@ -254,6 +261,7 @@ def run_chat(args: argparse.Namespace) -> None:
         log_dir=args.log_dir,
         config_path=args.config,
         method_path=args.method,
+        max_repair_attempts=args.max_repair_attempts,
     )
     session.start()
     print("Jingu AI chat started. Type /exit to finish.", flush=True)

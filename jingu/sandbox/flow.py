@@ -43,6 +43,12 @@ FLOW_VERIFICATION_TOOL_STARTED = "verification_tool_started"
 FLOW_VERIFICATION_RESULT_RECORDED = "verification_result_recorded"
 FLOW_VERIFICATION_EVIDENCE_SUBMITTED = "verification_evidence_submitted"
 FLOW_PARENT_VERIFICATION_EVIDENCE_SUBMITTED = "parent_verification_evidence_submitted"
+FLOW_REPAIR_JOB_CREATED = "repair_job_created"
+FLOW_REPAIR_REQUEST_PREPARED = "repair_request_prepared"
+FLOW_REPAIR_RESPONSE_RECEIVED = "repair_response_received"
+FLOW_REPAIR_CANDIDATE_SUBMITTED = "repair_candidate_submitted"
+FLOW_REPAIR_LOOP_FINISHED = "repair_loop_finished"
+FLOW_VERIFICATION_FEEDBACK_JOB_CREATED = "verification_feedback_job_created"
 FLOW_FEEDBACK_JUDGMENT_REQUESTED = "feedback_judgment_requested"
 FLOW_FEEDBACK_JUDGMENT_RECEIVED = "feedback_judgment_received"
 FLOW_FEEDBACK_JOB_CREATED = "feedback_job_created"
@@ -91,6 +97,12 @@ EVENT_LABELS = {
     FLOW_VERIFICATION_RESULT_RECORDED: "候选校验结果已记录",
     FLOW_VERIFICATION_EVIDENCE_SUBMITTED: "候选校验证据已提交",
     FLOW_PARENT_VERIFICATION_EVIDENCE_SUBMITTED: "父业校验证据已回流",
+    FLOW_REPAIR_JOB_CREATED: "修复业已创建",
+    FLOW_REPAIR_REQUEST_PREPARED: "修复请求已准备",
+    FLOW_REPAIR_RESPONSE_RECEIVED: "修复响应已收到",
+    FLOW_REPAIR_CANDIDATE_SUBMITTED: "修复候选已提交",
+    FLOW_REPAIR_LOOP_FINISHED: "修复循环已结束",
+    FLOW_VERIFICATION_FEEDBACK_JOB_CREATED: "校验反馈裁决业已创建",
     FLOW_FEEDBACK_JUDGMENT_REQUESTED: "反馈判断已请求",
     FLOW_FEEDBACK_JUDGMENT_RECEIVED: "反馈判断已收到",
     FLOW_FEEDBACK_JOB_CREATED: "反馈业已创建",
@@ -160,6 +172,21 @@ FIELD_LABELS = {
     "provider_message_roles": "Provider 消息角色",
     "provider_reasoning_character_count": "Provider 思考字符数",
     "provider_stream_chunk_count": "Provider 流式块数量",
+    "repair_attempt": "修复轮次",
+    "repair_attempt_count": "修复轮次数量",
+    "repair_candidate_appearance_id": "修复候选相编号",
+    "repair_child_job_id": "修复子业编号",
+    "repair_feedback_job_id": "修复反馈裁决业编号",
+    "repair_latest_candidate_appearance_id": "最新候选相编号",
+    "repair_latest_status": "最新校验状态",
+    "repair_loop_outcome": "修复循环结果",
+    "repair_loop_summary": "修复循环摘要证据",
+    "repair_max_attempts": "最大修复轮次",
+    "repair_prompt": "修复请求内容",
+    "repair_reason": "修复原因",
+    "repair_response": "修复响应",
+    "repairable_check_count": "可修复校验项数量",
+    "repairable_checks": "可修复校验项",
     "readable_log_path": "可读日志路径",
     "reason": "原因",
     "required_context_gaps": "缺失上下文",
@@ -181,6 +208,7 @@ FIELD_LABELS = {
     "verification_report": "校验报告",
     "verification_status": "校验状态",
     "verification_target": "校验目标",
+    "verification_feedback_evidence": "校验反馈裁决证据",
 }
 
 JOB_TREE_ACTION_LABELS = {
@@ -192,11 +220,17 @@ JOB_TREE_ACTION_LABELS = {
     "job_running": "业运行中",
     "parent_verification_evidence_attached": "父业校验证据已挂载",
     "root_created": "根业已创建",
+    "repair_candidate_attached": "修复候选已挂载",
+    "repair_child_created": "修复子业已创建",
+    "repair_child_ready": "修复子业已就绪",
+    "repair_child_running": "修复子业运行中",
+    "repair_verification_evidence_attached": "修复校验证据已挂载",
     "verification_candidate_attached": "校验报告候选已挂载",
     "verification_child_created": "校验子业已创建",
     "verification_child_ready": "校验子业已就绪",
     "verification_child_running": "校验子业运行中",
     "verification_evidence_attached": "校验证据已挂载",
+    "verification_feedback_child_created": "校验反馈裁决子业已创建",
 }
 
 
@@ -381,6 +415,10 @@ def _should_render_as_block(key: str, value: str) -> bool:
         "method_law_manifest",
         "method_law_appearance_refs",
         "provider_delta_text",
+        "repair_prompt",
+        "repair_response",
+        "repair_loop_summary",
+        "repairable_checks",
         "judgment",
         "required_context_gaps",
         "feedback_job_target",
@@ -391,6 +429,7 @@ def _should_render_as_block(key: str, value: str) -> bool:
         "verification_gaps",
         "verification_parent_evidence",
         "verification_report",
+        "verification_feedback_evidence",
     }
 
 
