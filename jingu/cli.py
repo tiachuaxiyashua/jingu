@@ -93,6 +93,9 @@ def build_parser() -> argparse.ArgumentParser:
     tree_propose_child.add_argument("--estimated-effort", type=int, required=True)
     tree_propose_child.add_argument("--depth-limit", type=int, required=True)
     tree_propose_child.add_argument("--gap", action="append", default=[])
+    tree_propose_child.add_argument("--method", type=Path)
+    tree_propose_child.add_argument("--method-reason")
+    tree_propose_child.add_argument("--method-return-point")
 
     tree_show = tree_subparsers.add_parser("show", help="Show a root job tree.")
     tree_show.add_argument("job_id")
@@ -196,6 +199,9 @@ def run(args: argparse.Namespace) -> Any:
             estimated_effort=args.estimated_effort,
             depth_limit=args.depth_limit,
             required_context_gaps=args.gap,
+            method_path=args.method,
+            method_binding_reason=args.method_reason,
+            method_return_point=args.method_return_point,
             actor_id="human",
         )
 

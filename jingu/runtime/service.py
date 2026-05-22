@@ -19,6 +19,7 @@ from jingu.runtime.constants import (
     EVENT_CANDIDATE_SUBMITTED,
     EVENT_CHILD_JOB_CREATED,
     EVENT_EVIDENCE_SUBMITTED,
+    EVENT_METHOD_CALL_FRAME_OPENED,
     EVENT_JOB_MARKED_READY,
     EVENT_JOB_STARTED,
     EVENT_METHOD_LAW_BOUND,
@@ -154,6 +155,7 @@ class RuntimeService:
         job_id: str,
         *,
         fragments: list[dict[str, Any]],
+        call_frame: dict[str, Any] | None = None,
         actor_id: str = "system",
     ) -> dict[str, Any]:
         if not fragments:
@@ -204,9 +206,20 @@ class RuntimeService:
                     "method_law_fragment_refs": appearance_refs,
                 },
             )
+            call_frame_payload = None
+            if call_frame is not None:
+                call_frame_payload = self._validate_method_call_frame(call_frame, appearance_refs)
+                self.repository.append_event(
+                    connection,
+                    job_id=job_id,
+                    event_type=EVENT_METHOD_CALL_FRAME_OPENED,
+                    actor_id=actor_id,
+                    payload=call_frame_payload,
+                )
             return {
                 "job": self._hydrate_job(connection, self.repository.require_job(connection, job_id)),
                 "method_law_fragments": appearance_refs,
+                "method_call_frame": call_frame_payload,
             }
 
     def submit_candidate(
@@ -408,6 +421,51 @@ class RuntimeService:
             stored = self.object_store.write_text(appearance_id, text)
             summary = text[:200]
         return {"location": stored.location, "checksum": stored.checksum, "size": stored.size, "summary": summary}
+
+    @staticmethod
+    def _validate_method_call_frame(
+        call_frame: dict[str, Any],
+        appearance_refs: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        if not isinstance(call_frame, dict):
+            raise ValueError("method call frame must be a JSON object")
+        required_text_fields = (
+            "method_name",
+            "method_path",
+            "method_checksum",
+            "binding_reason",
+            "output_contract",
+            "acceptance_criteria",
+            "return_point",
+            "repeat_detection_key",
+        )
+        missing = [
+            field
+            for field in required_text_fields
+            if not str(call_frame.get(field) or "").strip()
+        ]
+        for field in ("invocation_input", "budget"):
+            value = call_frame.get(field)
+            if value is None or (isinstance(value, str) and not value.strip()):
+                missing.append(field)
+        if "depth" not in call_frame:
+            missing.append("depth")
+        if missing:
+            raise ValueError(
+                f"method call frame is missing fields: {', '.join(sorted(set(missing)))}"
+            )
+
+        try:
+            depth = int(call_frame["depth"])
+        except (TypeError, ValueError) as exc:
+            raise ValueError("method call frame depth must be an integer") from exc
+        if depth < 0:
+            raise ValueError("method call frame depth must be zero or greater")
+
+        payload = dict(call_frame)
+        payload["depth"] = depth
+        payload["method_law_fragment_refs"] = appearance_refs
+        return payload
 
     def _hydrate_job(self, connection, job: dict[str, Any]) -> dict[str, Any]:
         hydrated = dict(job)

@@ -22,6 +22,7 @@ FLOW_METHOD_SOURCE_RESOLVED = "method_source_resolved"
 FLOW_METHOD_CONTEXT_LOADED = "method_context_loaded"
 FLOW_METHOD_LAW_FRAGMENT_LOADED = "method_law_fragment_loaded"
 FLOW_METHOD_LAW_FRAGMENT_BOUND = "method_law_fragment_bound"
+FLOW_METHOD_CALL_FRAME_OPENED = "method_call_frame_opened"
 FLOW_METHOD_CONTEXT_INJECTED = "method_context_injected"
 FLOW_ROOT_JOB_CREATED = "root_job_created"
 FLOW_JOB_READY = "job_ready"
@@ -80,6 +81,7 @@ EVENT_LABELS = {
     FLOW_METHOD_CONTEXT_LOADED: "方法上下文已加载",
     FLOW_METHOD_LAW_FRAGMENT_LOADED: "法片段已加载",
     FLOW_METHOD_LAW_FRAGMENT_BOUND: "法片段已绑定",
+    FLOW_METHOD_CALL_FRAME_OPENED: "法调用帧已打开",
     FLOW_METHOD_CONTEXT_INJECTED: "方法上下文已注入",
     FLOW_ROOT_JOB_CREATED: "根业已创建",
     FLOW_JOB_READY: "业已就绪",
@@ -168,6 +170,14 @@ FIELD_LABELS = {
     "method_law_manifest": "法片段清单",
     "method_law_order": "法片段顺序",
     "method_law_title": "法片段标题",
+    "method_call_frame": "法调用帧",
+    "method_call_frame_depth": "法调用帧深度",
+    "method_call_frame_repeat_key": "法调用帧重复检测键",
+    "method_invocation_input": "法调用输入",
+    "method_output_contract": "法调用输出契约",
+    "method_return_point": "法调用回流点",
+    "method_binding_reason": "法绑定原因",
+    "method_budget": "法调用预算",
     "method_name": "方法名称",
     "method_path": "方法路径",
     "method_size": "方法大小",
@@ -237,6 +247,7 @@ JOB_TREE_ACTION_LABELS = {
     "acceptance_route_continued": "验收路由继续运行",
     "job_ready": "业已就绪",
     "job_running": "业运行中",
+    "method_call_frame_opened": "法调用帧已打开",
     "parent_verification_evidence_attached": "父业校验证据已挂载",
     "root_created": "根业已创建",
     "repair_candidate_attached": "修复候选已挂载",
@@ -433,6 +444,11 @@ def _should_render_as_block(key: str, value: str) -> bool:
         "method_law_content",
         "method_law_manifest",
         "method_law_appearance_refs",
+        "method_call_frame",
+        "method_invocation_input",
+        "method_output_contract",
+        "method_binding_reason",
+        "method_budget",
         "provider_delta_text",
         "repair_prompt",
         "repair_response",

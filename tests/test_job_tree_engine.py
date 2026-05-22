@@ -193,6 +193,74 @@ class JobTreeEngineTest(unittest.TestCase):
         self.assertEqual(reevaluation["accepted_results"][0]["job_id"], child["job_id"])
         self.assertEqual(reevaluation["unresolved_children"], [])
 
+    def test_child_proposal_can_bind_method_to_child_call_frame(self) -> None:
+        method_path = self.workspace / "pdca.md"
+        method_path.write_text(
+            "---\nname: test-pdca\n---\n# PDCA\n\nUse Plan Do Check Act.",
+            encoding="utf-8",
+        )
+        root = self.runtime.create_root_job(wish="write a story")
+
+        result = self.tree.propose_child_job(
+            parent_job_id=root["job_id"],
+            target="make protagonist vivid",
+            blocking_reason="parent cannot draft a strong story without a vivid protagonist",
+            output_contract="protagonist card with measurable traits and evidence",
+            acceptance_criteria="card lists traits, conflict, scene proof, and open risks",
+            estimated_effort=2,
+            depth_limit=4,
+            method_path=method_path,
+            method_binding_reason="this child needs iterative Plan Do Check Act refinement",
+            method_return_point="return the protagonist card to the parent story plan",
+        )
+
+        child = result["child"]
+        tree = self.tree.get_tree(root["job_id"])
+        parent_summary = next(job for job in tree["jobs"] if job["job_id"] == root["job_id"])
+        child_summary = next(job for job in tree["jobs"] if job["job_id"] == child["job_id"])
+        reevaluation = self.tree.reevaluate_parent(root["job_id"])
+        child_events = [event["event_type"] for event in self.runtime.list_events(child["job_id"])]
+        parent_events = [event["event_type"] for event in self.runtime.list_events(root["job_id"])]
+
+        self.assertEqual(parent_summary["method_call_frames"], [])
+        self.assertEqual(len(child_summary["method_call_frames"]), 1)
+        self.assertEqual(child_summary["method_call_frames"][0]["method_name"], "test-pdca")
+        self.assertEqual(
+            child_summary["method_call_frames"][0]["return_point"],
+            "return the protagonist card to the parent story plan",
+        )
+        self.assertIn("method_law_bound", child_events)
+        self.assertIn("method_call_frame_opened", child_events)
+        self.assertNotIn("method_call_frame_opened", parent_events)
+        self.assertEqual(
+            reevaluation["child_method_call_frames"][0]["job_id"],
+            child["job_id"],
+        )
+        self.assertEqual(result["method_binding"]["method_call_frame"]["method_name"], "test-pdca")
+
+    def test_incomplete_method_binding_is_rejected_before_child_creation(self) -> None:
+        method_path = self.workspace / "pdca.md"
+        method_path.write_text(
+            "---\nname: test-pdca\n---\n# PDCA\n\nUse Plan Do Check Act.",
+            encoding="utf-8",
+        )
+        root = self.runtime.create_root_job(wish="write a story")
+
+        with self.assertRaises(GuardrailViolation):
+            self.tree.propose_child_job(
+                parent_job_id=root["job_id"],
+                target="make protagonist vivid",
+                blocking_reason="parent cannot draft a strong story without a vivid protagonist",
+                output_contract="protagonist card with evidence",
+                acceptance_criteria="card lists traits",
+                estimated_effort=1,
+                depth_limit=4,
+                method_path=method_path,
+                method_return_point="return to parent",
+            )
+
+        self.assertEqual(len(self.tree.get_tree(root["job_id"])["jobs"]), 1)
+
     def test_cli_manual_tree_workflow(self) -> None:
         base = [sys.executable, "-m", "jingu.cli", "--workspace", str(self.workspace)]
 
@@ -237,6 +305,54 @@ class JobTreeEngineTest(unittest.TestCase):
         self.assertEqual(package_result["job"]["state"], STATE_REVIEWING)
         self.assertEqual(len(tree["jobs"]), 2)
         self.assertEqual(frontier["frontier"][0]["job_id"], child["job_id"])
+
+    def test_cli_child_method_binding_workflow(self) -> None:
+        base = [sys.executable, "-m", "jingu.cli", "--workspace", str(self.workspace)]
+
+        def run(*args: str) -> dict:
+            completed = subprocess.run(
+                [*base, *args],
+                check=True,
+                text=True,
+                capture_output=True,
+            )
+            return json.loads(completed.stdout)
+
+        method_path = self.workspace / "dialectical.md"
+        method_path.write_text(
+            "---\nname: test-dialectical\n---\n# Dialectic\n\nFind contradiction.",
+            encoding="utf-8",
+        )
+
+        root = run("root", "create", "--wish", "wish", "--target", "target")
+        child = run(
+            "tree",
+            "propose-child",
+            root["job_id"],
+            "--target",
+            "analyze tension",
+            "--blocking-reason",
+            "parent needs contradiction analysis",
+            "--output-contract",
+            "contradiction table",
+            "--acceptance-criteria",
+            "table separates facts from value decisions",
+            "--estimated-effort",
+            "1",
+            "--depth-limit",
+            "3",
+            "--method",
+            str(method_path),
+            "--method-reason",
+            "this child needs contradiction analysis",
+            "--method-return-point",
+            "return contradiction table to parent",
+        )["child"]
+        tree = run("tree", "show", root["job_id"])
+        child_summary = next(job for job in tree["jobs"] if job["job_id"] == child["job_id"])
+
+        self.assertEqual(child_summary["method_call_frames"][0]["method_name"], "test-dialectical")
+        self.assertEqual(child_summary["method_call_frames"][0]["output_contract"], "contradiction table")
 
     def _child(self, parent_job_id: str, target: str, gaps: list[str] | None = None) -> dict:
         return self.tree.propose_child_job(

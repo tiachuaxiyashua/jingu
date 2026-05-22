@@ -9,7 +9,13 @@ from typing import Any
 
 from jingu.ai.client import ChatClient
 from jingu.ai.config import load_ai_config
-from jingu.runtime.constants import STATE_ABANDONED, STATE_ACCEPTED, STATE_REJECTED
+from jingu.runtime.constants import (
+    EVENT_METHOD_CALL_FRAME_OPENED,
+    STATE_ABANDONED,
+    STATE_ACCEPTED,
+    STATE_REJECTED,
+)
+from jingu.runtime.object_store import checksum_text
 from jingu.runtime.repository import decode_json
 from jingu.runtime.service import RuntimeService
 from jingu.sandbox.flow import (
@@ -32,6 +38,7 @@ from jingu.sandbox.flow import (
     FLOW_JOB_TREE_SNAPSHOT_RECORDED,
     FLOW_METHOD_CONTEXT_INJECTED,
     FLOW_METHOD_CONTEXT_LOADED,
+    FLOW_METHOD_CALL_FRAME_OPENED,
     FLOW_METHOD_LAW_FRAGMENT_BOUND,
     FLOW_METHOD_LAW_FRAGMENT_LOADED,
     FLOW_METHOD_SELF_REVIEW_RECEIVED,
@@ -173,11 +180,42 @@ def bind_method_law_fragments_to_job(
     method: MethodContext,
     job_id: str,
     step: str,
+    binding_reason: str,
+    invocation_input: dict[str, Any],
+    output_contract: str,
+    acceptance_criteria: str,
+    return_point: str,
+    budget: dict[str, Any],
+    depth: int,
     turn: str | None = None,
 ) -> None:
+    call_frame = {
+        "method_name": method.name,
+        "method_path": str(method.path),
+        "method_checksum": method.checksum,
+        "binding_reason": binding_reason,
+        "invocation_input": invocation_input,
+        "output_contract": output_contract,
+        "acceptance_criteria": acceptance_criteria,
+        "return_point": return_point,
+        "budget": budget,
+        "depth": depth,
+        "repeat_detection_key": checksum_text(
+            json.dumps(
+                {
+                    "job_id": job_id,
+                    "method_checksum": method.checksum,
+                    "invocation_input": invocation_input,
+                },
+                ensure_ascii=False,
+                sort_keys=True,
+            )
+        ),
+    }
     result = service.bind_method_law_fragments(
         job_id,
         fragments=[fragment.binding_payload(method=method) for fragment in method.fragments],
+        call_frame=call_frame,
     )
     refs = result["method_law_fragments"]
     data = {
@@ -190,12 +228,40 @@ def bind_method_law_fragments_to_job(
     if turn is not None:
         data["turn"] = turn
     flow.write(FLOW_METHOD_LAW_FRAGMENT_BOUND, "method law fragments bound", **data)
+    frame_data = {
+        **data,
+        "method_binding_reason": binding_reason,
+        "method_invocation_input": json.dumps(invocation_input, ensure_ascii=False, sort_keys=True, indent=2),
+        "method_output_contract": output_contract,
+        "method_return_point": return_point,
+        "method_budget": json.dumps(budget, ensure_ascii=False, sort_keys=True, indent=2),
+        "method_call_frame_depth": str(depth),
+        "method_call_frame_repeat_key": call_frame["repeat_detection_key"],
+        "method_call_frame": json.dumps(
+            result["method_call_frame"], ensure_ascii=False, sort_keys=True, indent=2
+        ),
+    }
+    flow.write(FLOW_METHOD_CALL_FRAME_OPENED, "method call frame opened", **frame_data)
+    write_job_tree_mirror(
+        flow=flow,
+        service=service,
+        turn=turn,
+        job_id=job_id,
+        action="method_call_frame_opened",
+    )
     write_process_step(
         flow=flow,
         step=step,
         phase="method",
         action="bound method-law fragments to current job as appearances",
         **data,
+    )
+    write_process_step(
+        flow=flow,
+        step=f"{step}.call_frame",
+        phase="method",
+        action="opened method call frame for current job",
+        **frame_data,
     )
 
 
@@ -1674,8 +1740,18 @@ def write_job_tree_mirror(
 def job_tree_snapshot(service: RuntimeService, root_job_id: str) -> dict[str, Any]:
     with service.repository.transaction() as connection:
         rows = service.repository.list_jobs_by_root(connection, root_job_id)
+        nodes = [
+            job_tree_node(
+                row,
+                method_call_frames=[
+                    event["payload"]
+                    for event in service.repository.list_events(connection, str(row["job_id"]))
+                    if event["event_type"] == EVENT_METHOD_CALL_FRAME_OPENED
+                ],
+            )
+            for row in rows
+        ]
 
-    nodes = [job_tree_node(row) for row in rows]
     active_job_ids = {
         str(node["job_id"])
         for node in nodes
@@ -1702,7 +1778,11 @@ def job_tree_snapshot(service: RuntimeService, root_job_id: str) -> dict[str, An
     }
 
 
-def job_tree_node(job: dict[str, Any]) -> dict[str, Any]:
+def job_tree_node(
+    job: dict[str, Any],
+    *,
+    method_call_frames: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
     return {
         "job_id": job["job_id"],
         "parent_job_id": job.get("parent_job_id"),
@@ -1713,6 +1793,7 @@ def job_tree_node(job: dict[str, Any]) -> dict[str, Any]:
         "evidence_appearance_id": job.get("evidence_appearance_id"),
         "result_appearance_id": job.get("result_appearance_id"),
         "required_context_gaps": decode_json(job.get("required_context_gaps"), []),
+        "method_call_frames": method_call_frames or [],
     }
 
 
@@ -1808,6 +1889,13 @@ class AiSandboxRunner:
                 method=method,
                 job_id=job_id,
                 step="method.law.bind",
+                binding_reason="当前根业通过显式 method 参数绑定此法。",
+                invocation_input={"job_id": job_id, "user_input": message},
+                output_contract="候选结果、方法自验、校验证据和验收路由证据。",
+                acceptance_criteria="候选结果必须保留原始愿望，并提交可追踪证据，不得自行接收或宣告完成。",
+                return_point="当前根业候选提交、校验和验收路由。",
+                budget={"max_repair_attempts": self.max_repair_attempts},
+                depth=0,
             )
 
             service.mark_ready(job_id, actor_id="system")
@@ -2248,6 +2336,13 @@ class AiSandboxChatSession:
             method=method,
             job_id=job_id,
             step="chat.method.law.bind",
+            binding_reason="当前对话轮根业通过显式 method 参数绑定此法。",
+            invocation_input={"job_id": job_id, "turn": turn, "user_input": user_input},
+            output_contract="对话候选结果、方法自验、校验证据和验收路由证据。",
+            acceptance_criteria="候选结果必须保留当前轮原始输入，并提交可追踪证据，不得自行接收或宣告完成。",
+            return_point="当前对话轮根业候选提交、校验和验收路由。",
+            budget={"max_repair_attempts": self.max_repair_attempts, "turn": turn},
+            depth=0,
             turn=turn,
         )
 

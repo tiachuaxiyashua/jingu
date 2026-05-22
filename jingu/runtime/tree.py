@@ -8,6 +8,7 @@ from typing import Any
 
 from jingu.runtime.constants import (
     EVENT_CHILD_JOB_CREATED,
+    EVENT_METHOD_CALL_FRAME_OPENED,
     EVENT_RESULT_PACKAGE_SUBMITTED,
     EVENT_SPLIT_PROPOSAL_ACCEPTED,
     STATE_ABANDONED,
@@ -18,8 +19,10 @@ from jingu.runtime.constants import (
     STATE_RUNNING,
 )
 from jingu.runtime.errors import GuardrailViolation
+from jingu.runtime.object_store import checksum_text
 from jingu.runtime.repository import decode_json, new_id
 from jingu.runtime.service import RuntimeService
+from jingu.sandbox.method import MethodContext, load_method_context
 
 
 TERMINAL_STATES = {STATE_ACCEPTED, STATE_REJECTED, STATE_ABANDONED}
@@ -48,12 +51,20 @@ class TreeService:
         estimated_effort: int,
         depth_limit: int,
         required_context_gaps: list[str] | None = None,
+        method_path: Path | str | None = None,
+        method_binding_reason: str | None = None,
+        method_return_point: str | None = None,
         actor_id: str = "ai",
     ) -> dict[str, Any]:
         target = self._require_text("target", target)
         blocking_reason = self._require_text("blocking_reason", blocking_reason)
         output_contract = self._require_text("output_contract", output_contract)
         acceptance_criteria = self._require_text("acceptance_criteria", acceptance_criteria)
+        method_context = self._load_optional_method_binding(
+            method_path=method_path,
+            method_binding_reason=method_binding_reason,
+            method_return_point=method_return_point,
+        )
         if estimated_effort < 1:
             raise GuardrailViolation("estimated effort must be positive")
         if depth_limit < 1:
@@ -117,17 +128,117 @@ class TreeService:
                     "output_contract": output_contract,
                 },
             )
-            return {
+            result = {
                 "proposal": proposal_payload,
                 "child": self.runtime._hydrate_job(connection, child),
             }
+
+        if method_context is not None:
+            assert method_binding_reason is not None
+            assert method_return_point is not None
+            binding = self._bind_method_to_child_job(
+                child_job_id=child_job_id,
+                parent_job_id=parent_job_id,
+                method=method_context,
+                binding_reason=self._require_text(
+                    "method_binding_reason", method_binding_reason
+                ),
+                invocation_input={
+                    "parent_job_id": parent_job_id,
+                    "target": target,
+                    "blocking_reason": blocking_reason,
+                    "required_context_gaps": required_context_gaps or [],
+                },
+                output_contract=output_contract,
+                acceptance_criteria=acceptance_criteria,
+                return_point=self._require_text("method_return_point", method_return_point),
+                budget={
+                    "estimated_effort": estimated_effort,
+                    "depth_limit": depth_limit,
+                },
+                depth=child_depth,
+                actor_id=actor_id,
+            )
+            result["method_binding"] = binding
+        return result
+
+    def _load_optional_method_binding(
+        self,
+        *,
+        method_path: Path | str | None,
+        method_binding_reason: str | None,
+        method_return_point: str | None,
+    ) -> MethodContext | None:
+        has_binding_field = any(
+            value is not None
+            for value in (method_path, method_binding_reason, method_return_point)
+        )
+        if not has_binding_field:
+            return None
+        if method_path is None:
+            raise GuardrailViolation("method path is required when binding a method")
+        self._require_text("method_binding_reason", method_binding_reason or "")
+        self._require_text("method_return_point", method_return_point or "")
+        try:
+            return load_method_context(
+                method_path=method_path,
+                workspace=self.runtime.paths.workspace,
+            )
+        except Exception as exc:
+            raise GuardrailViolation(str(exc)) from exc
+
+    def _bind_method_to_child_job(
+        self,
+        *,
+        child_job_id: str,
+        parent_job_id: str,
+        method: MethodContext,
+        binding_reason: str,
+        invocation_input: dict[str, Any],
+        output_contract: str,
+        acceptance_criteria: str,
+        return_point: str,
+        budget: dict[str, Any],
+        depth: int,
+        actor_id: str,
+    ) -> dict[str, Any]:
+        call_frame = {
+            "method_name": method.name,
+            "method_path": str(method.path),
+            "method_checksum": method.checksum,
+            "binding_reason": binding_reason,
+            "invocation_input": invocation_input,
+            "output_contract": output_contract,
+            "acceptance_criteria": acceptance_criteria,
+            "return_point": return_point,
+            "budget": budget,
+            "depth": depth,
+            "repeat_detection_key": checksum_text(
+                json.dumps(
+                    {
+                        "parent_job_id": parent_job_id,
+                        "child_job_id": child_job_id,
+                        "method_checksum": method.checksum,
+                        "target": invocation_input.get("target"),
+                    },
+                    ensure_ascii=False,
+                    sort_keys=True,
+                )
+            ),
+        }
+        return self.runtime.bind_method_law_fragments(
+            child_job_id,
+            fragments=[fragment.binding_payload(method=method) for fragment in method.fragments],
+            call_frame=call_frame,
+            actor_id=actor_id,
+        )
 
     def get_tree(self, job_id: str) -> dict[str, Any]:
         with self.runtime.repository.transaction() as connection:
             job = self.runtime.repository.require_job(connection, job_id)
             root_job_id = str(job["root_job_id"])
             rows = self.runtime.repository.list_jobs_by_root(connection, root_job_id)
-            jobs = [self._job_summary(row) for row in rows]
+            jobs = [self._job_summary(connection, row) for row in rows]
             return {
                 "root_job_id": root_job_id,
                 "jobs": jobs,
@@ -218,10 +329,19 @@ class TreeService:
             accepted_results: list[dict[str, Any]] = []
             open_questions: list[dict[str, Any]] = []
             required_context_gaps: list[dict[str, Any]] = []
+            child_method_call_frames: list[dict[str, Any]] = []
 
             for child in children:
-                summary = self._job_summary(child)
+                summary = self._job_summary(connection, child)
                 gaps = summary["required_context_gaps"]
+                method_call_frames = summary["method_call_frames"]
+                if method_call_frames:
+                    child_method_call_frames.append(
+                        {
+                            "job_id": child["job_id"],
+                            "method_call_frames": method_call_frames,
+                        }
+                    )
                 if child["state"] not in TERMINAL_STATES:
                     unresolved_children.append(summary)
                 if gaps:
@@ -249,6 +369,7 @@ class TreeService:
                 "accepted_results": accepted_results,
                 "required_context_gaps": required_context_gaps,
                 "open_questions": open_questions,
+                "child_method_call_frames": child_method_call_frames,
             }
 
     def _read_package_from_job(
@@ -270,7 +391,7 @@ class TreeService:
             return None
         return payload if isinstance(payload, dict) else None
 
-    def _job_summary(self, job: dict[str, Any]) -> dict[str, Any]:
+    def _job_summary(self, connection: Any, job: dict[str, Any]) -> dict[str, Any]:
         return {
             "job_id": job["job_id"],
             "parent_job_id": job.get("parent_job_id"),
@@ -282,7 +403,15 @@ class TreeService:
             "candidate_appearance_id": job.get("candidate_appearance_id"),
             "evidence_appearance_id": job.get("evidence_appearance_id"),
             "result_appearance_id": job.get("result_appearance_id"),
+            "method_call_frames": self._method_call_frames_for_job(connection, str(job["job_id"])),
         }
+
+    def _method_call_frames_for_job(self, connection: Any, job_id: str) -> list[dict[str, Any]]:
+        return [
+            event["payload"]
+            for event in self.runtime.repository.list_events(connection, job_id)
+            if event["event_type"] == EVENT_METHOD_CALL_FRAME_OPENED
+        ]
 
     def _job_depth(self, connection: Any, job: dict[str, Any]) -> int:
         depth = 0
