@@ -22,6 +22,17 @@ The acceptance router SHALL return a structured route that chooses one of: conti
 - **WHEN** the router judges that the candidate exposes a high-value or directional decision point
 - **THEN** the system MUST create a feedback child job with required context gaps and evidence from the routing judgment.
 
+#### Scenario: Router exposes unresolved human direction
+- **WHEN** the latest candidate contains an unresolved high-value, directional, authorization, responsibility, or value-conflict question for the human owner
+- **THEN** the router MUST choose feedback instead of continue so the issue is visible as a child job in the job tree.
+
+### Requirement: Routing judgment normalization
+The acceptance router SHALL tolerate common real-model JSON shape drift for non-decisive evidence fields without aborting the whole run.
+
+#### Scenario: Router returns evidence as text
+- **WHEN** the provider returns `evidence` as a non-empty string or JSON object instead of a list
+- **THEN** the system MUST normalize it into a one-item evidence list and continue routing.
+
 ### Requirement: Routing evidence payload
 The acceptance-routing request SHALL include the original task, latest candidate, deterministic verification evidence, repair-loop summary, and any known unresolved gaps.
 

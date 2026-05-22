@@ -1078,6 +1078,12 @@ def build_acceptance_routing_messages(
     repair_result: dict[str, Any],
     turn: str | None = None,
 ) -> list[dict[str, str]]:
+    method_manifest = {
+        "method_name": method.name,
+        "method_checksum": method.checksum,
+        "method_law_fragment_count": len(method.fragments),
+        "bound_law_titles": [fragment.title for fragment in method.fragments],
+    }
     routing_payload = {
         "task": user_input,
         "turn": turn or "",
@@ -1089,7 +1095,13 @@ def build_acceptance_routing_messages(
         "deterministic_verification": compact_verification_report(
             latest_verification_result["report"]
         ),
+        "method_context": method_manifest,
         "repair_loop": compact_repair_loop_result(repair_result),
+        "routing_rules": [
+            "continue 只用于没有语义修复、没有方向问题、没有高价值问题、没有人类授权缺口的候选。",
+            "candidate 里只要保留了需要愿主、人类授权、责任归属或方向裁决的问题，就必须选择 feedback，把问题登记成反馈业。",
+            "repair 用于候选问题可以由执行端直接改写且不需要愿主价值裁决的情况。",
+        ],
         "routing_contract": {
             "route_action": sorted(ACCEPTANCE_ROUTE_ACTIONS),
             "feedback_job_kind": ["none", *sorted(ACCEPTANCE_FEEDBACK_JOB_KINDS)],
@@ -1106,7 +1118,6 @@ def build_acceptance_routing_messages(
         },
     }
     return [
-        *build_method_system_messages(method),
         {
             "role": "system",
             "content": (
@@ -1114,8 +1125,18 @@ def build_acceptance_routing_messages(
                 "你不能接收、拒收或宣告父业完成，只能选择下一步路由。"
                 "若候选存在可由执行端直接修正的问题，选择 repair 并给出可执行修复指令。"
                 "若候选暴露高价值、方向性、授权、价值冲突或关键缺口，选择 feedback 并显影成反馈业。"
+                "只要候选中仍有需要愿主、人类授权或方向裁决的问题，就必须选择 feedback 登记为子业；"
+                "不要因为候选已经文字描述了该问题就选择 continue。"
                 "若无需打回或显影，选择 continue。"
+                "evidence 必须是字符串数组，每个元素是一条可核查证据。"
                 "只返回 JSON，不要输出解释性正文。"
+            ),
+        },
+        {
+            "role": "system",
+            "content": (
+                "当前调用只做验收路由，不重新执行完整方法。"
+                "方法全文已经在父业候选生成阶段绑定；本轮只读取候选、校验、修复摘要和路由规则。"
             ),
         },
         {
@@ -1409,8 +1430,13 @@ def parse_acceptance_routing_judgment(content: str) -> dict[str, Any]:
 
 
 def normalize_string_list(value: Any, *, field_name: str, error_prefix: str) -> list[str]:
+    if isinstance(value, str):
+        text = value.strip()
+        return [text] if text else []
+    if isinstance(value, dict):
+        return [json.dumps(value, ensure_ascii=False, sort_keys=True)]
     if not isinstance(value, list):
-        raise RuntimeError(f"{error_prefix} must include {field_name} as a list")
+        raise RuntimeError(f"{error_prefix} must include {field_name} as a list or text")
     normalized: list[str] = []
     for item in value:
         if isinstance(item, (dict, list)):

@@ -15,3 +15,4 @@
 - [x] 3.1 Extend readable and JSONL logs for routing requests, judgments, repair打回, skip evidence, and feedback jobs.
 - [x] 3.2 Add tests for run feedback routing, run executor repair routing, chat shared routing, and skip evidence.
 - [x] 3.3 Run OpenSpec validation, unit tests, compile checks, and the hardcoding scanner.
+- [x] 3.4 Harden acceptance routing against real-provider JSON shape drift and rerun real-model evidence.

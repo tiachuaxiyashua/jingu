@@ -21,7 +21,11 @@ from jingu.sandbox.flow import (
 )
 from jingu.sandbox.method import load_method_context
 from jingu.sandbox.paths import latest_readable_log_pointer_path
-from jingu.sandbox.runner import AiSandboxChatSession, AiSandboxRunner
+from jingu.sandbox.runner import (
+    AiSandboxChatSession,
+    AiSandboxRunner,
+    parse_acceptance_routing_judgment,
+)
 
 
 def write_method_file(base: Path, content: str | None = None) -> Path:
@@ -604,6 +608,28 @@ class AiSandboxChatTest(unittest.TestCase):
             self.assertIn("Add the missing concrete evidence", serialized)
             self.assertNotIn("job_accepted", event_types)
             self.assertNotIn("job_rejected", event_types)
+
+    def test_acceptance_routing_normalizes_text_evidence(self) -> None:
+        judgment = parse_acceptance_routing_judgment(
+            json.dumps(
+                {
+                    "route_action": "feedback",
+                    "feedback_job_kind": "high_value",
+                    "feedback_job_summary": "Expose the unresolved human direction choice.",
+                    "required_context_gaps": [],
+                    "repair_instruction": "",
+                    "reason": "candidate contains an unresolved owner decision",
+                    "evidence": "candidate names the unresolved direction and does not decide it",
+                },
+                ensure_ascii=False,
+            )
+        )
+
+        self.assertEqual(
+            judgment["evidence"],
+            ["candidate names the unresolved direction and does not decide it"],
+        )
+        self.assertTrue(judgment["does_not_auto_accept_or_reject"])
 
     def test_runner_preserves_existing_saved_logs_in_log_dir(self) -> None:
         with TemporaryDirectory() as tmp:
