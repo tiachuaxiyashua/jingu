@@ -63,6 +63,26 @@ def split_proposals_json(proposals: list[dict] | None = None) -> str:
     return json.dumps({"proposals": proposals or []}, ensure_ascii=False)
 
 
+def child_result_package_json(
+    *,
+    conclusion: str = "child conclusion",
+    artifacts: list[str] | None = None,
+    evidence_summary: str = "child evidence summary",
+    open_questions: list[str] | None = None,
+    suggested_follow_up_jobs: list[str] | None = None,
+) -> str:
+    return json.dumps(
+        {
+            "conclusion": conclusion,
+            "artifacts": artifacts or ["child artifact"],
+            "evidence_summary": evidence_summary,
+            "open_questions": open_questions or [],
+            "suggested_follow_up_jobs": suggested_follow_up_jobs or [],
+        },
+        ensure_ascii=False,
+    )
+
+
 def acceptance_continue_json(reason: str = "no routing child job needed") -> str:
     return json.dumps(
         {
@@ -532,15 +552,140 @@ class AiSandboxChatTest(unittest.TestCase):
             event_types = [record["event_type"] for record in records]
             self.assertEqual(event_types.count("split_proposal_accepted"), 1)
             self.assertEqual(event_types.count("split_proposal_rejected"), 1)
+            self.assertEqual(event_types.count("child_result_package_rejected"), 1)
             serialized = "\n".join(json.dumps(record, ensure_ascii=False) for record in records)
             self.assertIn("child-method", serialized)
             self.assertIn("make protagonist vivid", serialized)
             self.assertIn("split proposal method is not in catalog", serialized)
+            self.assertIn("result package is missing fields", serialized)
             self.assertIn("split_proposal_child_created", serialized)
             self.assertIn("method_call_frames", serialized)
             readable_text = next(log_dir.glob("ai-run-*.md")).read_text(encoding="utf-8-sig")
             self.assertIn("分业申请已登记（split_proposal_accepted）", readable_text)
             self.assertIn("分业申请已拒绝（split_proposal_rejected）", readable_text)
+            self.assertIn("子业果包已拒绝（child_result_package_rejected）", readable_text)
+
+    def test_runner_dispatches_child_package_and_registers_grandchild(self) -> None:
+        with TemporaryDirectory() as tmp:
+            workspace = Path(tmp)
+            sandbox = workspace / "sandbox"
+            log_dir = workspace / "logs"
+            method_path = write_method_file(workspace)
+            child_method = workspace / ".agents" / "skills" / "child-method" / "SKILL.md"
+            child_method.parent.mkdir(parents=True)
+            child_method.write_text(
+                "\n".join(
+                    [
+                        "---",
+                        "name: child-method",
+                        "description: Child method for frontier dispatch tests.",
+                        "---",
+                        "# Child Method",
+                        "Return a structured result package and surface next blocking work.",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            root_split_payload = split_proposals_json(
+                [
+                    {
+                        "target": "build protagonist card",
+                        "blocking_reason": "parent needs a usable protagonist card before drafting",
+                        "output_contract": "structured protagonist card",
+                        "acceptance_criteria": "card includes desire, wound, contradiction, and scene evidence",
+                        "estimated_effort": 1,
+                        "depth_limit": 4,
+                        "required_context_gaps": [],
+                        "method_path": str(child_method),
+                        "method_binding_reason": "the child job needs a focused character method",
+                        "method_return_point": "return character evidence to the parent story job",
+                    }
+                ]
+            )
+            child_split_payload = split_proposals_json(
+                [
+                    {
+                        "target": "quantify protagonist vividness checks",
+                        "blocking_reason": "the child package exposes an unresolved acceptance checklist",
+                        "output_contract": "measurable vividness checklist",
+                        "acceptance_criteria": "checklist has observable items and thresholds",
+                        "estimated_effort": 1,
+                        "depth_limit": 4,
+                        "required_context_gaps": [],
+                        "method_path": str(child_method),
+                        "method_binding_reason": "the same child method can refine its acceptance checks",
+                        "method_return_point": "return the checklist to the character child job",
+                    }
+                ]
+            )
+            client = FakeChatClient(
+                responses=[
+                    "root candidate that needs character work",
+                    method_review_json("checked root method use"),
+                    root_split_payload,
+                    child_result_package_json(
+                        conclusion="protagonist card candidate",
+                        artifacts=["desire: leave the egg-city", "contradiction: fears open sky"],
+                        evidence_summary="the card maps directly to the requested story conflict",
+                        open_questions=["vividness checklist is not yet quantified"],
+                        suggested_follow_up_jobs=["turn vividness into measurable checks"],
+                    ),
+                    child_split_payload,
+                    acceptance_continue_json(),
+                ]
+            )
+
+            answer = AiSandboxRunner(
+                sandbox_path=sandbox,
+                log_dir=log_dir,
+                method_path=method_path,
+                client=client,
+            ).run("Create a story candidate and split blocking character work.")
+
+            self.assertEqual(answer, "root candidate that needs character work")
+            records = [
+                json.loads(line)
+                for line in next(log_dir.glob("ai-run-*.jsonl")).read_text(encoding="utf-8").splitlines()
+                if line.strip()
+            ]
+            event_types = [record["event_type"] for record in records]
+            self.assertEqual(event_types.count("frontier_dispatch_started"), 1)
+            self.assertEqual(event_types.count("child_job_dispatch_started"), 1)
+            self.assertEqual(event_types.count("child_job_response_received"), 1)
+            self.assertEqual(event_types.count("child_result_package_submitted"), 1)
+            self.assertEqual(event_types.count("parent_reevaluation_recorded"), 1)
+            self.assertEqual(event_types.count("frontier_dispatch_finished"), 1)
+            self.assertEqual(event_types.count("split_proposal_accepted"), 2)
+            self.assertNotIn("child_result_package_rejected", event_types)
+            serialized = "\n".join(json.dumps(record, ensure_ascii=False) for record in records)
+            self.assertIn("protagonist card candidate", serialized)
+            self.assertIn("vividness checklist is not yet quantified", serialized)
+            self.assertIn("quantify protagonist vividness checks", serialized)
+            self.assertIn("parent_reevaluation", serialized)
+            tree_actions = [
+                record["data"]["job_tree_action"]
+                for record in records
+                if record["event_type"] == "job_tree_management_recorded"
+            ]
+            self.assertIn("child_dispatch_started", tree_actions)
+            self.assertIn("child_package_submitted", tree_actions)
+            self.assertIn("parent_reevaluation_recorded", tree_actions)
+            tree_snapshots = [
+                json.loads(record["data"]["tree_snapshot"])
+                for record in records
+                if record["event_type"] == "job_tree_snapshot_recorded"
+            ]
+            self.assertTrue(
+                any(
+                    node["target"] == "quantify protagonist vividness checks"
+                    for snapshot in tree_snapshots
+                    for node in snapshot["nodes"]
+                )
+            )
+            readable_text = next(log_dir.glob("ai-run-*.md")).read_text(encoding="utf-8-sig")
+            self.assertIn("子业果包已提交（child_result_package_submitted）", readable_text)
+            self.assertIn("父业重评估已记录（parent_reevaluation_recorded）", readable_text)
+            self.assertNotIn("????", readable_text)
 
     def test_runner_repairs_failed_verification_candidate(self) -> None:
         with TemporaryDirectory() as tmp:

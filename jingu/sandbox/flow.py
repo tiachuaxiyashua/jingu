@@ -66,6 +66,14 @@ FLOW_SPLIT_PROPOSAL_RECEIVED = "split_proposal_received"
 FLOW_SPLIT_PROPOSAL_ACCEPTED = "split_proposal_accepted"
 FLOW_SPLIT_PROPOSAL_REJECTED = "split_proposal_rejected"
 FLOW_SPLIT_PROPOSAL_SKIPPED = "split_proposal_skipped"
+FLOW_FRONTIER_DISPATCH_STARTED = "frontier_dispatch_started"
+FLOW_FRONTIER_DISPATCH_SKIPPED = "frontier_dispatch_skipped"
+FLOW_FRONTIER_DISPATCH_FINISHED = "frontier_dispatch_finished"
+FLOW_CHILD_JOB_DISPATCH_STARTED = "child_job_dispatch_started"
+FLOW_CHILD_JOB_RESPONSE_RECEIVED = "child_job_response_received"
+FLOW_CHILD_RESULT_PACKAGE_SUBMITTED = "child_result_package_submitted"
+FLOW_CHILD_RESULT_PACKAGE_REJECTED = "child_result_package_rejected"
+FLOW_PARENT_REEVALUATION_RECORDED = "parent_reevaluation_recorded"
 FLOW_RESULT_OUTPUT_RECORDED = "result_output_recorded"
 FLOW_CHAT_TURN_FINISHED = "chat_turn_finished"
 FLOW_CHAT_SESSION_FINISHED = "chat_session_finished"
@@ -130,6 +138,14 @@ EVENT_LABELS = {
     FLOW_SPLIT_PROPOSAL_ACCEPTED: "分业申请已登记",
     FLOW_SPLIT_PROPOSAL_REJECTED: "分业申请已拒绝",
     FLOW_SPLIT_PROPOSAL_SKIPPED: "分业登记已跳过",
+    FLOW_FRONTIER_DISPATCH_STARTED: "前沿子业调度已开始",
+    FLOW_FRONTIER_DISPATCH_SKIPPED: "前沿子业调度已跳过",
+    FLOW_FRONTIER_DISPATCH_FINISHED: "前沿子业调度已结束",
+    FLOW_CHILD_JOB_DISPATCH_STARTED: "子业调度已开始",
+    FLOW_CHILD_JOB_RESPONSE_RECEIVED: "子业响应已收到",
+    FLOW_CHILD_RESULT_PACKAGE_SUBMITTED: "子业果包已提交",
+    FLOW_CHILD_RESULT_PACKAGE_REJECTED: "子业果包已拒绝",
+    FLOW_PARENT_REEVALUATION_RECORDED: "父业重评估已记录",
     FLOW_RESULT_OUTPUT_RECORDED: "结果输出已记录",
     FLOW_CHAT_TURN_FINISHED: "对话轮次已完成",
     FLOW_CHAT_SESSION_FINISHED: "对话会话已结束",
@@ -155,6 +171,14 @@ FIELD_LABELS = {
     "feedback_job_summary": "反馈业摘要",
     "feedback_job_target": "反馈业目标",
     "child_job_id": "子业编号",
+    "child_job_response": "子业响应",
+    "child_method_path": "子业方法路径",
+    "child_result_package": "子业果包",
+    "child_result_package_candidate_id": "子业果包候选相编号",
+    "child_result_package_evidence_id": "子业果包证据相编号",
+    "frontier_dispatch_limit": "前沿调度上限",
+    "frontier_dispatch_summary": "前沿调度摘要",
+    "frontier_job_count": "前沿业数量",
     "input": "输入内容",
     "input_character_count": "输入字符数",
     "input_has_fenced_block": "输入含代码块",
@@ -193,6 +217,7 @@ FIELD_LABELS = {
     "method_size": "方法大小",
     "method_catalog": "可用法目录",
     "parent_job_id": "父业编号",
+    "parent_reevaluation": "父业重评估",
     "process_action": "运行动作",
     "process_detail": "运行细节",
     "process_phase": "运行阶段",
@@ -260,14 +285,21 @@ FIELD_LABELS = {
 
 JOB_TREE_ACTION_LABELS = {
     "candidate_attached": "候选结果已挂载",
+    "child_dispatch_started": "子业调度已开始",
+    "child_package_rejected": "子业果包已拒绝",
+    "child_package_submitted": "子业果包已提交",
     "evidence_attached": "证据已挂载",
     "feedback_child_created": "反馈子业已创建",
     "feedback_child_skipped": "反馈子业已跳过",
+    "frontier_dispatch_finished": "前沿子业调度已结束",
+    "frontier_dispatch_skipped": "前沿子业调度已跳过",
+    "frontier_dispatch_started": "前沿子业调度已开始",
     "acceptance_route_continued": "验收路由继续运行",
     "job_ready": "业已就绪",
     "job_running": "业运行中",
     "method_call_frame_opened": "法调用帧已打开",
     "parent_verification_evidence_attached": "父业校验证据已挂载",
+    "parent_reevaluation_recorded": "父业重评估已记录",
     "root_created": "根业已创建",
     "repair_candidate_attached": "修复候选已挂载",
     "repair_child_created": "修复子业已创建",
@@ -472,6 +504,10 @@ def _should_render_as_block(key: str, value: str) -> bool:
         "method_binding_reason",
         "method_budget",
         "method_catalog",
+        "child_job_response",
+        "child_result_package",
+        "frontier_dispatch_summary",
+        "parent_reevaluation",
         "provider_delta_text",
         "repair_prompt",
         "repair_response",

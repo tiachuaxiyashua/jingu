@@ -13,7 +13,10 @@ from jingu.runtime.constants import (
     EVENT_METHOD_CALL_FRAME_OPENED,
     STATE_ABANDONED,
     STATE_ACCEPTED,
+    STATE_DRAFT,
+    STATE_READY,
     STATE_REJECTED,
+    STATE_RUNNING,
 )
 from jingu.runtime.object_store import checksum_text
 from jingu.runtime.repository import decode_json
@@ -27,11 +30,18 @@ from jingu.sandbox.flow import (
     FLOW_ACCEPTANCE_ROUTING_REQUESTED,
     FLOW_ACCEPTANCE_ROUTING_SKIPPED,
     FLOW_CANDIDATE_SUBMITTED,
+    FLOW_CHILD_JOB_DISPATCH_STARTED,
+    FLOW_CHILD_JOB_RESPONSE_RECEIVED,
+    FLOW_CHILD_RESULT_PACKAGE_REJECTED,
+    FLOW_CHILD_RESULT_PACKAGE_SUBMITTED,
     FLOW_CHAT_SESSION_FINISHED,
     FLOW_CHAT_SESSION_STARTED,
     FLOW_CHAT_TURN_FINISHED,
     FLOW_EVIDENCE_SUBMITTED,
     FLOW_FEEDBACK_JOB_CREATED,
+    FLOW_FRONTIER_DISPATCH_FINISHED,
+    FLOW_FRONTIER_DISPATCH_SKIPPED,
+    FLOW_FRONTIER_DISPATCH_STARTED,
     FLOW_INPUT_PROVENANCE_RECORDED,
     FLOW_JOB_READY,
     FLOW_JOB_RUNNING,
@@ -56,6 +66,7 @@ from jingu.sandbox.flow import (
     FLOW_PROVIDER_STREAM_DELTA_RECEIVED,
     FLOW_PROVIDER_STREAM_FINISHED,
     FLOW_PARENT_VERIFICATION_EVIDENCE_SUBMITTED,
+    FLOW_PARENT_REEVALUATION_RECORDED,
     FLOW_RESULT_OUTPUT_RECORDED,
     FLOW_REPAIR_CANDIDATE_SUBMITTED,
     FLOW_REPAIR_JOB_CREATED,
@@ -110,8 +121,17 @@ ACCEPTANCE_FEEDBACK_JOB_ACCEPTANCE_CRITERIA = "补齐验收路由显影的问题
 VERIFICATION_FEEDBACK_JOB_TARGET = "处理候选校验未解决问题"
 VERIFICATION_FEEDBACK_JOB_ACCEPTANCE_CRITERIA = "产出下一步修复方向、人工反馈问题或方法更新候选，并引用校验证据。"
 DEFAULT_MAX_REPAIR_ATTEMPTS = 1
+DEFAULT_MAX_FRONTIER_DISPATCHES = 2
 ACCEPTANCE_ROUTE_ACTIONS = frozenset({"continue", "repair", "feedback"})
 ACCEPTANCE_FEEDBACK_JOB_KINDS = frozenset({"high_value", "directional"})
+FRONTIER_DISPATCH_STATES = frozenset({STATE_DRAFT, STATE_READY, STATE_RUNNING})
+CHILD_RESULT_PACKAGE_FIELDS = (
+    "conclusion",
+    "artifacts",
+    "evidence_summary",
+    "open_questions",
+    "suggested_follow_up_jobs",
+)
 REPAIRABLE_CHECK_KINDS = frozenset(
     {
         "cjk_length_range",
@@ -614,6 +634,492 @@ def run_split_proposal_registration(
     return {"accepted": accepted, "rejected": rejected, "skipped_reason": ""}
 
 
+def run_frontier_child_dispatch(
+    *,
+    flow: FlowWriter,
+    service: RuntimeService,
+    client: ChatClient,
+    root_job_id: str,
+    user_input: str,
+    root_method: MethodContext,
+    root_candidate_text: str,
+    root_candidate_appearance_id: str,
+    step_prefix: str,
+    turn: str | None = None,
+    max_child_dispatches: int = DEFAULT_MAX_FRONTIER_DISPATCHES,
+) -> dict[str, Any]:
+    max_child_dispatches = normalize_max_frontier_dispatches(max_child_dispatches)
+    tree_service = TreeService(service.paths.workspace)
+    frontier_payload = tree_service.get_frontier(root_job_id)
+    active_child_frontier = [
+        job
+        for job in frontier_payload["frontier"]
+        if job.get("parent_job_id") and str(job.get("state")) in FRONTIER_DISPATCH_STATES
+    ]
+    base_data = {
+        **turn_field(turn),
+        "root_job_id": root_job_id,
+        "frontier_job_count": str(len(active_child_frontier)),
+        "frontier_dispatch_limit": str(max_child_dispatches),
+    }
+    flow.write(FLOW_FRONTIER_DISPATCH_STARTED, "frontier child dispatch started", **base_data)
+    write_job_tree_mirror(
+        flow=flow,
+        service=service,
+        turn=turn,
+        job_id=root_job_id,
+        action="frontier_dispatch_started",
+    )
+    write_process_step(
+        flow=flow,
+        step=f"{step_prefix}.start",
+        phase="frontier_dispatch",
+        action="读取当前活跃前沿子业并准备受控调度",
+        status="started",
+        **base_data,
+    )
+
+    if max_child_dispatches == 0 or not active_child_frontier:
+        reason = (
+            "frontier dispatch limit is zero"
+            if max_child_dispatches == 0
+            else "no active child frontier job"
+        )
+        summary = {
+            "selected_child_jobs": [],
+            "skipped_reason": reason,
+            "frontier_job_count": len(active_child_frontier),
+        }
+        skipped_data = {
+            **base_data,
+            "reason": reason,
+            "frontier_dispatch_summary": json.dumps(
+                summary, ensure_ascii=False, sort_keys=True, indent=2
+            ),
+        }
+        flow.write(FLOW_FRONTIER_DISPATCH_SKIPPED, "frontier child dispatch skipped", **skipped_data)
+        write_job_tree_mirror(
+            flow=flow,
+            service=service,
+            turn=turn,
+            job_id=root_job_id,
+            action="frontier_dispatch_skipped",
+            reason=reason,
+        )
+        write_process_step(
+            flow=flow,
+            step=f"{step_prefix}.skip",
+            phase="frontier_dispatch",
+            action="没有可调度的前沿子业，保持根业候选主链路继续",
+            status="skipped",
+            **skipped_data,
+        )
+        return summary
+
+    selected_children = active_child_frontier[:max_child_dispatches]
+    dispatch_results: list[dict[str, Any]] = []
+    for index, child in enumerate(selected_children, start=1):
+        child_job_id = str(child["job_id"])
+        parent_job_id = str(child.get("parent_job_id") or root_job_id)
+        child_state = str(child.get("state") or "")
+        try:
+            if child_state == STATE_DRAFT:
+                ready_job = service.mark_ready(child_job_id, actor_id="system")
+                child_state = str(ready_job["state"])
+                ready_data = {**turn_field(turn), "job_id": child_job_id, "parent_job_id": parent_job_id}
+                flow.write(FLOW_JOB_READY, "child job marked ready", **ready_data)
+                write_job_tree_mirror(
+                    flow=flow,
+                    service=service,
+                    turn=turn,
+                    job_id=child_job_id,
+                    action="job_ready",
+                )
+                write_process_step(
+                    flow=flow,
+                    step=f"{step_prefix}.child_{index}.ready",
+                    phase="frontier_dispatch",
+                    action="将选中的草稿子业置为就绪",
+                    **ready_data,
+                )
+            if child_state == STATE_READY:
+                running_job = service.start_job(child_job_id, actor_id="system")
+                child_state = str(running_job["state"])
+                running_data = {**turn_field(turn), "job_id": child_job_id, "parent_job_id": parent_job_id}
+                flow.write(FLOW_JOB_RUNNING, "child job running", **running_data)
+                write_job_tree_mirror(
+                    flow=flow,
+                    service=service,
+                    turn=turn,
+                    job_id=child_job_id,
+                    action="job_running",
+                )
+                write_process_step(
+                    flow=flow,
+                    step=f"{step_prefix}.child_{index}.run",
+                    phase="frontier_dispatch",
+                    action="启动选中的前沿子业",
+                    **running_data,
+                )
+        except Exception as exc:
+            child_state = "transition_failed"
+            transition_error = str(exc)
+        else:
+            transition_error = ""
+        if child_state != STATE_RUNNING:
+            reason = transition_error or f"child job state is not dispatchable after transition: {child_state}"
+            rejected_data = {
+                **turn_field(turn),
+                "root_job_id": root_job_id,
+                "parent_job_id": parent_job_id,
+                "job_id": child_job_id,
+                "child_job_id": child_job_id,
+                "reason": reason,
+            }
+            flow.write(
+                FLOW_CHILD_RESULT_PACKAGE_REJECTED,
+                "child result package rejected",
+                **rejected_data,
+            )
+            write_job_tree_mirror(
+                flow=flow,
+                service=service,
+                turn=turn,
+                job_id=child_job_id,
+                action="child_package_rejected",
+                reason=reason,
+            )
+            dispatch_results.append(
+                {"child_job_id": child_job_id, "status": "rejected", "reason": reason}
+            )
+            continue
+
+        child_method, child_method_source = load_child_dispatch_method(
+            child_job=child,
+            root_method=root_method,
+        )
+        messages = build_child_dispatch_messages(
+            child_job=child,
+            method=child_method,
+            root_job_id=root_job_id,
+            parent_job_id=parent_job_id,
+            user_input=user_input,
+            root_candidate_text=root_candidate_text,
+            root_candidate_appearance_id=root_candidate_appearance_id,
+        )
+        dispatch_data = {
+            **turn_field(turn),
+            "root_job_id": root_job_id,
+            "parent_job_id": parent_job_id,
+            "job_id": child_job_id,
+            "child_job_id": child_job_id,
+            "job_target": str(child.get("target") or ""),
+            "child_method_path": str(child_method.path),
+            "reason": child_method_source,
+            "provider_message_count": str(len(messages)),
+        }
+        flow.write(FLOW_CHILD_JOB_DISPATCH_STARTED, "child job dispatch started", **dispatch_data)
+        write_job_tree_mirror(
+            flow=flow,
+            service=service,
+            turn=turn,
+            job_id=child_job_id,
+            action="child_dispatch_started",
+            child_job_id=child_job_id,
+        )
+        write_provider_messages(
+            flow=flow,
+            call_kind="child_job_execution",
+            messages=messages,
+            turn=turn,
+            job_id=child_job_id,
+        )
+        write_process_step(
+            flow=flow,
+            step=f"{step_prefix}.child_{index}.request",
+            phase="frontier_dispatch",
+            action="向子业执行位发送业契约、法上下文和结构化果包契约",
+            status="started",
+            **dispatch_data,
+        )
+
+        response = complete_with_provider_logging(
+            flow=flow,
+            client=client,
+            messages=messages,
+            call_kind="child_job_execution",
+            turn=turn,
+            job_id=child_job_id,
+        )
+        response_data = {
+            **turn_field(turn),
+            "root_job_id": root_job_id,
+            "parent_job_id": parent_job_id,
+            "job_id": child_job_id,
+            "child_job_id": child_job_id,
+            "child_job_response": response.content,
+        }
+        flow.write(FLOW_CHILD_JOB_RESPONSE_RECEIVED, "child job response received", **response_data)
+        write_process_step(
+            flow=flow,
+            step=f"{step_prefix}.child_{index}.receive",
+            phase="frontier_dispatch",
+            action="收到子业执行位响应",
+            **response_data,
+        )
+
+        try:
+            package = parse_child_result_package(response.content)
+            package_text = json.dumps(package, ensure_ascii=False, sort_keys=True, indent=2)
+            submitted = tree_service.submit_result_package(
+                child_job_id,
+                package=package,
+                evidence_text=package_text,
+                actor_id="ai",
+            )
+            candidate_id = str(submitted["candidate"]["appearance_id"])
+            evidence_id = str(submitted["evidence"]["appearance_id"])
+            package_data = {
+                **turn_field(turn),
+                "root_job_id": root_job_id,
+                "parent_job_id": parent_job_id,
+                "job_id": child_job_id,
+                "child_job_id": child_job_id,
+                "child_result_package": package_text,
+                "child_result_package_candidate_id": candidate_id,
+                "child_result_package_evidence_id": evidence_id,
+            }
+            flow.write(
+                FLOW_CHILD_RESULT_PACKAGE_SUBMITTED,
+                "child result package submitted",
+                **package_data,
+            )
+            write_job_tree_mirror(
+                flow=flow,
+                service=service,
+                turn=turn,
+                job_id=child_job_id,
+                action="child_package_submitted",
+                appearance_id=candidate_id,
+                child_job_id=child_job_id,
+            )
+            write_process_step(
+                flow=flow,
+                step=f"{step_prefix}.child_{index}.package",
+                phase="frontier_dispatch",
+                action="通过业树服务提交子业果包候选和证据",
+                **package_data,
+            )
+
+            try:
+                child_split_result = run_split_proposal_registration(
+                    flow=flow,
+                    service=service,
+                    client=client,
+                    method=child_method,
+                    parent_job_id=child_job_id,
+                    user_input=user_input,
+                    candidate_text=package_text,
+                    candidate_appearance_id=candidate_id,
+                    step_prefix=f"{step_prefix}.child_{index}.split_proposal",
+                    turn=turn,
+                )
+            except Exception as exc:
+                child_split_result = {"accepted": [], "rejected": [], "skipped_reason": str(exc)}
+            parent_reevaluation = tree_service.reevaluate_parent(parent_job_id)
+            reevaluation_data = {
+                **turn_field(turn),
+                "root_job_id": root_job_id,
+                "parent_job_id": parent_job_id,
+                "job_id": parent_job_id,
+                "child_job_id": child_job_id,
+                "parent_reevaluation": json.dumps(
+                    parent_reevaluation, ensure_ascii=False, sort_keys=True, indent=2
+                ),
+            }
+            flow.write(
+                FLOW_PARENT_REEVALUATION_RECORDED,
+                "parent re-evaluation recorded",
+                **reevaluation_data,
+            )
+            write_job_tree_mirror(
+                flow=flow,
+                service=service,
+                turn=turn,
+                job_id=parent_job_id,
+                action="parent_reevaluation_recorded",
+                child_job_id=child_job_id,
+            )
+            write_process_step(
+                flow=flow,
+                step=f"{step_prefix}.child_{index}.parent_reevaluate",
+                phase="frontier_dispatch",
+                action="记录子业果包回流后的父业重评估",
+                **reevaluation_data,
+            )
+            dispatch_results.append(
+                {
+                    "child_job_id": child_job_id,
+                    "status": "submitted",
+                    "candidate_appearance_id": candidate_id,
+                    "evidence_appearance_id": evidence_id,
+                    "child_split_result": child_split_result,
+                }
+            )
+        except Exception as exc:
+            rejected_data = {
+                **turn_field(turn),
+                "root_job_id": root_job_id,
+                "parent_job_id": parent_job_id,
+                "job_id": child_job_id,
+                "child_job_id": child_job_id,
+                "reason": str(exc),
+                "child_job_response": response.content,
+            }
+            flow.write(
+                FLOW_CHILD_RESULT_PACKAGE_REJECTED,
+                "child result package rejected",
+                **rejected_data,
+            )
+            write_job_tree_mirror(
+                flow=flow,
+                service=service,
+                turn=turn,
+                job_id=child_job_id,
+                action="child_package_rejected",
+                reason=str(exc),
+            )
+            write_process_step(
+                flow=flow,
+                step=f"{step_prefix}.child_{index}.package_rejected",
+                phase="frontier_dispatch",
+                action="子业响应未能通过结构化果包校验，保持候选隔离并记录拒绝",
+                status="rejected",
+                **rejected_data,
+            )
+            dispatch_results.append(
+                {"child_job_id": child_job_id, "status": "rejected", "reason": str(exc)}
+            )
+
+    summary = {
+        "selected_child_jobs": [str(job["job_id"]) for job in selected_children],
+        "dispatch_results": dispatch_results,
+        "frontier_job_count": len(active_child_frontier),
+        "frontier_dispatch_limit": max_child_dispatches,
+    }
+    finish_data = {
+        **turn_field(turn),
+        "root_job_id": root_job_id,
+        "frontier_dispatch_summary": json.dumps(
+            summary, ensure_ascii=False, sort_keys=True, indent=2
+        ),
+    }
+    flow.write(FLOW_FRONTIER_DISPATCH_FINISHED, "frontier child dispatch finished", **finish_data)
+    write_job_tree_mirror(
+        flow=flow,
+        service=service,
+        turn=turn,
+        job_id=root_job_id,
+        action="frontier_dispatch_finished",
+    )
+    write_process_step(
+        flow=flow,
+        step=f"{step_prefix}.finish",
+        phase="frontier_dispatch",
+        action="完成本轮前沿子业受控调度",
+        **finish_data,
+    )
+    return summary
+
+
+def load_child_dispatch_method(
+    *,
+    child_job: dict[str, Any],
+    root_method: MethodContext,
+) -> tuple[MethodContext, str]:
+    frames = child_job.get("method_call_frames") or []
+    if isinstance(frames, list):
+        for frame in reversed(frames):
+            if not isinstance(frame, dict):
+                continue
+            method_path = str(frame.get("method_path") or "").strip()
+            if not method_path:
+                continue
+            try:
+                return load_method_context(method_path=Path(method_path)), "child_method_call_frame"
+            except Exception as exc:
+                return root_method, f"child_method_load_failed; fallback_to_root_method: {exc}"
+    return root_method, "root_method_fallback"
+
+
+def build_child_dispatch_messages(
+    *,
+    child_job: dict[str, Any],
+    method: MethodContext,
+    root_job_id: str,
+    parent_job_id: str,
+    user_input: str,
+    root_candidate_text: str,
+    root_candidate_appearance_id: str,
+) -> list[dict[str, str]]:
+    package_contract = {
+        "required_fields": list(CHILD_RESULT_PACKAGE_FIELDS),
+        "field_meaning": {
+            "conclusion": "当前子业在自身责任范围内形成的结论或局部成果摘要。",
+            "artifacts": "可被父业消费的局部产物、引用、清单或正文片段数组。",
+            "evidence_summary": "为什么认为这些局部产物能支撑父业继续推进的证据摘要。",
+            "open_questions": "仍然阻塞当前子业或父业的开放问题数组。",
+            "suggested_follow_up_jobs": "需要后续另立业处理的候选事项数组。",
+        },
+        "hard_boundaries": [
+            "只返回 JSON 对象，不输出解释性正文。",
+            "只能提交当前子业的候选果包，不能接收、拒收或完成任何业。",
+            "不能宣告父业或根业完成。",
+            "没有证据的结论必须进入 open_questions 或 suggested_follow_up_jobs。",
+        ],
+    }
+    payload = {
+        "root_job_id": root_job_id,
+        "parent_job_id": parent_job_id,
+        "child_job": {
+            "job_id": child_job.get("job_id"),
+            "target": child_job.get("target"),
+            "acceptance_criteria": child_job.get("acceptance_criteria", ""),
+            "required_context_gaps": child_job.get("required_context_gaps", []),
+            "method_call_frames": child_job.get("method_call_frames", []),
+        },
+        "root_user_input": user_input,
+        "root_candidate": {
+            "candidate_appearance_id": root_candidate_appearance_id,
+            "text": root_candidate_text,
+        },
+        "method_manifest": method.manifest(),
+        "package_contract": package_contract,
+    }
+    return [
+        *build_method_system_messages(method),
+        {
+            "role": "system",
+            "content": (
+                "你是金箍业树中的子业执行位。"
+                "你只在当前子业责任范围内产生候选果包和证据，"
+                "状态迁移、接收、拒收和完成声明只能由运行时守门器处理。"
+            ),
+        },
+        {
+            "role": "user",
+            "content": json.dumps(payload, ensure_ascii=False, sort_keys=True, indent=2),
+        },
+    ]
+
+
+def parse_child_result_package(content: str) -> dict[str, Any]:
+    payload = load_json_object(content, error_prefix="child result package response")
+    if not isinstance(payload, dict):
+        raise RuntimeError("child result package response must be a JSON object")
+    return payload
+
+
 def parse_split_proposals(content: str) -> list[dict[str, Any]]:
     payload = load_json_object(content, error_prefix="split proposal response")
     if not isinstance(payload, dict):
@@ -933,6 +1439,12 @@ def run_candidate_verification(
 def normalize_max_repair_attempts(value: int) -> int:
     if value < 0:
         raise ValueError("max repair attempts must be zero or greater")
+    return value
+
+
+def normalize_max_frontier_dispatches(value: int) -> int:
+    if value < 0:
+        raise ValueError("max frontier dispatches must be zero or greater")
     return value
 
 
@@ -2241,6 +2753,7 @@ class AiSandboxRunner:
         method_path: Path | str | None = None,
         client: ChatClient | None = None,
         max_repair_attempts: int = DEFAULT_MAX_REPAIR_ATTEMPTS,
+        max_frontier_dispatches: int = DEFAULT_MAX_FRONTIER_DISPATCHES,
     ) -> None:
         self.sandbox_path = resolve_sandbox_path(sandbox_path)
         self.log_dir = resolve_log_dir(log_dir)
@@ -2250,6 +2763,7 @@ class AiSandboxRunner:
         self.method_path = Path(method_path) if method_path is not None else None
         self.client = client
         self.max_repair_attempts = normalize_max_repair_attempts(max_repair_attempts)
+        self.max_frontier_dispatches = normalize_max_frontier_dispatches(max_frontier_dispatches)
         self.flow = FlowWriter(
             self.sandbox_path,
             self.diagnostic_log_path,
@@ -2494,6 +3008,18 @@ class AiSandboxRunner:
                 candidate_appearance_id=candidate["appearance_id"],
                 step_prefix="split_proposal",
             )
+            run_frontier_child_dispatch(
+                flow=self.flow,
+                service=service,
+                client=client,
+                root_job_id=job_id,
+                user_input=message,
+                root_method=method,
+                root_candidate_text=response.content,
+                root_candidate_appearance_id=candidate["appearance_id"],
+                step_prefix="frontier_dispatch",
+                max_child_dispatches=self.max_frontier_dispatches,
+            )
             verification_result = run_candidate_verification(
                 flow=self.flow,
                 service=service,
@@ -2674,6 +3200,7 @@ class AiSandboxChatSession:
         method_path: Path | str | None = None,
         client: ChatClient | None = None,
         max_repair_attempts: int = DEFAULT_MAX_REPAIR_ATTEMPTS,
+        max_frontier_dispatches: int = DEFAULT_MAX_FRONTIER_DISPATCHES,
     ) -> None:
         self.sandbox_path = resolve_sandbox_path(sandbox_path)
         self.log_dir = resolve_log_dir(log_dir)
@@ -2683,6 +3210,7 @@ class AiSandboxChatSession:
         self.method_path = Path(method_path) if method_path is not None else None
         self.client = client
         self.max_repair_attempts = normalize_max_repair_attempts(max_repair_attempts)
+        self.max_frontier_dispatches = normalize_max_frontier_dispatches(max_frontier_dispatches)
         self.flow = FlowWriter(
             self.sandbox_path,
             self.diagnostic_log_path,
@@ -2979,6 +3507,19 @@ class AiSandboxChatSession:
             candidate_appearance_id=candidate["appearance_id"],
             step_prefix="chat.split_proposal",
             turn=turn,
+        )
+        run_frontier_child_dispatch(
+            flow=self.flow,
+            service=self.service,
+            client=client,
+            root_job_id=job_id,
+            user_input=user_input,
+            root_method=method,
+            root_candidate_text=response.content,
+            root_candidate_appearance_id=candidate["appearance_id"],
+            step_prefix="chat.frontier_dispatch",
+            turn=turn,
+            max_child_dispatches=self.max_frontier_dispatches,
         )
         verification_result = run_candidate_verification(
             flow=self.flow,
