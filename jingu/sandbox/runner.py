@@ -15,15 +15,16 @@ from jingu.runtime.service import RuntimeService
 from jingu.sandbox.flow import (
     FLOW_AI_REQUEST_STARTED,
     FLOW_AI_RESPONSE_RECEIVED,
+    FLOW_ACCEPTANCE_ROUTING_EVIDENCE_SUBMITTED,
+    FLOW_ACCEPTANCE_ROUTING_RECEIVED,
+    FLOW_ACCEPTANCE_ROUTING_REQUESTED,
+    FLOW_ACCEPTANCE_ROUTING_SKIPPED,
     FLOW_CANDIDATE_SUBMITTED,
     FLOW_CHAT_SESSION_FINISHED,
     FLOW_CHAT_SESSION_STARTED,
     FLOW_CHAT_TURN_FINISHED,
     FLOW_EVIDENCE_SUBMITTED,
-    FLOW_FEEDBACK_JUDGMENT_RECEIVED,
-    FLOW_FEEDBACK_JUDGMENT_REQUESTED,
     FLOW_FEEDBACK_JOB_CREATED,
-    FLOW_FEEDBACK_JOB_SKIPPED,
     FLOW_INPUT_PROVENANCE_RECORDED,
     FLOW_JOB_READY,
     FLOW_JOB_RUNNING,
@@ -90,9 +91,14 @@ VERIFICATION_JOB_TARGET = "校验候选结果中的可判定文本约束"
 VERIFICATION_JOB_ACCEPTANCE_CRITERIA = "输出结构化校验报告，记录可执行检查、实际计数、证据和无法自动判定的缺口。"
 REPAIR_JOB_TARGET = "修复候选结果中的可判定校验失败"
 REPAIR_JOB_ACCEPTANCE_CRITERIA = "输出修订后的完整候选结果，并让修订点可以被再次校验。"
+ACCEPTANCE_REPAIR_JOB_TARGET = "修复验收路由打回的候选问题"
+ACCEPTANCE_REPAIR_JOB_ACCEPTANCE_CRITERIA = "输出完整修订候选结果，覆盖验收路由指出的可修复问题，并保留原始任务意图。"
+ACCEPTANCE_FEEDBACK_JOB_ACCEPTANCE_CRITERIA = "补齐验收路由显影的问题，形成可回流原业的反馈、裁决问题或下一步证据需求。"
 VERIFICATION_FEEDBACK_JOB_TARGET = "处理候选校验未解决问题"
 VERIFICATION_FEEDBACK_JOB_ACCEPTANCE_CRITERIA = "产出下一步修复方向、人工反馈问题或方法更新候选，并引用校验证据。"
 DEFAULT_MAX_REPAIR_ATTEMPTS = 1
+ACCEPTANCE_ROUTE_ACTIONS = frozenset({"continue", "repair", "feedback"})
+ACCEPTANCE_FEEDBACK_JOB_KINDS = frozenset({"high_value", "directional"})
 REPAIRABLE_CHECK_KINDS = frozenset(
     {
         "cjk_length_range",
@@ -474,20 +480,26 @@ def build_candidate_repair_messages(
     verification_result: dict[str, Any],
     attempt: int,
     max_attempts: int,
+    repair_source: str = "deterministic_verification",
+    repair_instruction: str | None = None,
+    routing_judgment: dict[str, Any] | None = None,
 ) -> list[dict[str, str]]:
     repair_payload = {
         "task": user_input,
         "attempt": attempt,
         "max_attempts": max_attempts,
+        "repair_source": repair_source,
         "previous_candidate": previous_candidate_text,
         "verification_report": compact_verification_report(verification_result["report"]),
         "repairable_failed_checks": [
             compact_verification_check(check)
             for check in repairable_failed_checks(verification_result["report"])
         ],
+        "acceptance_repair_instruction": repair_instruction or "",
+        "acceptance_routing_judgment": routing_judgment or {},
         "requirements": [
             "保持用户原始任务意图，不自行改写目标。",
-            "只针对校验报告中的具体失败项修订候选结果。",
+            "只针对校验报告中的具体失败项或验收路由打回指令修订候选结果。",
             "输出完整修订候选结果，不输出省略、占位或只说明修改思路。",
             "不要声明候选已被接收或最终完成。",
         ],
@@ -666,13 +678,21 @@ def run_single_repair_attempt(
     max_attempts: int,
     step_prefix: str,
     turn: str | None = None,
+    repair_source: str = "deterministic_verification",
+    repair_instruction: str | None = None,
+    routing_judgment: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     repair_checks = repairable_failed_checks(previous_verification_result["report"])
+    is_acceptance_repair = repair_source == "acceptance_routing"
     repair_job = service.create_child_job(
         parent_job_id=parent_job_id,
-        target=REPAIR_JOB_TARGET,
+        target=ACCEPTANCE_REPAIR_JOB_TARGET if is_acceptance_repair else REPAIR_JOB_TARGET,
         actor_id="system",
-        acceptance_criteria=REPAIR_JOB_ACCEPTANCE_CRITERIA,
+        acceptance_criteria=(
+            ACCEPTANCE_REPAIR_JOB_ACCEPTANCE_CRITERIA
+            if is_acceptance_repair
+            else REPAIR_JOB_ACCEPTANCE_CRITERIA
+        ),
     )
     repair_job_id = repair_job["job_id"]
     base_data = {
@@ -682,6 +702,7 @@ def run_single_repair_attempt(
         "repair_child_job_id": repair_job_id,
         "repair_attempt": str(attempt),
         "repair_max_attempts": str(max_attempts),
+        "repair_source": repair_source,
         "repairable_check_count": str(len(repair_checks)),
         "repairable_checks": json.dumps(
             [compact_verification_check(check) for check in repair_checks],
@@ -691,6 +712,12 @@ def run_single_repair_attempt(
         ),
         "appearance_id": previous_candidate_appearance_id,
     }
+    if repair_instruction:
+        base_data["acceptance_repair_instruction"] = repair_instruction
+    if routing_judgment:
+        base_data["acceptance_routing_judgment"] = json.dumps(
+            routing_judgment, ensure_ascii=False, sort_keys=True, indent=2
+        )
     flow.write(FLOW_REPAIR_JOB_CREATED, "repair job created", **base_data)
     write_job_tree_mirror(
         flow=flow,
@@ -753,6 +780,9 @@ def run_single_repair_attempt(
         verification_result=previous_verification_result,
         attempt=attempt,
         max_attempts=max_attempts,
+        repair_source=repair_source,
+        repair_instruction=repair_instruction,
+        routing_judgment=routing_judgment,
     )
     flow.write(
         FLOW_REPAIR_REQUEST_PREPARED,
@@ -765,7 +795,7 @@ def run_single_repair_attempt(
     )
     write_provider_messages(
         flow=flow,
-        call_kind="candidate_repair",
+        call_kind="acceptance_repair" if is_acceptance_repair else "candidate_repair",
         messages=repair_messages,
         turn=turn,
         job_id=repair_job_id,
@@ -782,7 +812,7 @@ def run_single_repair_attempt(
         flow=flow,
         client=client,
         messages=repair_messages,
-        call_kind="candidate_repair",
+        call_kind="acceptance_repair" if is_acceptance_repair else "candidate_repair",
         turn=turn,
         job_id=repair_job_id,
     )
@@ -1020,6 +1050,508 @@ def repair_attempt_summaries(attempts: list[dict[str, Any]]) -> list[dict[str, A
         }
         for attempt in attempts
     ]
+
+
+def compact_repair_loop_result(repair_result: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "repair_loop_outcome": repair_result.get("outcome"),
+        "repair_reason": repair_result.get("reason"),
+        "repair_attempt_count": len(repair_result.get("attempts") or []),
+        "feedback_job_id": repair_result.get("feedback_job_id"),
+        "summary_evidence_appearance_id": repair_result.get("summary_evidence_appearance_id"),
+        "latest_candidate_appearance_id": repair_result.get("latest_candidate_appearance_id"),
+        "latest_verification": compact_verification_report(
+            repair_result["latest_verification_result"]["report"]
+        ),
+        "attempts": repair_attempt_summaries(repair_result.get("attempts") or []),
+    }
+
+
+def build_acceptance_routing_messages(
+    *,
+    method: MethodContext,
+    parent_job_id: str,
+    user_input: str,
+    latest_candidate_text: str,
+    latest_candidate_appearance_id: str,
+    latest_verification_result: dict[str, Any],
+    repair_result: dict[str, Any],
+    turn: str | None = None,
+) -> list[dict[str, str]]:
+    routing_payload = {
+        "task": user_input,
+        "turn": turn or "",
+        "parent_job_id": parent_job_id,
+        "candidate": {
+            "appearance_id": latest_candidate_appearance_id,
+            "text": latest_candidate_text,
+        },
+        "deterministic_verification": compact_verification_report(
+            latest_verification_result["report"]
+        ),
+        "repair_loop": compact_repair_loop_result(repair_result),
+        "routing_contract": {
+            "route_action": sorted(ACCEPTANCE_ROUTE_ACTIONS),
+            "feedback_job_kind": ["none", *sorted(ACCEPTANCE_FEEDBACK_JOB_KINDS)],
+            "required_keys": [
+                "route_action",
+                "feedback_job_kind",
+                "feedback_job_summary",
+                "required_context_gaps",
+                "repair_instruction",
+                "reason",
+                "evidence",
+            ],
+            "does_not_auto_accept_or_reject": True,
+        },
+    }
+    return [
+        *build_method_system_messages(method),
+        {
+            "role": "system",
+            "content": (
+                "你是金箍运行时中的验收路由位。"
+                "你不能接收、拒收或宣告父业完成，只能选择下一步路由。"
+                "若候选存在可由执行端直接修正的问题，选择 repair 并给出可执行修复指令。"
+                "若候选暴露高价值、方向性、授权、价值冲突或关键缺口，选择 feedback 并显影成反馈业。"
+                "若无需打回或显影，选择 continue。"
+                "只返回 JSON，不要输出解释性正文。"
+            ),
+        },
+        {
+            "role": "user",
+            "content": json.dumps(routing_payload, ensure_ascii=False, sort_keys=True, indent=2),
+        },
+    ]
+
+
+def run_acceptance_routing(
+    *,
+    flow: FlowWriter,
+    service: RuntimeService,
+    client: ChatClient,
+    method: MethodContext,
+    parent_job_id: str,
+    user_input: str,
+    repair_result: dict[str, Any],
+    step_prefix: str,
+    turn: str | None = None,
+) -> dict[str, Any]:
+    latest_candidate_text = str(repair_result["latest_candidate_text"])
+    latest_candidate_appearance_id = str(repair_result["latest_candidate_appearance_id"])
+    latest_verification_result = repair_result["latest_verification_result"]
+    routing_messages = build_acceptance_routing_messages(
+        method=method,
+        parent_job_id=parent_job_id,
+        user_input=user_input,
+        latest_candidate_text=latest_candidate_text,
+        latest_candidate_appearance_id=latest_candidate_appearance_id,
+        latest_verification_result=latest_verification_result,
+        repair_result=repair_result,
+        turn=turn,
+    )
+    base_data = {
+        **turn_field(turn),
+        "job_id": parent_job_id,
+        "acceptance_latest_candidate_appearance_id": latest_candidate_appearance_id,
+        "verification_status": str(latest_verification_result["report"].get("overall_status")),
+        "repair_loop_outcome": str(repair_result.get("outcome")),
+        "acceptance_routing_prompt": routing_messages[-1]["content"],
+        "provider_message_count": str(len(routing_messages)),
+    }
+    flow.write(
+        FLOW_ACCEPTANCE_ROUTING_REQUESTED,
+        "acceptance routing requested",
+        **base_data,
+    )
+    write_provider_messages(
+        flow=flow,
+        call_kind="acceptance_routing",
+        messages=routing_messages,
+        turn=turn,
+        job_id=parent_job_id,
+    )
+    write_process_step(
+        flow=flow,
+        step=f"{step_prefix}.acceptance_route.request",
+        phase="acceptance",
+        action="向验收路由位发送候选、校验和修复证据",
+        status="started",
+        **base_data,
+    )
+
+    routing_response = complete_with_provider_logging(
+        flow=flow,
+        client=client,
+        messages=routing_messages,
+        call_kind="acceptance_routing",
+        turn=turn,
+        job_id=parent_job_id,
+    )
+    judgment = parse_acceptance_routing_judgment(routing_response.content)
+    judgment_text = json.dumps(judgment, ensure_ascii=False, sort_keys=True, indent=2)
+    received_data = {
+        **base_data,
+        "acceptance_route_action": judgment["route_action"],
+        "acceptance_route_kind": judgment["feedback_job_kind"],
+        "acceptance_routing_judgment": judgment_text,
+        "reason": judgment["reason"],
+    }
+    if judgment["repair_instruction"]:
+        received_data["acceptance_repair_instruction"] = judgment["repair_instruction"]
+    flow.write(
+        FLOW_ACCEPTANCE_ROUTING_RECEIVED,
+        "acceptance routing received",
+        **received_data,
+    )
+    write_process_step(
+        flow=flow,
+        step=f"{step_prefix}.acceptance_route.receive",
+        phase="acceptance",
+        action="收到验收路由位判断",
+        **received_data,
+    )
+
+    evidence_text = build_acceptance_routing_evidence(
+        judgment=judgment,
+        latest_candidate_appearance_id=latest_candidate_appearance_id,
+        latest_verification_result=latest_verification_result,
+        repair_result=repair_result,
+    )
+    evidence = service.submit_evidence(
+        parent_job_id,
+        text=evidence_text,
+        actor_id="system",
+    )["evidence"]
+    evidence_data = {
+        **turn_field(turn),
+        "job_id": parent_job_id,
+        "appearance_id": evidence["appearance_id"],
+        "acceptance_routing_evidence_appearance_id": evidence["appearance_id"],
+        "acceptance_route_action": judgment["route_action"],
+        "acceptance_route_kind": judgment["feedback_job_kind"],
+        "acceptance_routing_evidence": evidence_text,
+    }
+    flow.write(
+        FLOW_ACCEPTANCE_ROUTING_EVIDENCE_SUBMITTED,
+        "acceptance routing evidence submitted",
+        **evidence_data,
+    )
+    write_job_tree_mirror(
+        flow=flow,
+        service=service,
+        turn=turn,
+        job_id=parent_job_id,
+        action="evidence_attached",
+        appearance_id=evidence["appearance_id"],
+        reason=judgment["reason"],
+    )
+    write_process_step(
+        flow=flow,
+        step=f"{step_prefix}.acceptance_route.evidence",
+        phase="acceptance",
+        action="提交验收路由判断为父业证据",
+        **evidence_data,
+    )
+
+    if judgment["route_action"] == "continue":
+        flow.write(
+            FLOW_ACCEPTANCE_ROUTING_SKIPPED,
+            "acceptance routing skipped child job creation",
+            **{
+                **turn_field(turn),
+                "job_id": parent_job_id,
+                "acceptance_route_action": judgment["route_action"],
+                "acceptance_route_kind": judgment["feedback_job_kind"],
+                "reason": judgment["reason"],
+            },
+        )
+        write_job_tree_mirror(
+            flow=flow,
+            service=service,
+            turn=turn,
+            job_id=parent_job_id,
+            action="acceptance_route_continued",
+            reason=judgment["reason"],
+        )
+        write_process_step(
+            flow=flow,
+            step=f"{step_prefix}.acceptance_route.continue",
+            phase="acceptance",
+            action="验收路由未创建子业，继续返回候选结果",
+            turn=turn,
+            job_id=parent_job_id,
+            reason=judgment["reason"],
+        )
+        return {
+            "judgment": judgment,
+            "latest_candidate_text": latest_candidate_text,
+            "latest_candidate_appearance_id": latest_candidate_appearance_id,
+            "latest_verification_result": latest_verification_result,
+            "acceptance_repair_result": None,
+            "feedback_job_id": None,
+            "evidence_appearance_id": evidence["appearance_id"],
+        }
+
+    if judgment["route_action"] == "repair":
+        repair_attempt = run_single_repair_attempt(
+            flow=flow,
+            service=service,
+            client=client,
+            method=method,
+            parent_job_id=parent_job_id,
+            user_input=user_input,
+            previous_candidate_text=latest_candidate_text,
+            previous_candidate_appearance_id=latest_candidate_appearance_id,
+            previous_verification_result=latest_verification_result,
+            attempt=1,
+            max_attempts=1,
+            step_prefix=f"{step_prefix}.acceptance_route",
+            turn=turn,
+            repair_source="acceptance_routing",
+            repair_instruction=judgment["repair_instruction"],
+            routing_judgment=judgment,
+        )
+        feedback_job_id = None
+        repaired_status = str(repair_attempt["verification_result"]["report"].get("overall_status"))
+        if repaired_status == "failed":
+            feedback_job_id = create_verification_feedback_job(
+                flow=flow,
+                service=service,
+                parent_job_id=repair_attempt["repair_job_id"],
+                latest_verification_result=repair_attempt["verification_result"],
+                attempts=[repair_attempt],
+                outcome="acceptance_repair_unresolved",
+                reason="acceptance routed repair still failed deterministic verification",
+                step_prefix=f"{step_prefix}.acceptance_route.repair",
+                turn=turn,
+            )
+        return {
+            "judgment": judgment,
+            "latest_candidate_text": repair_attempt["candidate_text"],
+            "latest_candidate_appearance_id": repair_attempt["candidate_appearance_id"],
+            "latest_verification_result": repair_attempt["verification_result"],
+            "acceptance_repair_result": repair_attempt,
+            "feedback_job_id": feedback_job_id,
+            "evidence_appearance_id": evidence["appearance_id"],
+        }
+
+    feedback_job_id = create_acceptance_feedback_job(
+        flow=flow,
+        service=service,
+        parent_job_id=parent_job_id,
+        judgment=judgment,
+        routing_evidence_text=evidence_text,
+        step_prefix=step_prefix,
+        turn=turn,
+    )
+    return {
+        "judgment": judgment,
+        "latest_candidate_text": latest_candidate_text,
+        "latest_candidate_appearance_id": latest_candidate_appearance_id,
+        "latest_verification_result": latest_verification_result,
+        "acceptance_repair_result": None,
+        "feedback_job_id": feedback_job_id,
+        "evidence_appearance_id": evidence["appearance_id"],
+    }
+
+
+def parse_acceptance_routing_judgment(content: str) -> dict[str, Any]:
+    payload = load_json_object(content, error_prefix="acceptance routing response")
+    if not isinstance(payload, dict):
+        raise RuntimeError("acceptance routing response must be a JSON object")
+
+    route_action = str(payload.get("route_action") or "").strip()
+    if route_action not in ACCEPTANCE_ROUTE_ACTIONS:
+        raise RuntimeError("acceptance routing response must choose continue, repair, or feedback")
+
+    feedback_job_kind = str(payload.get("feedback_job_kind") or "none").strip()
+    feedback_job_summary = str(payload.get("feedback_job_summary") or "").strip()
+    repair_instruction = str(payload.get("repair_instruction") or "").strip()
+    reason = str(payload.get("reason") or "").strip()
+    required_context_gaps = normalize_string_list(
+        payload.get("required_context_gaps") or [],
+        field_name="required_context_gaps",
+        error_prefix="acceptance routing response",
+    )
+    evidence = normalize_string_list(
+        payload.get("evidence") or [],
+        field_name="evidence",
+        error_prefix="acceptance routing response",
+    )
+
+    if route_action == "repair":
+        if not repair_instruction:
+            raise RuntimeError("acceptance routing repair must include repair_instruction")
+        feedback_job_kind = "none"
+        feedback_job_summary = ""
+    elif route_action == "feedback":
+        if feedback_job_kind not in ACCEPTANCE_FEEDBACK_JOB_KINDS:
+            raise RuntimeError("acceptance routing feedback must choose high_value or directional")
+        if not feedback_job_summary:
+            raise RuntimeError("acceptance routing feedback must include feedback_job_summary")
+        repair_instruction = ""
+    else:
+        feedback_job_kind = "none"
+        feedback_job_summary = ""
+        repair_instruction = ""
+
+    return {
+        "route_action": route_action,
+        "feedback_job_kind": feedback_job_kind,
+        "feedback_job_summary": feedback_job_summary,
+        "required_context_gaps": required_context_gaps,
+        "repair_instruction": repair_instruction,
+        "reason": reason,
+        "evidence": evidence,
+        "does_not_auto_accept_or_reject": True,
+    }
+
+
+def normalize_string_list(value: Any, *, field_name: str, error_prefix: str) -> list[str]:
+    if not isinstance(value, list):
+        raise RuntimeError(f"{error_prefix} must include {field_name} as a list")
+    normalized: list[str] = []
+    for item in value:
+        if isinstance(item, (dict, list)):
+            text = json.dumps(item, ensure_ascii=False, sort_keys=True)
+        else:
+            text = str(item)
+        text = text.strip()
+        if text:
+            normalized.append(text)
+    return normalized
+
+
+def build_acceptance_routing_evidence(
+    *,
+    judgment: dict[str, Any],
+    latest_candidate_appearance_id: str,
+    latest_verification_result: dict[str, Any],
+    repair_result: dict[str, Any],
+) -> str:
+    payload = {
+        "evidence_kind": "acceptance_routing_judgment",
+        "route_action": judgment["route_action"],
+        "feedback_job_kind": judgment["feedback_job_kind"],
+        "feedback_job_summary": judgment["feedback_job_summary"],
+        "required_context_gaps": judgment["required_context_gaps"],
+        "repair_instruction": judgment["repair_instruction"],
+        "reason": judgment["reason"],
+        "router_evidence": judgment["evidence"],
+        "latest_candidate_appearance_id": latest_candidate_appearance_id,
+        "latest_verification": compact_verification_report(latest_verification_result["report"]),
+        "repair_loop": compact_repair_loop_result(repair_result),
+        "does_not_auto_accept_or_reject": True,
+    }
+    return json.dumps(payload, ensure_ascii=False, sort_keys=True, indent=2)
+
+
+def create_acceptance_feedback_job(
+    *,
+    flow: FlowWriter,
+    service: RuntimeService,
+    parent_job_id: str,
+    judgment: dict[str, Any],
+    routing_evidence_text: str,
+    step_prefix: str,
+    turn: str | None = None,
+) -> str:
+    feedback_job = service.create_child_job(
+        parent_job_id=parent_job_id,
+        target=judgment["feedback_job_summary"],
+        actor_id="system",
+        acceptance_criteria=ACCEPTANCE_FEEDBACK_JOB_ACCEPTANCE_CRITERIA,
+        required_context_gaps=judgment["required_context_gaps"],
+    )
+    feedback_job_id = feedback_job["job_id"]
+    data = {
+        **turn_field(turn),
+        "job_id": parent_job_id,
+        "feedback_job_id": feedback_job_id,
+        "acceptance_feedback_job_id": feedback_job_id,
+        "feedback_job_kind": judgment["feedback_job_kind"],
+        "feedback_job_target": judgment["feedback_job_summary"],
+        "feedback_job_summary": judgment["feedback_job_summary"],
+        "required_context_gaps": json.dumps(
+            judgment["required_context_gaps"], ensure_ascii=False, sort_keys=True
+        ),
+        "acceptance_route_action": judgment["route_action"],
+        "acceptance_route_kind": judgment["feedback_job_kind"],
+        "reason": judgment["reason"],
+    }
+    flow.write(FLOW_FEEDBACK_JOB_CREATED, "feedback job created", **data)
+    write_job_tree_mirror(
+        flow=flow,
+        service=service,
+        turn=turn,
+        job_id=feedback_job_id,
+        action="feedback_child_created",
+        child_job_id=feedback_job_id,
+        feedback_job_kind=judgment["feedback_job_kind"],
+        reason=judgment["reason"],
+    )
+    evidence = service.submit_evidence(
+        feedback_job_id,
+        text=routing_evidence_text,
+        actor_id="system",
+    )["evidence"]
+    flow.write(
+        FLOW_EVIDENCE_SUBMITTED,
+        "feedback job evidence submitted",
+        **{
+            **turn_field(turn),
+            "job_id": feedback_job_id,
+            "parent_job_id": parent_job_id,
+            "appearance_id": evidence["appearance_id"],
+            "acceptance_route_action": judgment["route_action"],
+            "acceptance_route_kind": judgment["feedback_job_kind"],
+            "acceptance_routing_evidence": routing_evidence_text,
+        },
+    )
+    write_job_tree_mirror(
+        flow=flow,
+        service=service,
+        turn=turn,
+        job_id=feedback_job_id,
+        action="evidence_attached",
+        appearance_id=evidence["appearance_id"],
+        child_job_id=feedback_job_id,
+        feedback_job_kind=judgment["feedback_job_kind"],
+    )
+    write_process_step(
+        flow=flow,
+        step=f"{step_prefix}.acceptance_route.feedback_job.create",
+        phase="feedback",
+        action="创建验收路由显影反馈业并提交路由证据",
+        **data,
+    )
+    return feedback_job_id
+
+
+def load_json_object(content: str, *, error_prefix: str) -> Any:
+    stripped = content.strip()
+    try:
+        return json.loads(stripped)
+    except json.JSONDecodeError as first_error:
+        if stripped.startswith("```"):
+            lines = stripped.splitlines()
+            if len(lines) >= 3 and lines[-1].strip() == "```":
+                fenced = "\n".join(lines[1:-1]).strip()
+                try:
+                    return json.loads(fenced)
+                except json.JSONDecodeError:
+                    pass
+
+        start = stripped.find("{")
+        end = stripped.rfind("}")
+        if 0 <= start < end:
+            try:
+                return json.loads(stripped[start : end + 1])
+            except json.JSONDecodeError:
+                pass
+
+        raise RuntimeError(f"{error_prefix} must be valid JSON") from first_error
 
 
 def turn_field(turn: str | None) -> dict[str, str]:
@@ -1425,7 +1957,17 @@ class AiSandboxRunner:
                 max_repair_attempts=self.max_repair_attempts,
                 step_prefix="candidate.verify",
             )
-            output_text = str(repair_result["latest_candidate_text"])
+            routing_result = run_acceptance_routing(
+                flow=self.flow,
+                service=service,
+                client=client,
+                method=method,
+                parent_job_id=job_id,
+                user_input=message,
+                repair_result=repair_result,
+                step_prefix="candidate.verify",
+            )
+            output_text = str(routing_result["latest_candidate_text"])
 
             self.flow.write(FLOW_RESULT_OUTPUT_RECORDED, "result output recorded", result=output_text)
             write_process_step(
@@ -1884,7 +2426,20 @@ class AiSandboxChatSession:
             step_prefix="chat.candidate.verify",
             turn=turn,
         )
-        output_text = str(repair_result["latest_candidate_text"])
+        routing_result = run_acceptance_routing(
+            flow=self.flow,
+            service=self.service,
+            client=client,
+            method=method,
+            parent_job_id=job_id,
+            user_input=user_input,
+            repair_result=repair_result,
+            step_prefix="chat.candidate.verify",
+            turn=turn,
+        )
+        self.last_feedback_judgment = routing_result["judgment"]
+        self.last_feedback_job_id = routing_result["feedback_job_id"]
+        output_text = str(routing_result["latest_candidate_text"])
         if self.history and self.history[-1].get("role") == "assistant":
             self.history[-1]["content"] = output_text
 
@@ -1902,82 +2457,6 @@ class AiSandboxChatSession:
             turn=turn,
             job_id=job_id,
         )
-
-        judgment = self._request_feedback_judgment(
-            client=client,
-            turn=turn,
-            job_id=job_id,
-            user_input=user_input,
-            assistant_response=output_text,
-        )
-        self.last_feedback_judgment = judgment
-        if judgment["needs_feedback_job"]:
-            feedback_job = self.service.create_child_job(
-                parent_job_id=job_id,
-                target=judgment["feedback_job_summary"],
-                actor_id="ai",
-                required_context_gaps=judgment["required_context_gaps"],
-            )
-            self.last_feedback_job_id = feedback_job["job_id"]
-            self.flow.write(
-                FLOW_FEEDBACK_JOB_CREATED,
-                "feedback job created",
-                turn=turn,
-                job_id=job_id,
-                feedback_job_id=feedback_job["job_id"],
-                feedback_job_kind=judgment["feedback_job_kind"],
-                feedback_job_target=judgment["feedback_job_summary"],
-                required_context_gaps=json.dumps(
-                    judgment["required_context_gaps"], ensure_ascii=False, sort_keys=True
-                ),
-            )
-            write_job_tree_mirror(
-                flow=self.flow,
-                service=self.service,
-                turn=turn,
-                job_id=feedback_job["job_id"],
-                action="feedback_child_created",
-                child_job_id=feedback_job["job_id"],
-                feedback_job_kind=judgment["feedback_job_kind"],
-            )
-            write_process_step(
-                flow=self.flow,
-                step="chat.feedback_job.create",
-                phase="feedback",
-                action="created feedback child job from AI judgment",
-                turn=turn,
-                job_id=job_id,
-                feedback_job_id=feedback_job["job_id"],
-                feedback_job_kind=judgment["feedback_job_kind"],
-            )
-        else:
-            self.flow.write(
-                FLOW_FEEDBACK_JOB_SKIPPED,
-                "feedback job skipped",
-                turn=turn,
-                job_id=job_id,
-                feedback_job_kind=judgment["feedback_job_kind"],
-                reason=judgment["reason"],
-            )
-            write_job_tree_mirror(
-                flow=self.flow,
-                service=self.service,
-                turn=turn,
-                job_id=job_id,
-                action="feedback_child_skipped",
-                feedback_job_kind=judgment["feedback_job_kind"],
-                reason=judgment["reason"],
-            )
-            write_process_step(
-                flow=self.flow,
-                step="chat.feedback_job.skip",
-                phase="feedback",
-                action="skipped feedback child job from AI judgment",
-                turn=turn,
-                job_id=job_id,
-                feedback_job_kind=judgment["feedback_job_kind"],
-                reason=judgment["reason"],
-            )
 
         self.flow.write(FLOW_CHAT_TURN_FINISHED, "chat turn finished", turn=turn, job_id=job_id)
         write_process_step(
@@ -2129,142 +2608,3 @@ class AiSandboxChatSession:
             **data,
         )
         return review.content
-
-    def _request_feedback_judgment(
-        self,
-        *,
-        client: ChatClient,
-        turn: str,
-        job_id: str,
-        user_input: str,
-        assistant_response: str,
-    ) -> dict[str, Any]:
-        system_prompt = (
-            "You judge whether the latest turn needs a feedback job. "
-            "Return compact JSON only with keys: needs_feedback_job, feedback_job_kind, "
-            "feedback_job_summary, required_context_gaps, reason. "
-            "Use feedback_job_kind=high_value for decisive or high-risk follow-up, "
-            "directional for guidance or correction, and none when no feedback job is needed."
-        )
-        request_payload = {
-            "turn": turn,
-            "job_id": job_id,
-            "user_input": user_input,
-            "assistant_response": assistant_response,
-            "conversation_size": len(self.history),
-        }
-        self.flow.write(
-            FLOW_FEEDBACK_JUDGMENT_REQUESTED,
-            "feedback judgment requested",
-            turn=turn,
-            job_id=job_id,
-            message_count=str(len(self.history)),
-        )
-        feedback_messages = [
-            {"role": "system", "content": system_prompt},
-            *self.history,
-            {"role": "user", "content": json.dumps(request_payload, ensure_ascii=False, sort_keys=True)},
-        ]
-        write_provider_messages(
-            flow=self.flow,
-            call_kind="feedback_judgment",
-            messages=feedback_messages,
-            turn=turn,
-            job_id=job_id,
-        )
-        write_process_step(
-            flow=self.flow,
-            step="chat.feedback_judgment.request",
-            phase="feedback",
-            action="requested AI judgment about feedback child job",
-            status="started",
-            turn=turn,
-            job_id=job_id,
-            message_count=str(len(self.history)),
-        )
-        judgment_response = complete_with_provider_logging(
-            flow=self.flow,
-            client=client,
-            messages=feedback_messages,
-            call_kind="feedback_judgment",
-            turn=turn,
-            job_id=job_id,
-        )
-        self.flow.write(
-            FLOW_FEEDBACK_JUDGMENT_RECEIVED,
-            "feedback judgment received",
-            turn=turn,
-            job_id=job_id,
-            judgment=judgment_response.content,
-        )
-        write_process_step(
-            flow=self.flow,
-            step="chat.feedback_judgment.receive",
-            phase="feedback",
-            action="received AI judgment about feedback child job",
-            turn=turn,
-            job_id=job_id,
-        )
-        return self._parse_feedback_judgment(judgment_response.content)
-
-    @staticmethod
-    def _parse_feedback_judgment(content: str) -> dict[str, Any]:
-        payload = AiSandboxChatSession._load_json_object(content)
-        if not isinstance(payload, dict):
-            raise RuntimeError("feedback judgment response must be a JSON object")
-
-        needs_feedback_job = bool(payload.get("needs_feedback_job"))
-        feedback_job_kind = str(payload.get("feedback_job_kind") or "none").strip()
-        feedback_job_summary = str(payload.get("feedback_job_summary") or "").strip()
-        reason = str(payload.get("reason") or "").strip()
-        raw_gaps = payload.get("required_context_gaps") or []
-        if not isinstance(raw_gaps, list):
-            raise RuntimeError("feedback judgment response must include required_context_gaps as a list")
-
-        required_context_gaps = [str(item).strip() for item in raw_gaps if str(item).strip()]
-
-        if needs_feedback_job:
-            if feedback_job_kind not in {"high_value", "directional"}:
-                raise RuntimeError(
-                    "feedback judgment response must choose high_value or directional"
-                )
-            if not feedback_job_summary:
-                raise RuntimeError(
-                    "feedback judgment response must include feedback_job_summary"
-                )
-        else:
-            feedback_job_kind = "none"
-            feedback_job_summary = ""
-
-        return {
-            "needs_feedback_job": needs_feedback_job,
-            "feedback_job_kind": feedback_job_kind,
-            "feedback_job_summary": feedback_job_summary,
-            "required_context_gaps": required_context_gaps,
-            "reason": reason,
-        }
-
-    @staticmethod
-    def _load_json_object(content: str) -> Any:
-        stripped = content.strip()
-        try:
-            return json.loads(stripped)
-        except json.JSONDecodeError as first_error:
-            if stripped.startswith("```"):
-                lines = stripped.splitlines()
-                if len(lines) >= 3 and lines[-1].strip() == "```":
-                    fenced = "\n".join(lines[1:-1]).strip()
-                    try:
-                        return json.loads(fenced)
-                    except json.JSONDecodeError:
-                        pass
-
-            start = stripped.find("{")
-            end = stripped.rfind("}")
-            if 0 <= start < end:
-                try:
-                    return json.loads(stripped[start : end + 1])
-                except json.JSONDecodeError:
-                    pass
-
-            raise RuntimeError("feedback judgment response must be valid JSON") from first_error

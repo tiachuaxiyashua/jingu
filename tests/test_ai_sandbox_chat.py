@@ -42,6 +42,70 @@ def write_method_file(base: Path, content: str | None = None) -> Path:
     return path
 
 
+def method_review_json(summary: str = "used method") -> str:
+    return json.dumps(
+        {
+            "method_use_summary": summary,
+            "evidence": ["method context was present"],
+            "gaps": [],
+            "observed_failure_modes": [],
+            "method_update_candidates": [],
+        },
+        ensure_ascii=False,
+    )
+
+
+def acceptance_continue_json(reason: str = "no routing child job needed") -> str:
+    return json.dumps(
+        {
+            "route_action": "continue",
+            "feedback_job_kind": "none",
+            "feedback_job_summary": "",
+            "required_context_gaps": [],
+            "repair_instruction": "",
+            "reason": reason,
+            "evidence": ["candidate can continue without extra routing"],
+        },
+        ensure_ascii=False,
+    )
+
+
+def acceptance_feedback_json(
+    *,
+    kind: str = "directional",
+    summary: str = "Clarify the next direction before continuing.",
+    gaps: list[str] | None = None,
+    reason: str = "the turn exposes a routing decision",
+) -> str:
+    return json.dumps(
+        {
+            "route_action": "feedback",
+            "feedback_job_kind": kind,
+            "feedback_job_summary": summary,
+            "required_context_gaps": gaps or ["next direction"],
+            "repair_instruction": "",
+            "reason": reason,
+            "evidence": ["routing evidence"],
+        },
+        ensure_ascii=False,
+    )
+
+
+def acceptance_repair_json(instruction: str = "Rewrite the candidate with the missing concrete detail.") -> str:
+    return json.dumps(
+        {
+            "route_action": "repair",
+            "feedback_job_kind": "none",
+            "feedback_job_summary": "",
+            "required_context_gaps": [],
+            "repair_instruction": instruction,
+            "reason": "the issue is repairable by the executor",
+            "evidence": ["acceptance role found a repairable issue"],
+        },
+        ensure_ascii=False,
+    )
+
+
 class FakeChatClient:
     def __init__(self, content: str = "fake answer", responses: list[str] | None = None) -> None:
         self.content = content
@@ -60,9 +124,15 @@ class FakeChatClient:
             index = len(self.message_batches) - 1
             content = self.responses[index] if index < len(self.responses) else self.responses[-1]
             return ChatResponse(content=content, raw={"ok": True})
-        if messages and messages[0].get("role") == "system" and "feedback job" in messages[0].get(
-            "content", ""
-        ):
+        system_text = "\n".join(
+            message.get("content", "")
+            for message in messages
+            if message.get("role") == "system"
+        )
+        latest_payload = messages[-1].get("content", "") if messages else ""
+        if "验收路由位" in system_text or "routing_contract" in latest_payload:
+            return ChatResponse(content=acceptance_continue_json(), raw={"ok": True})
+        if "feedback job" in system_text:
             return ChatResponse(
                 content=json.dumps(
                     {
@@ -272,6 +342,10 @@ class AiSandboxChatTest(unittest.TestCase):
             self.assertIn("verification_result_recorded", event_types)
             self.assertIn("verification_evidence_submitted", event_types)
             self.assertIn("parent_verification_evidence_submitted", event_types)
+            self.assertIn("acceptance_routing_requested", event_types)
+            self.assertIn("acceptance_routing_received", event_types)
+            self.assertIn("acceptance_routing_evidence_submitted", event_types)
+            self.assertIn("acceptance_routing_skipped", event_types)
             serialized = "\n".join(json.dumps(record, ensure_ascii=False) for record in records)
             self.assertIn("diagnostic input", serialized)
             self.assertIn("diagnostic answer", serialized)
@@ -279,6 +353,8 @@ class AiSandboxChatTest(unittest.TestCase):
             self.assertIn("verification_child_created", serialized)
             self.assertIn("candidate_verification_report", serialized)
             self.assertIn("candidate_verification_summary", serialized)
+            self.assertIn("acceptance_routing_judgment", serialized)
+            self.assertIn("acceptance_routing_evidence", serialized)
             self.assertIn("does_not_auto_accept_or_reject", serialized)
             self.assertIn("tree_snapshot", serialized)
             provenance = next(
@@ -305,13 +381,17 @@ class AiSandboxChatTest(unittest.TestCase):
             self.assertIn("candidate.verify.result", process_steps)
             self.assertIn("candidate.verify.evidence", process_steps)
             self.assertIn("candidate.verify.parent_evidence", process_steps)
+            self.assertIn("candidate.verify.acceptance_route.request", process_steps)
+            self.assertIn("candidate.verify.acceptance_route.receive", process_steps)
+            self.assertIn("candidate.verify.acceptance_route.evidence", process_steps)
+            self.assertIn("candidate.verify.acceptance_route.continue", process_steps)
             self.assertIn("output.record", process_steps)
             provider_messages = [
                 record for record in records if record["event_type"] == "provider_messages_recorded"
             ]
             self.assertEqual(
                 [record["data"]["provider_call_kind"] for record in provider_messages],
-                ["candidate_generation", "method_self_review"],
+                ["candidate_generation", "method_self_review", "acceptance_routing"],
             )
             self.assertIn("system,user", provider_messages[0]["data"]["provider_message_roles"])
             self.assertIn("Test Method", provider_messages[0]["data"]["provider_messages"])
@@ -346,6 +426,9 @@ class AiSandboxChatTest(unittest.TestCase):
             self.assertIn("候选校验业已创建（verification_job_created）", readable_text)
             self.assertIn("候选校验结果已记录（verification_result_recorded）", readable_text)
             self.assertIn("父业校验证据已回流（parent_verification_evidence_submitted）", readable_text)
+            self.assertIn("验收路由已请求（acceptance_routing_requested）", readable_text)
+            self.assertIn("验收路由已收到（acceptance_routing_received）", readable_text)
+            self.assertIn("验收路由证据已提交（acceptance_routing_evidence_submitted）", readable_text)
             self.assertIn("校验报告（verification_report）", readable_text)
             self.assertIn("校验子业已创建（verification_child_created）", readable_text)
             self.assertTrue(latest_readable_log_pointer_path(log_dir).exists())
@@ -360,17 +443,9 @@ class AiSandboxChatTest(unittest.TestCase):
             client = FakeChatClient(
                 responses=[
                     short_candidate,
-                    json.dumps(
-                        {
-                            "method_use_summary": "checked method use",
-                            "evidence": ["candidate generated"],
-                            "gaps": [],
-                            "observed_failure_modes": [],
-                            "method_update_candidates": [],
-                        },
-                        ensure_ascii=False,
-                    ),
+                    method_review_json("checked method use"),
                     repaired_candidate,
+                    acceptance_continue_json(),
                 ]
             )
 
@@ -398,6 +473,8 @@ class AiSandboxChatTest(unittest.TestCase):
             self.assertIn("candidate_repair_loop_summary", serialized)
             self.assertIn("repair_child_created", serialized)
             self.assertIn("verification_passed", serialized)
+            self.assertIn("acceptance_routing_requested", event_types)
+            self.assertIn("acceptance_routing_skipped", event_types)
             self.assertNotIn("job_accepted", event_types)
             self.assertNotIn("job_rejected", event_types)
 
@@ -411,17 +488,9 @@ class AiSandboxChatTest(unittest.TestCase):
             client = FakeChatClient(
                 responses=[
                     short_candidate,
-                    json.dumps(
-                        {
-                            "method_use_summary": "checked method use",
-                            "evidence": ["candidate generated"],
-                            "gaps": [],
-                            "observed_failure_modes": [],
-                            "method_update_candidates": [],
-                        },
-                        ensure_ascii=False,
-                    ),
+                    method_review_json("checked method use"),
                     still_short_candidate,
+                    acceptance_continue_json(),
                 ]
             )
 
@@ -446,7 +515,93 @@ class AiSandboxChatTest(unittest.TestCase):
             self.assertIn("attempt_limit_exhausted", serialized)
             self.assertIn("verification_feedback_child_created", serialized)
             self.assertIn("verification_feedback_decision_context", serialized)
+            self.assertIn("acceptance_routing_requested", event_types)
+            self.assertIn("acceptance_routing_skipped", event_types)
             self.assertIn("does_not_auto_accept_or_reject", serialized)
+            self.assertNotIn("job_accepted", event_types)
+            self.assertNotIn("job_rejected", event_types)
+
+    def test_runner_acceptance_router_creates_feedback_job(self) -> None:
+        with TemporaryDirectory() as tmp:
+            sandbox = Path(tmp) / "sandbox"
+            log_dir = Path(tmp) / "logs"
+            method_path = write_method_file(Path(tmp))
+            client = FakeChatClient(
+                responses=[
+                    "candidate with a visible direction question",
+                    method_review_json("checked method use"),
+                    acceptance_feedback_json(
+                        kind="high_value",
+                        summary="Expose the unresolved direction before continuing.",
+                        gaps=["direction choice"],
+                        reason="the candidate changes the direction of the work",
+                    ),
+                ]
+            )
+
+            answer = AiSandboxRunner(
+                sandbox_path=sandbox,
+                log_dir=log_dir,
+                method_path=method_path,
+                client=client,
+            ).run("Produce a candidate and surface important unresolved direction choices.")
+
+            self.assertEqual(answer, "candidate with a visible direction question")
+            records = [
+                json.loads(line)
+                for line in next(log_dir.glob("ai-run-*.jsonl")).read_text(encoding="utf-8").splitlines()
+                if line.strip()
+            ]
+            event_types = [record["event_type"] for record in records]
+            self.assertEqual(event_types.count("acceptance_routing_requested"), 1)
+            self.assertEqual(event_types.count("acceptance_routing_received"), 1)
+            self.assertEqual(event_types.count("feedback_job_created"), 1)
+            self.assertNotIn("acceptance_routing_skipped", event_types)
+            serialized = "\n".join(json.dumps(record, ensure_ascii=False) for record in records)
+            self.assertIn("high_value", serialized)
+            self.assertIn("Expose the unresolved direction before continuing.", serialized)
+            self.assertIn("acceptance_routing_judgment", serialized)
+            self.assertIn("acceptance_routing_evidence", serialized)
+            self.assertIn("does_not_auto_accept_or_reject", serialized)
+            self.assertNotIn("job_accepted", event_types)
+            self.assertNotIn("job_rejected", event_types)
+
+    def test_runner_acceptance_router_creates_executor_repair(self) -> None:
+        with TemporaryDirectory() as tmp:
+            sandbox = Path(tmp) / "sandbox"
+            log_dir = Path(tmp) / "logs"
+            method_path = write_method_file(Path(tmp))
+            client = FakeChatClient(
+                responses=[
+                    "draft candidate",
+                    method_review_json("checked method use"),
+                    acceptance_repair_json("Add the missing concrete evidence and return the full result."),
+                    "repaired candidate",
+                ]
+            )
+
+            answer = AiSandboxRunner(
+                sandbox_path=sandbox,
+                log_dir=log_dir,
+                method_path=method_path,
+                client=client,
+            ).run("Produce a candidate that can be revised if acceptance finds a repairable issue.")
+
+            self.assertEqual(answer, "repaired candidate")
+            records = [
+                json.loads(line)
+                for line in next(log_dir.glob("ai-run-*.jsonl")).read_text(encoding="utf-8").splitlines()
+                if line.strip()
+            ]
+            event_types = [record["event_type"] for record in records]
+            self.assertEqual(event_types.count("acceptance_routing_requested"), 1)
+            self.assertEqual(event_types.count("repair_job_created"), 1)
+            self.assertEqual(event_types.count("repair_candidate_submitted"), 1)
+            self.assertEqual(event_types.count("verification_job_created"), 2)
+            serialized = "\n".join(json.dumps(record, ensure_ascii=False) for record in records)
+            self.assertIn("acceptance_routing", serialized)
+            self.assertIn("acceptance_repair", serialized)
+            self.assertIn("Add the missing concrete evidence", serialized)
             self.assertNotIn("job_accepted", event_types)
             self.assertNotIn("job_rejected", event_types)
 
@@ -576,49 +731,17 @@ class AiSandboxChatTest(unittest.TestCase):
             client = FakeChatClient(
                 responses=[
                     "chat answer 1",
-                    json.dumps(
-                        {
-                            "method_use_summary": "used method",
-                            "evidence": ["method context was present"],
-                            "gaps": [],
-                            "observed_failure_modes": [],
-                            "method_update_candidates": [],
-                        },
-                        ensure_ascii=False,
-                    ),
+                    method_review_json(),
                     "```json\n"
-                    + json.dumps(
-                        {
-                            "needs_feedback_job": True,
-                            "feedback_job_kind": "directional",
-                            "feedback_job_summary": "Clarify the next direction before continuing.",
-                            "required_context_gaps": ["next direction"],
-                            "reason": "the turn needs direction before more work",
-                        },
-                        ensure_ascii=False,
+                    + acceptance_feedback_json(
+                        summary="Clarify the next direction before continuing.",
+                        gaps=["next direction"],
+                        reason="the turn needs direction before more work",
                     )
                     + "\n```",
                     "chat answer 2",
-                    json.dumps(
-                        {
-                            "method_use_summary": "used method again",
-                            "evidence": ["method context was present"],
-                            "gaps": [],
-                            "observed_failure_modes": [],
-                            "method_update_candidates": [],
-                        },
-                        ensure_ascii=False,
-                    ),
-                    json.dumps(
-                        {
-                            "needs_feedback_job": False,
-                            "feedback_job_kind": "none",
-                            "feedback_job_summary": "",
-                            "required_context_gaps": [],
-                            "reason": "the answer can continue as a normal conversation",
-                        },
-                        ensure_ascii=False,
-                    ),
+                    method_review_json("used method again"),
+                    acceptance_continue_json("the answer can continue as a normal conversation"),
                 ]
             )
             session = AiSandboxChatSession(
@@ -667,16 +790,17 @@ class AiSandboxChatTest(unittest.TestCase):
             self.assertEqual(event_types.count("method_update_candidate_recorded"), 2)
             self.assertEqual(event_types.count("result_output_recorded"), 2)
             self.assertEqual(event_types.count("candidate_submitted"), 2)
-            self.assertEqual(event_types.count("evidence_submitted"), 2)
+            self.assertEqual(event_types.count("evidence_submitted"), 3)
             self.assertEqual(event_types.count("verification_job_created"), 2)
             self.assertEqual(event_types.count("verification_tool_started"), 2)
             self.assertEqual(event_types.count("verification_result_recorded"), 2)
             self.assertEqual(event_types.count("verification_evidence_submitted"), 2)
             self.assertEqual(event_types.count("parent_verification_evidence_submitted"), 2)
-            self.assertEqual(event_types.count("feedback_judgment_requested"), 2)
-            self.assertEqual(event_types.count("feedback_judgment_received"), 2)
+            self.assertEqual(event_types.count("acceptance_routing_requested"), 2)
+            self.assertEqual(event_types.count("acceptance_routing_received"), 2)
+            self.assertEqual(event_types.count("acceptance_routing_evidence_submitted"), 2)
             self.assertEqual(event_types.count("feedback_job_created"), 1)
-            self.assertEqual(event_types.count("feedback_job_skipped"), 1)
+            self.assertEqual(event_types.count("acceptance_routing_skipped"), 1)
             self.assertEqual(event_types.count("provider_messages_recorded"), 6)
             self.assertGreaterEqual(event_types.count("process_step_recorded"), 20)
             self.assertGreaterEqual(event_types.count("job_tree_management_recorded"), 12)
@@ -685,6 +809,8 @@ class AiSandboxChatTest(unittest.TestCase):
             self.assertNotIn("human_verdict_recorded", event_types)
             self.assertNotIn("job_accepted", event_types)
             self.assertNotIn("job_rejected", event_types)
+            self.assertNotIn("feedback_judgment_requested", event_types)
+            self.assertNotIn("feedback_judgment_received", event_types)
             self.assertIn("chat_session_finished", event_types)
             tree_actions = [
                 record["data"]["job_tree_action"]
@@ -692,7 +818,7 @@ class AiSandboxChatTest(unittest.TestCase):
                 if record["event_type"] == "job_tree_management_recorded"
             ]
             self.assertIn("feedback_child_created", tree_actions)
-            self.assertIn("feedback_child_skipped", tree_actions)
+            self.assertIn("acceptance_route_continued", tree_actions)
             self.assertIn("verification_child_created", tree_actions)
             self.assertIn("verification_candidate_attached", tree_actions)
             self.assertIn("verification_evidence_attached", tree_actions)
@@ -722,6 +848,57 @@ class AiSandboxChatTest(unittest.TestCase):
                     for link in snapshot["links"]
                 )
             )
+
+    def test_chat_acceptance_repair_updates_followup_history(self) -> None:
+        with TemporaryDirectory() as tmp:
+            sandbox = Path(tmp) / "sandbox"
+            log_dir = Path(tmp) / "logs"
+            method_path = write_method_file(Path(tmp))
+            client = FakeChatClient(
+                responses=[
+                    "draft chat candidate",
+                    method_review_json(),
+                    acceptance_repair_json("Return a repaired assistant answer."),
+                    "repaired chat candidate",
+                    "follow-up answer",
+                    method_review_json("used method again"),
+                    acceptance_continue_json(),
+                ]
+            )
+            session = AiSandboxChatSession(
+                sandbox_path=sandbox,
+                log_dir=log_dir,
+                method_path=method_path,
+                client=client,
+            )
+
+            session.start()
+            first = session.ask("first task")
+            second = session.ask("second task")
+            session.finish()
+
+            self.assertEqual(first, "repaired chat candidate")
+            self.assertEqual(second, "follow-up answer")
+            candidate_batches = [
+                batch
+                for batch in client.message_batches
+                if batch[-1].get("content") in {"first task", "second task"}
+            ]
+            self.assertEqual(len(candidate_batches), 2)
+            second_generation_text = json.dumps(candidate_batches[1], ensure_ascii=False)
+            self.assertIn("repaired chat candidate", second_generation_text)
+            self.assertNotIn("draft chat candidate", second_generation_text)
+
+            records = [
+                json.loads(line)
+                for line in next(log_dir.glob("ai-run-*.jsonl")).read_text(encoding="utf-8").splitlines()
+                if line.strip()
+            ]
+            event_types = [record["event_type"] for record in records]
+            self.assertEqual(event_types.count("repair_job_created"), 1)
+            self.assertIn("acceptance_routing_received", event_types)
+            serialized = "\n".join(json.dumps(record, ensure_ascii=False) for record in records)
+            self.assertIn("acceptance_repair", serialized)
 
     def test_launcher_dry_run_prints_method_source(self) -> None:
         completed = subprocess.run(

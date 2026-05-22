@@ -49,6 +49,10 @@ FLOW_REPAIR_RESPONSE_RECEIVED = "repair_response_received"
 FLOW_REPAIR_CANDIDATE_SUBMITTED = "repair_candidate_submitted"
 FLOW_REPAIR_LOOP_FINISHED = "repair_loop_finished"
 FLOW_VERIFICATION_FEEDBACK_JOB_CREATED = "verification_feedback_job_created"
+FLOW_ACCEPTANCE_ROUTING_REQUESTED = "acceptance_routing_requested"
+FLOW_ACCEPTANCE_ROUTING_RECEIVED = "acceptance_routing_received"
+FLOW_ACCEPTANCE_ROUTING_EVIDENCE_SUBMITTED = "acceptance_routing_evidence_submitted"
+FLOW_ACCEPTANCE_ROUTING_SKIPPED = "acceptance_routing_skipped"
 FLOW_FEEDBACK_JUDGMENT_REQUESTED = "feedback_judgment_requested"
 FLOW_FEEDBACK_JUDGMENT_RECEIVED = "feedback_judgment_received"
 FLOW_FEEDBACK_JOB_CREATED = "feedback_job_created"
@@ -103,6 +107,10 @@ EVENT_LABELS = {
     FLOW_REPAIR_CANDIDATE_SUBMITTED: "修复候选已提交",
     FLOW_REPAIR_LOOP_FINISHED: "修复循环已结束",
     FLOW_VERIFICATION_FEEDBACK_JOB_CREATED: "校验反馈裁决业已创建",
+    FLOW_ACCEPTANCE_ROUTING_REQUESTED: "验收路由已请求",
+    FLOW_ACCEPTANCE_ROUTING_RECEIVED: "验收路由已收到",
+    FLOW_ACCEPTANCE_ROUTING_EVIDENCE_SUBMITTED: "验收路由证据已提交",
+    FLOW_ACCEPTANCE_ROUTING_SKIPPED: "验收路由已继续",
     FLOW_FEEDBACK_JUDGMENT_REQUESTED: "反馈判断已请求",
     FLOW_FEEDBACK_JUDGMENT_RECEIVED: "反馈判断已收到",
     FLOW_FEEDBACK_JOB_CREATED: "反馈业已创建",
@@ -119,6 +127,15 @@ EVENT_LABELS = {
 }
 
 FIELD_LABELS = {
+    "acceptance_feedback_job_id": "验收路由反馈业编号",
+    "acceptance_latest_candidate_appearance_id": "验收路由最新候选相编号",
+    "acceptance_repair_instruction": "验收路由修复指令",
+    "acceptance_route_action": "验收路由动作",
+    "acceptance_route_kind": "验收路由类型",
+    "acceptance_routing_evidence": "验收路由证据",
+    "acceptance_routing_evidence_appearance_id": "验收路由证据相编号",
+    "acceptance_routing_judgment": "验收路由判断",
+    "acceptance_routing_prompt": "验收路由请求内容",
     "appearance_id": "相编号",
     "error": "错误",
     "feedback_job_id": "反馈业编号",
@@ -185,6 +202,7 @@ FIELD_LABELS = {
     "repair_prompt": "修复请求内容",
     "repair_reason": "修复原因",
     "repair_response": "修复响应",
+    "repair_source": "修复来源",
     "repairable_check_count": "可修复校验项数量",
     "repairable_checks": "可修复校验项",
     "readable_log_path": "可读日志路径",
@@ -216,6 +234,7 @@ JOB_TREE_ACTION_LABELS = {
     "evidence_attached": "证据已挂载",
     "feedback_child_created": "反馈子业已创建",
     "feedback_child_skipped": "反馈子业已跳过",
+    "acceptance_route_continued": "验收路由继续运行",
     "job_ready": "业已就绪",
     "job_running": "业运行中",
     "parent_verification_evidence_attached": "父业校验证据已挂载",
@@ -426,6 +445,10 @@ def _should_render_as_block(key: str, value: str) -> bool:
         "job_target",
         "tree_snapshot",
         "provider_messages",
+        "acceptance_routing_prompt",
+        "acceptance_routing_judgment",
+        "acceptance_routing_evidence",
+        "acceptance_repair_instruction",
         "verification_gaps",
         "verification_parent_evidence",
         "verification_report",
