@@ -61,6 +61,11 @@ FLOW_FEEDBACK_JOB_SKIPPED = "feedback_job_skipped"
 FLOW_METHOD_SELF_REVIEW_REQUESTED = "method_self_review_requested"
 FLOW_METHOD_SELF_REVIEW_RECEIVED = "method_self_review_received"
 FLOW_METHOD_UPDATE_CANDIDATE_RECORDED = "method_update_candidate_recorded"
+FLOW_SPLIT_PROPOSAL_REQUESTED = "split_proposal_requested"
+FLOW_SPLIT_PROPOSAL_RECEIVED = "split_proposal_received"
+FLOW_SPLIT_PROPOSAL_ACCEPTED = "split_proposal_accepted"
+FLOW_SPLIT_PROPOSAL_REJECTED = "split_proposal_rejected"
+FLOW_SPLIT_PROPOSAL_SKIPPED = "split_proposal_skipped"
 FLOW_RESULT_OUTPUT_RECORDED = "result_output_recorded"
 FLOW_CHAT_TURN_FINISHED = "chat_turn_finished"
 FLOW_CHAT_SESSION_FINISHED = "chat_session_finished"
@@ -120,6 +125,11 @@ EVENT_LABELS = {
     FLOW_METHOD_SELF_REVIEW_REQUESTED: "方法自验已请求",
     FLOW_METHOD_SELF_REVIEW_RECEIVED: "方法自验已收到",
     FLOW_METHOD_UPDATE_CANDIDATE_RECORDED: "方法更新候选已记录",
+    FLOW_SPLIT_PROPOSAL_REQUESTED: "分业申请已请求",
+    FLOW_SPLIT_PROPOSAL_RECEIVED: "分业申请已收到",
+    FLOW_SPLIT_PROPOSAL_ACCEPTED: "分业申请已登记",
+    FLOW_SPLIT_PROPOSAL_REJECTED: "分业申请已拒绝",
+    FLOW_SPLIT_PROPOSAL_SKIPPED: "分业登记已跳过",
     FLOW_RESULT_OUTPUT_RECORDED: "结果输出已记录",
     FLOW_CHAT_TURN_FINISHED: "对话轮次已完成",
     FLOW_CHAT_SESSION_FINISHED: "对话会话已结束",
@@ -181,6 +191,7 @@ FIELD_LABELS = {
     "method_name": "方法名称",
     "method_path": "方法路径",
     "method_size": "方法大小",
+    "method_catalog": "可用法目录",
     "parent_job_id": "父业编号",
     "process_action": "运行动作",
     "process_detail": "运行细节",
@@ -223,6 +234,14 @@ FIELD_LABELS = {
     "review": "方法自验",
     "root_job_id": "根业编号",
     "sandbox_path": "沙盒路径",
+    "split_proposal": "分业申请",
+    "split_proposal_count": "分业申请数量",
+    "split_proposal_decision": "分业申请处理结果",
+    "split_proposal_index": "分业申请序号",
+    "split_proposal_prompt": "分业申请请求内容",
+    "split_proposal_rejection_reason": "分业申请拒绝原因",
+    "split_proposal_response": "分业申请响应",
+    "split_registration_summary": "分业登记摘要",
     "tree_snapshot": "业树快照",
     "turn": "轮次",
     "verification_candidate_appearance_id": "校验候选相编号",
@@ -255,6 +274,9 @@ JOB_TREE_ACTION_LABELS = {
     "repair_child_ready": "修复子业已就绪",
     "repair_child_running": "修复子业运行中",
     "repair_verification_evidence_attached": "修复校验证据已挂载",
+    "split_proposal_child_created": "分业申请子业已创建",
+    "split_proposal_rejected": "分业申请已拒绝",
+    "split_proposal_skipped": "分业登记已跳过",
     "verification_candidate_attached": "校验报告候选已挂载",
     "verification_child_created": "校验子业已创建",
     "verification_child_ready": "校验子业已就绪",
@@ -449,6 +471,7 @@ def _should_render_as_block(key: str, value: str) -> bool:
         "method_output_contract",
         "method_binding_reason",
         "method_budget",
+        "method_catalog",
         "provider_delta_text",
         "repair_prompt",
         "repair_response",
@@ -456,6 +479,10 @@ def _should_render_as_block(key: str, value: str) -> bool:
         "repairable_checks",
         "judgment",
         "required_context_gaps",
+        "split_proposal",
+        "split_proposal_prompt",
+        "split_proposal_response",
+        "split_registration_summary",
         "feedback_job_target",
         "feedback_job_summary",
         "job_target",

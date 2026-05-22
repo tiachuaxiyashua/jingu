@@ -59,6 +59,10 @@ def method_review_json(summary: str = "used method") -> str:
     )
 
 
+def split_proposals_json(proposals: list[dict] | None = None) -> str:
+    return json.dumps({"proposals": proposals or []}, ensure_ascii=False)
+
+
 def acceptance_continue_json(reason: str = "no routing child job needed") -> str:
     return json.dumps(
         {
@@ -134,6 +138,8 @@ class FakeChatClient:
             if message.get("role") == "system"
         )
         latest_payload = messages[-1].get("content", "") if messages else ""
+        if "分业申请提议位" in system_text or "available_method_catalog" in latest_payload:
+            return ChatResponse(content=split_proposals_json(), raw={"ok": True})
         if "验收路由位" in system_text or "routing_contract" in latest_payload:
             return ChatResponse(content=acceptance_continue_json(), raw={"ok": True})
         if "feedback job" in system_text:
@@ -342,6 +348,9 @@ class AiSandboxChatTest(unittest.TestCase):
             self.assertIn("method_law_fragment_loaded", event_types)
             self.assertIn("method_law_fragment_bound", event_types)
             self.assertIn("method_call_frame_opened", event_types)
+            self.assertIn("split_proposal_requested", event_types)
+            self.assertIn("split_proposal_received", event_types)
+            self.assertIn("split_proposal_skipped", event_types)
             self.assertIn("verification_job_created", event_types)
             self.assertIn("verification_tool_started", event_types)
             self.assertIn("verification_result_recorded", event_types)
@@ -396,7 +405,12 @@ class AiSandboxChatTest(unittest.TestCase):
             ]
             self.assertEqual(
                 [record["data"]["provider_call_kind"] for record in provider_messages],
-                ["candidate_generation", "method_self_review", "acceptance_routing"],
+                [
+                    "candidate_generation",
+                    "method_self_review",
+                    "split_proposal_extraction",
+                    "acceptance_routing",
+                ],
             )
             self.assertIn("system,user", provider_messages[0]["data"]["provider_message_roles"])
             self.assertIn("Test Method", provider_messages[0]["data"]["provider_messages"])
@@ -405,6 +419,7 @@ class AiSandboxChatTest(unittest.TestCase):
             self.assertIn("method_context_injected", event_types)
             self.assertIn("method_self_review_received", event_types)
             self.assertIn("method_update_candidate_recorded", event_types)
+            self.assertIn("split_proposal_extraction", serialized)
             self.assertIn("method_law_fragment_count", serialized)
             self.assertIn("method_law_appearance_refs", serialized)
             self.assertIn("method_call_frame", serialized)
@@ -423,6 +438,8 @@ class AiSandboxChatTest(unittest.TestCase):
             self.assertIn("法片段已绑定（method_law_fragment_bound）", readable_text)
             self.assertIn("法调用帧已打开（method_call_frame_opened）", readable_text)
             self.assertIn("法调用帧（method_call_frame）", readable_text)
+            self.assertIn("分业申请已请求（split_proposal_requested）", readable_text)
+            self.assertIn("分业登记已跳过（split_proposal_skipped）", readable_text)
             self.assertIn("业树快照（tree_snapshot）", readable_text)
             self.assertIn("候选结果已挂载（candidate_attached）", readable_text)
             self.assertIn("运行步骤已记录（process_step_recorded）", readable_text)
@@ -441,6 +458,90 @@ class AiSandboxChatTest(unittest.TestCase):
             self.assertIn("校验子业已创建（verification_child_created）", readable_text)
             self.assertTrue(latest_readable_log_pointer_path(log_dir).exists())
 
+    def test_runner_registers_ai_split_proposals_through_gatekeeper(self) -> None:
+        with TemporaryDirectory() as tmp:
+            workspace = Path(tmp)
+            sandbox = workspace / "sandbox"
+            log_dir = workspace / "logs"
+            method_path = write_method_file(workspace)
+            child_method = workspace / ".agents" / "skills" / "child-method" / "SKILL.md"
+            child_method.parent.mkdir(parents=True)
+            child_method.write_text(
+                "\n".join(
+                    [
+                        "---",
+                        "name: child-method",
+                        "description: Child method for split registration tests.",
+                        "---",
+                        "# Child Method",
+                        "Produce a local child result package.",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            split_payload = split_proposals_json(
+                [
+                    {
+                        "target": "make protagonist vivid",
+                        "blocking_reason": "parent cannot continue without a protagonist card",
+                        "output_contract": "protagonist card with evidence",
+                        "acceptance_criteria": "card has traits and scene evidence",
+                        "estimated_effort": 1,
+                        "depth_limit": 3,
+                        "required_context_gaps": [],
+                        "method_path": str(child_method),
+                        "method_binding_reason": "this child needs the selected local method",
+                        "method_return_point": "return protagonist card to parent",
+                    },
+                    {
+                        "target": "unknown method child",
+                        "blocking_reason": "parent cannot validate unknown method behavior",
+                        "output_contract": "should be rejected",
+                        "acceptance_criteria": "unknown method must not create child",
+                        "estimated_effort": 1,
+                        "depth_limit": 3,
+                        "required_context_gaps": [],
+                        "method_path": str(workspace / "missing-method.md"),
+                        "method_binding_reason": "bad method reference",
+                        "method_return_point": "return nowhere",
+                    },
+                ]
+            )
+            client = FakeChatClient(
+                responses=[
+                    "candidate that needs a protagonist child job",
+                    method_review_json("checked method use"),
+                    split_payload,
+                    acceptance_continue_json(),
+                ]
+            )
+
+            answer = AiSandboxRunner(
+                sandbox_path=sandbox,
+                log_dir=log_dir,
+                method_path=method_path,
+                client=client,
+            ).run("Use the method and split blocked story work into child jobs.")
+
+            self.assertEqual(answer, "candidate that needs a protagonist child job")
+            records = [
+                json.loads(line)
+                for line in next(log_dir.glob("ai-run-*.jsonl")).read_text(encoding="utf-8").splitlines()
+                if line.strip()
+            ]
+            event_types = [record["event_type"] for record in records]
+            self.assertEqual(event_types.count("split_proposal_accepted"), 1)
+            self.assertEqual(event_types.count("split_proposal_rejected"), 1)
+            serialized = "\n".join(json.dumps(record, ensure_ascii=False) for record in records)
+            self.assertIn("child-method", serialized)
+            self.assertIn("make protagonist vivid", serialized)
+            self.assertIn("split proposal method is not in catalog", serialized)
+            self.assertIn("split_proposal_child_created", serialized)
+            self.assertIn("method_call_frames", serialized)
+            readable_text = next(log_dir.glob("ai-run-*.md")).read_text(encoding="utf-8-sig")
+            self.assertIn("分业申请已登记（split_proposal_accepted）", readable_text)
+            self.assertIn("分业申请已拒绝（split_proposal_rejected）", readable_text)
+
     def test_runner_repairs_failed_verification_candidate(self) -> None:
         with TemporaryDirectory() as tmp:
             sandbox = Path(tmp) / "sandbox"
@@ -452,6 +553,7 @@ class AiSandboxChatTest(unittest.TestCase):
                 responses=[
                     short_candidate,
                     method_review_json("checked method use"),
+                    split_proposals_json(),
                     repaired_candidate,
                     acceptance_continue_json(),
                 ]
@@ -497,6 +599,7 @@ class AiSandboxChatTest(unittest.TestCase):
                 responses=[
                     short_candidate,
                     method_review_json("checked method use"),
+                    split_proposals_json(),
                     still_short_candidate,
                     acceptance_continue_json(),
                 ]
@@ -538,6 +641,7 @@ class AiSandboxChatTest(unittest.TestCase):
                 responses=[
                     "candidate with a visible direction question",
                     method_review_json("checked method use"),
+                    split_proposals_json(),
                     acceptance_feedback_json(
                         kind="high_value",
                         summary="Expose the unresolved direction before continuing.",
@@ -583,6 +687,7 @@ class AiSandboxChatTest(unittest.TestCase):
                 responses=[
                     "draft candidate",
                     method_review_json("checked method use"),
+                    split_proposals_json(),
                     acceptance_repair_json("Add the missing concrete evidence and return the full result."),
                     "repaired candidate",
                 ]
@@ -762,6 +867,7 @@ class AiSandboxChatTest(unittest.TestCase):
                 responses=[
                     "chat answer 1",
                     method_review_json(),
+                    split_proposals_json(),
                     "```json\n"
                     + acceptance_feedback_json(
                         summary="Clarify the next direction before continuing.",
@@ -771,6 +877,7 @@ class AiSandboxChatTest(unittest.TestCase):
                     + "\n```",
                     "chat answer 2",
                     method_review_json("used method again"),
+                    split_proposals_json(),
                     acceptance_continue_json("the answer can continue as a normal conversation"),
                 ]
             )
@@ -818,6 +925,9 @@ class AiSandboxChatTest(unittest.TestCase):
             self.assertEqual(event_types.count("method_self_review_requested"), 2)
             self.assertEqual(event_types.count("method_self_review_received"), 2)
             self.assertEqual(event_types.count("method_update_candidate_recorded"), 2)
+            self.assertEqual(event_types.count("split_proposal_requested"), 2)
+            self.assertEqual(event_types.count("split_proposal_received"), 2)
+            self.assertEqual(event_types.count("split_proposal_skipped"), 2)
             self.assertEqual(event_types.count("result_output_recorded"), 2)
             self.assertEqual(event_types.count("candidate_submitted"), 2)
             self.assertEqual(event_types.count("evidence_submitted"), 3)
@@ -831,7 +941,7 @@ class AiSandboxChatTest(unittest.TestCase):
             self.assertEqual(event_types.count("acceptance_routing_evidence_submitted"), 2)
             self.assertEqual(event_types.count("feedback_job_created"), 1)
             self.assertEqual(event_types.count("acceptance_routing_skipped"), 1)
-            self.assertEqual(event_types.count("provider_messages_recorded"), 6)
+            self.assertEqual(event_types.count("provider_messages_recorded"), 8)
             self.assertGreaterEqual(event_types.count("process_step_recorded"), 20)
             self.assertGreaterEqual(event_types.count("job_tree_management_recorded"), 12)
             self.assertGreaterEqual(event_types.count("job_tree_snapshot_recorded"), 12)
@@ -848,6 +958,7 @@ class AiSandboxChatTest(unittest.TestCase):
                 if record["event_type"] == "job_tree_management_recorded"
             ]
             self.assertIn("feedback_child_created", tree_actions)
+            self.assertIn("split_proposal_skipped", tree_actions)
             self.assertIn("acceptance_route_continued", tree_actions)
             self.assertIn("verification_child_created", tree_actions)
             self.assertIn("verification_candidate_attached", tree_actions)
@@ -888,10 +999,12 @@ class AiSandboxChatTest(unittest.TestCase):
                 responses=[
                     "draft chat candidate",
                     method_review_json(),
+                    split_proposals_json(),
                     acceptance_repair_json("Return a repaired assistant answer."),
                     "repaired chat candidate",
                     "follow-up answer",
                     method_review_json("used method again"),
+                    split_proposals_json(),
                     acceptance_continue_json(),
                 ]
             )

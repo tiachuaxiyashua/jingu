@@ -18,6 +18,7 @@ from jingu.runtime.constants import (
 from jingu.runtime.object_store import checksum_text
 from jingu.runtime.repository import decode_json
 from jingu.runtime.service import RuntimeService
+from jingu.runtime.tree import TreeService
 from jingu.sandbox.flow import (
     FLOW_AI_REQUEST_STARTED,
     FLOW_AI_RESPONSE_RECEIVED,
@@ -45,6 +46,11 @@ from jingu.sandbox.flow import (
     FLOW_METHOD_SELF_REVIEW_REQUESTED,
     FLOW_METHOD_SOURCE_RESOLVED,
     FLOW_METHOD_UPDATE_CANDIDATE_RECORDED,
+    FLOW_SPLIT_PROPOSAL_ACCEPTED,
+    FLOW_SPLIT_PROPOSAL_RECEIVED,
+    FLOW_SPLIT_PROPOSAL_REJECTED,
+    FLOW_SPLIT_PROPOSAL_REQUESTED,
+    FLOW_SPLIT_PROPOSAL_SKIPPED,
     FLOW_PROCESS_STEP_RECORDED,
     FLOW_PROVIDER_MESSAGES_RECORDED,
     FLOW_PROVIDER_STREAM_DELTA_RECEIVED,
@@ -263,6 +269,434 @@ def bind_method_law_fragments_to_job(
         action="opened method call frame for current job",
         **frame_data,
     )
+
+
+def discover_method_catalog(*, root_method: MethodContext) -> list[dict[str, str]]:
+    catalog: dict[str, dict[str, str]] = {}
+
+    def add_method(method: MethodContext, *, source: str) -> None:
+        catalog[str(method.path.resolve())] = {
+            "method_name": method.name,
+            "method_path": str(method.path.resolve()),
+            "method_checksum": method.checksum,
+            "method_description": read_method_description(method.path),
+            "source": source,
+        }
+
+    add_method(root_method, source="current_root_method")
+    roots = [Path.cwd(), *root_method.path.resolve().parents]
+    seen_roots: set[Path] = set()
+    for root in roots:
+        resolved_root = root.resolve()
+        if resolved_root in seen_roots:
+            continue
+        seen_roots.add(resolved_root)
+        skill_root = resolved_root / ".agents" / "skills"
+        if not skill_root.exists():
+            continue
+        for skill_path in sorted(skill_root.glob("*/SKILL.md")):
+            try:
+                add_method(
+                    load_method_context(method_path=skill_path),
+                    source="workspace_skill",
+                )
+            except Exception:
+                continue
+    return sorted(catalog.values(), key=lambda item: (item["method_name"], item["method_path"]))
+
+
+def read_method_description(path: Path) -> str:
+    try:
+        lines = path.read_text(encoding="utf-8-sig").splitlines()[:40]
+    except OSError:
+        return ""
+    in_frontmatter = False
+    for index, raw_line in enumerate(lines):
+        line = raw_line.strip()
+        if index == 0 and line == "---":
+            in_frontmatter = True
+            continue
+        if in_frontmatter and line == "---":
+            return ""
+        if in_frontmatter and line.startswith("description:"):
+            return line.split(":", 1)[1].strip()
+    return ""
+
+
+def build_split_proposal_messages(
+    *,
+    method: MethodContext,
+    parent_job_id: str,
+    user_input: str,
+    candidate_text: str,
+    candidate_appearance_id: str,
+    method_catalog: list[dict[str, str]],
+    turn: str | None = None,
+) -> list[dict[str, str]]:
+    payload = {
+        "task": user_input,
+        "turn": turn or "",
+        "parent_job_id": parent_job_id,
+        "candidate": {
+            "appearance_id": candidate_appearance_id,
+            "text": candidate_text,
+        },
+        "root_method": {
+            "method_name": method.name,
+            "method_path": str(method.path),
+            "method_checksum": method.checksum,
+            "manifest": method.manifest(),
+        },
+        "available_method_catalog": method_catalog,
+        "split_rules": [
+            "只有当不拆分会阻塞父业执行、验收、证据生成或上下文控制时，才提出子业。",
+            "禁止为了概念完整性、装饰性分类或复述父业目标而提出子业。",
+            "子业必须有独立局部果、可验收输出契约和父业可消费的回流点。",
+            "如果子业需要调用法，method_path 必须从 available_method_catalog 中选择并原样返回。",
+            "子业只能供料证成，不能宣告父业或根业完成。",
+        ],
+        "response_contract": {
+            "top_level": "JSON object",
+            "required_key": "proposals",
+            "proposal_fields": [
+                "target",
+                "blocking_reason",
+                "output_contract",
+                "acceptance_criteria",
+                "estimated_effort",
+                "depth_limit",
+                "required_context_gaps",
+                "method_path",
+                "method_binding_reason",
+                "method_return_point",
+            ],
+            "method_fields_rule": (
+                "method_path may be empty; if method_path is not empty, "
+                "method_binding_reason and method_return_point are required."
+            ),
+        },
+    }
+    return [
+        {
+            "role": "system",
+            "content": (
+                "你是金箍运行时中的分业申请提议位。"
+                "你只能提出候选分业申请，不能创建、接收、拒收或完成任何业。"
+                "代码守门器会检查你的 JSON；不满足条件的申请会被拒绝。"
+                "只返回 JSON，不要输出解释性正文。"
+            ),
+        },
+        {
+            "role": "user",
+            "content": json.dumps(payload, ensure_ascii=False, sort_keys=True, indent=2),
+        },
+    ]
+
+
+def run_split_proposal_registration(
+    *,
+    flow: FlowWriter,
+    service: RuntimeService,
+    client: ChatClient,
+    method: MethodContext,
+    parent_job_id: str,
+    user_input: str,
+    candidate_text: str,
+    candidate_appearance_id: str,
+    step_prefix: str,
+    turn: str | None = None,
+) -> dict[str, Any]:
+    method_catalog = discover_method_catalog(root_method=method)
+    messages = build_split_proposal_messages(
+        method=method,
+        parent_job_id=parent_job_id,
+        user_input=user_input,
+        candidate_text=candidate_text,
+        candidate_appearance_id=candidate_appearance_id,
+        method_catalog=method_catalog,
+        turn=turn,
+    )
+    base_data = {
+        **turn_field(turn),
+        "job_id": parent_job_id,
+        "candidate_appearance_id": candidate_appearance_id,
+        "method_catalog": json.dumps(method_catalog, ensure_ascii=False, sort_keys=True, indent=2),
+        "split_proposal_prompt": messages[-1]["content"],
+        "provider_message_count": str(len(messages)),
+    }
+    flow.write(FLOW_SPLIT_PROPOSAL_REQUESTED, "split proposal requested", **base_data)
+    write_provider_messages(
+        flow=flow,
+        call_kind="split_proposal_extraction",
+        messages=messages,
+        turn=turn,
+        job_id=parent_job_id,
+    )
+    write_process_step(
+        flow=flow,
+        step=f"{step_prefix}.request",
+        phase="split_proposal",
+        action="向分业申请提议位发送候选结果和可用法目录",
+        status="started",
+        **base_data,
+    )
+
+    response = complete_with_provider_logging(
+        flow=flow,
+        client=client,
+        messages=messages,
+        call_kind="split_proposal_extraction",
+        turn=turn,
+        job_id=parent_job_id,
+    )
+    response_data = {
+        **turn_field(turn),
+        "job_id": parent_job_id,
+        "split_proposal_response": response.content,
+    }
+    flow.write(FLOW_SPLIT_PROPOSAL_RECEIVED, "split proposal received", **response_data)
+    write_process_step(
+        flow=flow,
+        step=f"{step_prefix}.receive",
+        phase="split_proposal",
+        action="收到分业申请提议位响应",
+        **response_data,
+    )
+
+    try:
+        proposals = parse_split_proposals(response.content)
+    except RuntimeError as exc:
+        skipped = {
+            **turn_field(turn),
+            "job_id": parent_job_id,
+            "reason": str(exc),
+            "split_proposal_response": response.content,
+        }
+        flow.write(FLOW_SPLIT_PROPOSAL_SKIPPED, "split proposal registration skipped", **skipped)
+        write_job_tree_mirror(
+            flow=flow,
+            service=service,
+            turn=turn,
+            job_id=parent_job_id,
+            action="split_proposal_skipped",
+            reason=str(exc),
+        )
+        write_process_step(
+            flow=flow,
+            step=f"{step_prefix}.skip",
+            phase="split_proposal",
+            action="分业申请响应无法解析，跳过登记",
+            status="skipped",
+            **skipped,
+        )
+        return {"accepted": [], "rejected": [], "skipped_reason": str(exc)}
+
+    if not proposals:
+        skipped = {
+            **turn_field(turn),
+            "job_id": parent_job_id,
+            "reason": "split proposal response contained no proposals",
+            "split_proposal_count": "0",
+        }
+        flow.write(FLOW_SPLIT_PROPOSAL_SKIPPED, "split proposal registration skipped", **skipped)
+        write_job_tree_mirror(
+            flow=flow,
+            service=service,
+            turn=turn,
+            job_id=parent_job_id,
+            action="split_proposal_skipped",
+            reason=skipped["reason"],
+        )
+        write_process_step(
+            flow=flow,
+            step=f"{step_prefix}.skip",
+            phase="split_proposal",
+            action="未收到分业申请，跳过登记",
+            status="skipped",
+            **skipped,
+        )
+        return {"accepted": [], "rejected": [], "skipped_reason": skipped["reason"]}
+
+    catalog_by_path = {
+        str(Path(entry["method_path"]).resolve()): entry
+        for entry in method_catalog
+    }
+    tree_service = TreeService(service.paths.workspace)
+    accepted: list[dict[str, Any]] = []
+    rejected: list[dict[str, Any]] = []
+    for index, proposal in enumerate(proposals, start=1):
+        try:
+            normalized = normalize_split_proposal(
+                proposal,
+                catalog_by_path=catalog_by_path,
+            )
+            result = tree_service.propose_child_job(
+                parent_job_id=parent_job_id,
+                target=normalized["target"],
+                blocking_reason=normalized["blocking_reason"],
+                output_contract=normalized["output_contract"],
+                acceptance_criteria=normalized["acceptance_criteria"],
+                estimated_effort=normalized["estimated_effort"],
+                depth_limit=normalized["depth_limit"],
+                required_context_gaps=normalized["required_context_gaps"],
+                method_path=normalized.get("method_path") or None,
+                method_binding_reason=normalized.get("method_binding_reason") or None,
+                method_return_point=normalized.get("method_return_point") or None,
+                actor_id="ai",
+            )
+            child = result["child"]
+            accepted_item = {
+                "proposal_index": index,
+                "child_job_id": child["job_id"],
+                "target": child["target"],
+                "method_path": normalized.get("method_path", ""),
+            }
+            accepted.append(accepted_item)
+            accepted_data = {
+                **turn_field(turn),
+                "job_id": parent_job_id,
+                "child_job_id": child["job_id"],
+                "split_proposal_index": str(index),
+                "split_proposal_decision": "accepted",
+                "split_proposal": json.dumps(normalized, ensure_ascii=False, sort_keys=True, indent=2),
+                "split_registration_summary": json.dumps(
+                    accepted_item, ensure_ascii=False, sort_keys=True, indent=2
+                ),
+            }
+            flow.write(FLOW_SPLIT_PROPOSAL_ACCEPTED, "split proposal accepted", **accepted_data)
+            write_job_tree_mirror(
+                flow=flow,
+                service=service,
+                turn=turn,
+                job_id=child["job_id"],
+                action="split_proposal_child_created",
+                child_job_id=child["job_id"],
+            )
+            write_process_step(
+                flow=flow,
+                step=f"{step_prefix}.accepted",
+                phase="split_proposal",
+                action="分业申请通过代码守门并登记为真实子业",
+                **accepted_data,
+            )
+        except Exception as exc:
+            rejected_item = {
+                "proposal_index": index,
+                "reason": str(exc),
+                "proposal": proposal,
+            }
+            rejected.append(rejected_item)
+            rejected_data = {
+                **turn_field(turn),
+                "job_id": parent_job_id,
+                "split_proposal_index": str(index),
+                "split_proposal_decision": "rejected",
+                "split_proposal_rejection_reason": str(exc),
+                "split_proposal": json.dumps(proposal, ensure_ascii=False, sort_keys=True, indent=2),
+            }
+            flow.write(FLOW_SPLIT_PROPOSAL_REJECTED, "split proposal rejected", **rejected_data)
+            write_job_tree_mirror(
+                flow=flow,
+                service=service,
+                turn=turn,
+                job_id=parent_job_id,
+                action="split_proposal_rejected",
+                reason=str(exc),
+            )
+            write_process_step(
+                flow=flow,
+                step=f"{step_prefix}.rejected",
+                phase="split_proposal",
+                action="分业申请被代码守门器拒绝",
+                status="rejected",
+                **rejected_data,
+            )
+    return {"accepted": accepted, "rejected": rejected, "skipped_reason": ""}
+
+
+def parse_split_proposals(content: str) -> list[dict[str, Any]]:
+    payload = load_json_object(content, error_prefix="split proposal response")
+    if not isinstance(payload, dict):
+        raise RuntimeError("split proposal response must be a JSON object")
+    proposals = payload.get("proposals")
+    if proposals is None:
+        raise RuntimeError("split proposal response must include proposals")
+    if not isinstance(proposals, list):
+        raise RuntimeError("split proposal response proposals must be a list")
+    normalized: list[dict[str, Any]] = []
+    for item in proposals:
+        if not isinstance(item, dict):
+            raise RuntimeError("each split proposal must be a JSON object")
+        normalized.append(item)
+    return normalized
+
+
+def normalize_split_proposal(
+    proposal: dict[str, Any],
+    *,
+    catalog_by_path: dict[str, dict[str, str]],
+) -> dict[str, Any]:
+    required = [
+        "target",
+        "blocking_reason",
+        "output_contract",
+        "acceptance_criteria",
+        "estimated_effort",
+        "depth_limit",
+    ]
+    missing = [
+        field
+        for field in required
+        if proposal.get(field) is None or str(proposal.get(field) or "").strip() == ""
+    ]
+    if missing:
+        raise RuntimeError(f"split proposal is missing fields: {', '.join(missing)}")
+
+    normalized = {
+        "target": str(proposal["target"]).strip(),
+        "blocking_reason": str(proposal["blocking_reason"]).strip(),
+        "output_contract": str(proposal["output_contract"]).strip(),
+        "acceptance_criteria": str(proposal["acceptance_criteria"]).strip(),
+        "estimated_effort": int(proposal["estimated_effort"]),
+        "depth_limit": int(proposal["depth_limit"]),
+        "required_context_gaps": normalize_string_list(
+            proposal.get("required_context_gaps") or [],
+            field_name="required_context_gaps",
+            error_prefix="split proposal",
+        ),
+    }
+    method_path = str(proposal.get("method_path") or "").strip()
+    method_binding_reason = str(proposal.get("method_binding_reason") or "").strip()
+    method_return_point = str(proposal.get("method_return_point") or "").strip()
+    if method_path:
+        resolved_method_path = resolve_catalog_method_path(method_path, catalog_by_path)
+        if not method_binding_reason or not method_return_point:
+            raise RuntimeError(
+                "split proposal method binding requires method_binding_reason and method_return_point"
+            )
+        normalized["method_path"] = resolved_method_path
+        normalized["method_binding_reason"] = method_binding_reason
+        normalized["method_return_point"] = method_return_point
+    elif method_binding_reason or method_return_point:
+        raise RuntimeError("split proposal method binding fields require method_path")
+    else:
+        normalized["method_path"] = ""
+        normalized["method_binding_reason"] = ""
+        normalized["method_return_point"] = ""
+    return normalized
+
+
+def resolve_catalog_method_path(
+    method_path: str,
+    catalog_by_path: dict[str, dict[str, str]],
+) -> str:
+    raw = Path(method_path)
+    candidates = [raw.resolve() if raw.is_absolute() else (Path.cwd() / raw).resolve()]
+    for candidate in candidates:
+        key = str(candidate)
+        if key in catalog_by_path:
+            return key
+    raise RuntimeError(f"split proposal method is not in catalog: {method_path}")
 
 
 def run_candidate_verification(
@@ -2049,6 +2483,17 @@ class AiSandboxRunner:
                 job_id=job_id,
                 appearance_id=evidence["appearance_id"],
             )
+            run_split_proposal_registration(
+                flow=self.flow,
+                service=service,
+                client=client,
+                method=method,
+                parent_job_id=job_id,
+                user_input=message,
+                candidate_text=response.content,
+                candidate_appearance_id=candidate["appearance_id"],
+                step_prefix="split_proposal",
+            )
             verification_result = run_candidate_verification(
                 flow=self.flow,
                 service=service,
@@ -2522,6 +2967,18 @@ class AiSandboxChatSession:
             turn=turn,
             job_id=job_id,
             appearance_id=evidence["appearance_id"],
+        )
+        run_split_proposal_registration(
+            flow=self.flow,
+            service=self.service,
+            client=client,
+            method=method,
+            parent_job_id=job_id,
+            user_input=user_input,
+            candidate_text=response.content,
+            candidate_appearance_id=candidate["appearance_id"],
+            step_prefix="chat.split_proposal",
+            turn=turn,
         )
         verification_result = run_candidate_verification(
             flow=self.flow,
