@@ -378,6 +378,18 @@ def build_split_proposal_messages(
         "response_contract": {
             "top_level": "JSON object",
             "required_key": "proposals",
+            "field_types": {
+                "target": "non-empty string",
+                "blocking_reason": "non-empty string",
+                "output_contract": "non-empty string",
+                "acceptance_criteria": "non-empty string",
+                "estimated_effort": "positive integer only; use 1, 2, 3... and do not use 高/中/低 or low/medium/high",
+                "depth_limit": "positive integer only; use 1, 2, 3...",
+                "required_context_gaps": "list of strings; use [] when current context is enough to execute the child now",
+                "method_path": "empty string or one exact method_path from available_method_catalog",
+                "method_binding_reason": "empty string unless method_path is set",
+                "method_return_point": "empty string unless method_path is set",
+            },
             "proposal_fields": [
                 "target",
                 "blocking_reason",
@@ -394,6 +406,10 @@ def build_split_proposal_messages(
                 "method_path may be empty; if method_path is not empty, "
                 "method_binding_reason and method_return_point are required."
             ),
+            "runtime_effects": [
+                "Qualitative effort words will be rejected by the code gatekeeper.",
+                "A child job with required_context_gaps will be visible as blocked context and cannot enter running until gaps are resolved.",
+            ],
         },
     }
     return [
@@ -1163,8 +1179,16 @@ def normalize_split_proposal(
         "blocking_reason": str(proposal["blocking_reason"]).strip(),
         "output_contract": str(proposal["output_contract"]).strip(),
         "acceptance_criteria": str(proposal["acceptance_criteria"]).strip(),
-        "estimated_effort": int(proposal["estimated_effort"]),
-        "depth_limit": int(proposal["depth_limit"]),
+        "estimated_effort": normalize_positive_integer_field(
+            proposal["estimated_effort"],
+            field_name="estimated_effort",
+            error_prefix="split proposal",
+        ),
+        "depth_limit": normalize_positive_integer_field(
+            proposal["depth_limit"],
+            field_name="depth_limit",
+            error_prefix="split proposal",
+        ),
         "required_context_gaps": normalize_string_list(
             proposal.get("required_context_gaps") or [],
             field_name="required_context_gaps",
@@ -1190,6 +1214,25 @@ def normalize_split_proposal(
         normalized["method_binding_reason"] = ""
         normalized["method_return_point"] = ""
     return normalized
+
+
+def normalize_positive_integer_field(
+    value: Any,
+    *,
+    field_name: str,
+    error_prefix: str,
+) -> int:
+    if isinstance(value, bool):
+        raise RuntimeError(f"{error_prefix} field must be a positive integer: {field_name}")
+    if isinstance(value, int):
+        number = value
+    elif isinstance(value, str) and value.strip().isdigit():
+        number = int(value.strip())
+    else:
+        raise RuntimeError(f"{error_prefix} field must be a positive integer: {field_name}")
+    if number < 1:
+        raise RuntimeError(f"{error_prefix} field must be a positive integer: {field_name}")
+    return number
 
 
 def resolve_catalog_method_path(

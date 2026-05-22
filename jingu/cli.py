@@ -30,6 +30,20 @@ def print_json(value: Any) -> None:
     print(json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True))
 
 
+def configure_text_io() -> None:
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is None:
+            continue
+        options = {"errors": "replace"}
+        if getattr(stream, "isatty", lambda: False)():
+            options["encoding"] = "utf-8"
+        try:
+            reconfigure(**options)
+        except (OSError, ValueError):
+            continue
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="jingu")
     parser.add_argument("--workspace", default=".", help="Workspace root for local runtime state.")
@@ -304,6 +318,7 @@ def run_chat(args: argparse.Namespace) -> None:
 
 
 def main(argv: list[str] | None = None) -> int:
+    configure_text_io()
     parser = build_parser()
     args = parser.parse_args(argv)
     try:

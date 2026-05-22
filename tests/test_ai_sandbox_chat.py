@@ -525,6 +525,18 @@ class AiSandboxChatTest(unittest.TestCase):
                         "method_binding_reason": "bad method reference",
                         "method_return_point": "return nowhere",
                     },
+                    {
+                        "target": "qualitative effort child",
+                        "blocking_reason": "parent cannot rely on qualitative effort values",
+                        "output_contract": "should be rejected before registration",
+                        "acceptance_criteria": "effort must be numeric",
+                        "estimated_effort": "高",
+                        "depth_limit": 3,
+                        "required_context_gaps": [],
+                        "method_path": "",
+                        "method_binding_reason": "",
+                        "method_return_point": "",
+                    },
                 ]
             )
             client = FakeChatClient(
@@ -551,12 +563,13 @@ class AiSandboxChatTest(unittest.TestCase):
             ]
             event_types = [record["event_type"] for record in records]
             self.assertEqual(event_types.count("split_proposal_accepted"), 1)
-            self.assertEqual(event_types.count("split_proposal_rejected"), 1)
+            self.assertEqual(event_types.count("split_proposal_rejected"), 2)
             self.assertEqual(event_types.count("child_result_package_rejected"), 1)
             serialized = "\n".join(json.dumps(record, ensure_ascii=False) for record in records)
             self.assertIn("child-method", serialized)
             self.assertIn("make protagonist vivid", serialized)
             self.assertIn("split proposal method is not in catalog", serialized)
+            self.assertIn("split proposal field must be a positive integer: estimated_effort", serialized)
             self.assertIn("result package is missing fields", serialized)
             self.assertIn("split_proposal_child_created", serialized)
             self.assertIn("method_call_frames", serialized)
