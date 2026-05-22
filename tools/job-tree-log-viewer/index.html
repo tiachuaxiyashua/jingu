@@ -1,0 +1,87 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>金箍业树日志查看器</title>
+  <link rel="stylesheet" href="./styles.css">
+</head>
+<body>
+  <main class="app-shell">
+    <header class="topbar">
+      <div class="brand">
+        <h1>金箍业树日志查看器</h1>
+        <p>从 JSONL 日志重放业树生长、修复、反馈和闭环状态的只读镜像。</p>
+      </div>
+      <label class="file-picker">
+        <span>加载 JSONL 日志</span>
+        <input id="logFileInput" type="file" accept=".jsonl,application/json,text/plain">
+      </label>
+    </header>
+
+    <section id="emptyState" class="notice">
+      <h2>等待加载日志</h2>
+      <p>请选择金箍运行生成的 JSONL 日志文件。页面只在浏览器本地解析，不上传、不写回、不调用模型。</p>
+    </section>
+
+    <section id="errorState" class="notice error hidden" role="alert"></section>
+
+    <section id="viewer" class="viewer hidden" aria-live="polite">
+      <section class="control-band">
+        <div class="run-info">
+          <span id="fileName">未加载</span>
+          <span id="cursorInfo">0 / 0</span>
+          <span id="closureStatus">闭环状态：未完成</span>
+        </div>
+        <div class="controls" aria-label="重放控制">
+          <button id="toStartButton" type="button" title="回到第一条事件">|&lt;</button>
+          <button id="prevButton" type="button" title="上一条事件">&lt;</button>
+          <button id="nextButton" type="button" title="下一条事件">&gt;</button>
+          <button id="nextImportantButton" type="button" title="跳到下一条会改变业树或闭环状态的事件">下一关键</button>
+          <button id="playButton" type="button" title="自动播放关键事件">播放</button>
+          <button id="toEndButton" type="button" title="跳到最终状态">&gt;|</button>
+        </div>
+      </section>
+
+      <section class="summary-grid" id="summaryGrid"></section>
+
+      <section class="workspace">
+        <section class="graph-panel" aria-label="业树图">
+          <div class="panel-heading">
+            <h2>业树投影</h2>
+            <span id="graphHint">日志镜像，不是运行库真相</span>
+          </div>
+          <div id="graphCanvas" class="graph-canvas"></div>
+        </section>
+
+        <aside class="detail-panel" aria-label="检查详情">
+          <section>
+            <h2>当前事件</h2>
+            <div id="currentEventDetail" class="detail-block"></div>
+          </section>
+          <section>
+            <h2>选中业</h2>
+            <div id="selectedJobDetail" class="detail-block"></div>
+          </section>
+        </aside>
+      </section>
+
+      <section class="lower-grid">
+        <section class="timeline-panel">
+          <div class="panel-heading">
+            <h2>事件时间线</h2>
+            <span id="timelineHint">显示当前附近事件，关键事件加重</span>
+          </div>
+          <ol id="timeline" class="timeline"></ol>
+        </section>
+        <section class="raw-panel">
+          <h2>原始证据</h2>
+          <pre id="rawEvent" class="raw-json"></pre>
+        </section>
+      </section>
+    </section>
+  </main>
+
+  <script src="./viewer.js"></script>
+</body>
+</html>

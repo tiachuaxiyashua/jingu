@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 
-SCAN_DIRS = ("jingu", "scripts", "tests")
+SCAN_DIRS = ("jingu", "scripts", "tests", "tools")
 SKIP_DIRS = {".git", ".pytest_cache", "__pycache__", ".金箍", "openspec"}
 
 SELF_PATH = Path("scripts/scan_hardcoding.py")
@@ -73,7 +73,7 @@ def iter_files(root: Path) -> list[Path]:
                 continue
             if path.as_posix().endswith(SELF_PATH.as_posix()):
                 continue
-            if path.suffix in {".py", ".toml", ".md"} and path.is_file():
+            if path.suffix in {".py", ".js", ".html", ".css", ".toml", ".md"} and path.is_file():
                 files.append(path)
     pyproject = root / "pyproject.toml"
     if pyproject.exists():
