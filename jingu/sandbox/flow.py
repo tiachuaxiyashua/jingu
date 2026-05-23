@@ -17,6 +17,7 @@ from jingu.sandbox.paths import flow_events_path
 
 FLOW_SANDBOX_CREATED = "sandbox_created"
 FLOW_RUNTIME_INITIALIZED = "runtime_initialized"
+FLOW_RUNTIME_OPTIONS_RECORDED = "runtime_options_recorded"
 FLOW_CHAT_SESSION_STARTED = "chat_session_started"
 FLOW_METHOD_SOURCE_RESOLVED = "method_source_resolved"
 FLOW_METHOD_CONTEXT_LOADED = "method_context_loaded"
@@ -61,6 +62,9 @@ FLOW_FEEDBACK_JOB_SKIPPED = "feedback_job_skipped"
 FLOW_METHOD_SELF_REVIEW_REQUESTED = "method_self_review_requested"
 FLOW_METHOD_SELF_REVIEW_RECEIVED = "method_self_review_received"
 FLOW_METHOD_UPDATE_CANDIDATE_RECORDED = "method_update_candidate_recorded"
+FLOW_METHOD_LEARNING_CANDIDATE_RECORDED = "method_learning_candidate_recorded"
+FLOW_METHOD_STEP_CANDIDATE_RECORDED = "method_step_candidate_recorded"
+FLOW_METHOD_STEP_CANDIDATE_SKIPPED = "method_step_candidate_skipped"
 FLOW_SPLIT_PROPOSAL_REQUESTED = "split_proposal_requested"
 FLOW_SPLIT_PROPOSAL_RECEIVED = "split_proposal_received"
 FLOW_SPLIT_PROPOSAL_ACCEPTED = "split_proposal_accepted"
@@ -85,13 +89,24 @@ FLOW_CHILD_PACKAGE_REPAIR_LIMIT_REACHED = "child_package_repair_limit_reached"
 FLOW_ACCEPTED_PARENT_REEVALUATION_RECORDED = "accepted_parent_reevaluation_recorded"
 FLOW_PARENT_REEVALUATION_RECORDED = "parent_reevaluation_recorded"
 FLOW_PARENT_INTEGRATION_REQUESTED = "parent_integration_requested"
+FLOW_PARENT_INTEGRATION_JOB_CREATED = "parent_integration_job_created"
 FLOW_PARENT_INTEGRATION_RECEIVED = "parent_integration_received"
 FLOW_PARENT_INTEGRATION_CANDIDATE_SUBMITTED = "parent_integration_candidate_submitted"
 FLOW_PARENT_INTEGRATION_REJECTED = "parent_integration_rejected"
 FLOW_PARENT_INTEGRATION_SKIPPED = "parent_integration_skipped"
+FLOW_PARENT_INTEGRATION_REPAIR_JOB_CREATED = "parent_integration_repair_job_created"
+FLOW_PARENT_INTEGRATION_REPAIR_REQUESTED = "parent_integration_repair_requested"
+FLOW_PARENT_INTEGRATION_REPAIR_RECEIVED = "parent_integration_repair_received"
+FLOW_PARENT_INTEGRATION_REPAIR_REJECTED = "parent_integration_repair_rejected"
+FLOW_PARENT_INTEGRATION_REPAIR_ACCEPTED = "parent_integration_repair_accepted"
 FLOW_PARENT_INTEGRATION_FOLLOWUP_REGISTRATION_FINISHED = (
     "parent_integration_followup_registration_finished"
 )
+FLOW_ADVANCEMENT_WAVE_STARTED = "advancement_wave_started"
+FLOW_ADVANCEMENT_WAVE_FINISHED = "advancement_wave_finished"
+FLOW_ADVANCEMENT_LOOP_FINISHED = "advancement_loop_finished"
+FLOW_HUMAN_DECISION_REQUESTED = "human_decision_requested"
+FLOW_HUMAN_DECISION_RETURNED = "human_decision_returned"
 FLOW_RESULT_OUTPUT_RECORDED = "result_output_recorded"
 FLOW_CHAT_TURN_FINISHED = "chat_turn_finished"
 FLOW_CHAT_SESSION_FINISHED = "chat_session_finished"
@@ -107,6 +122,7 @@ FENCED_BLOCK = re.compile(r"(?m)^```")
 EVENT_LABELS = {
     FLOW_SANDBOX_CREATED: "沙盒已创建",
     FLOW_RUNTIME_INITIALIZED: "运行库已初始化",
+    FLOW_RUNTIME_OPTIONS_RECORDED: "运行选项已记录",
     FLOW_CHAT_SESSION_STARTED: "对话会话已开始",
     FLOW_METHOD_SOURCE_RESOLVED: "方法来源已解析",
     FLOW_METHOD_CONTEXT_LOADED: "方法上下文已加载",
@@ -151,6 +167,9 @@ EVENT_LABELS = {
     FLOW_METHOD_SELF_REVIEW_REQUESTED: "方法自验已请求",
     FLOW_METHOD_SELF_REVIEW_RECEIVED: "方法自验已收到",
     FLOW_METHOD_UPDATE_CANDIDATE_RECORDED: "方法更新候选已记录",
+    FLOW_METHOD_LEARNING_CANDIDATE_RECORDED: "方法学习候选已记录",
+    FLOW_METHOD_STEP_CANDIDATE_RECORDED: "法步骤候选已记录",
+    FLOW_METHOD_STEP_CANDIDATE_SKIPPED: "法步骤候选已跳过",
     FLOW_SPLIT_PROPOSAL_REQUESTED: "分业申请已请求",
     FLOW_SPLIT_PROPOSAL_RECEIVED: "分业申请已收到",
     FLOW_SPLIT_PROPOSAL_ACCEPTED: "分业申请已登记",
@@ -175,11 +194,22 @@ EVENT_LABELS = {
     FLOW_ACCEPTED_PARENT_REEVALUATION_RECORDED: "已接收果包父业重评估已记录",
     FLOW_PARENT_REEVALUATION_RECORDED: "父业重评估已记录",
     FLOW_PARENT_INTEGRATION_REQUESTED: "父业整合已请求",
+    FLOW_PARENT_INTEGRATION_JOB_CREATED: "父业整合业已创建",
     FLOW_PARENT_INTEGRATION_RECEIVED: "父业整合响应已收到",
     FLOW_PARENT_INTEGRATION_CANDIDATE_SUBMITTED: "父业整合候选已提交",
     FLOW_PARENT_INTEGRATION_REJECTED: "父业整合已拒收",
     FLOW_PARENT_INTEGRATION_SKIPPED: "父业整合已跳过",
+    FLOW_PARENT_INTEGRATION_REPAIR_JOB_CREATED: "父业整合修复业已创建",
+    FLOW_PARENT_INTEGRATION_REPAIR_REQUESTED: "父业整合修复已请求",
+    FLOW_PARENT_INTEGRATION_REPAIR_RECEIVED: "父业整合修复响应已收到",
+    FLOW_PARENT_INTEGRATION_REPAIR_REJECTED: "父业整合修复已拒收",
+    FLOW_PARENT_INTEGRATION_REPAIR_ACCEPTED: "父业整合修复已接收",
     FLOW_PARENT_INTEGRATION_FOLLOWUP_REGISTRATION_FINISHED: "父业整合后续分业登记已结束",
+    FLOW_ADVANCEMENT_WAVE_STARTED: "推进波次已开始",
+    FLOW_ADVANCEMENT_WAVE_FINISHED: "推进波次已结束",
+    FLOW_ADVANCEMENT_LOOP_FINISHED: "推进循环已结束",
+    FLOW_HUMAN_DECISION_REQUESTED: "人类裁决已请求",
+    FLOW_HUMAN_DECISION_RETURNED: "人类裁决已回流",
     FLOW_RESULT_OUTPUT_RECORDED: "结果输出已记录",
     FLOW_CHAT_TURN_FINISHED: "对话轮次已完成",
     FLOW_CHAT_SESSION_FINISHED: "对话会话已结束",
@@ -198,7 +228,14 @@ FIELD_LABELS = {
     "acceptance_routing_evidence_appearance_id": "验收路由证据相编号",
     "acceptance_routing_judgment": "验收路由判断",
     "acceptance_routing_prompt": "验收路由请求内容",
+    "advancement_stop_reason": "推进停止原因",
+    "advancement_wave": "推进波次",
+    "advancement_wave_count": "推进波次数量",
+    "advancement_wave_limit": "推进波次上限",
     "appearance_id": "相编号",
+    "appearance_kind": "相用途类型",
+    "candidate_lineage": "候选血缘",
+    "candidate_only": "仅为候选",
     "error": "错误",
     "feedback_job_id": "反馈业编号",
     "feedback_job_kind": "反馈业类型",
@@ -224,6 +261,7 @@ FIELD_LABELS = {
     "frontier_dispatch_limit": "前沿调度上限",
     "frontier_dispatch_summary": "前沿调度摘要",
     "frontier_job_count": "前沿业数量",
+    "human_decision_request_kind": "人类裁决请求类型",
     "input": "输入内容",
     "input_character_count": "输入字符数",
     "input_has_fenced_block": "输入含代码块",
@@ -261,6 +299,11 @@ FIELD_LABELS = {
     "method_path": "方法路径",
     "method_size": "方法大小",
     "method_catalog": "可用法目录",
+    "method_learning_candidate": "方法学习候选",
+    "method_learning_candidate_appearance_id": "方法学习候选相编号",
+    "method_step_candidate_count": "法步骤候选数量",
+    "method_step_candidate_summary": "法步骤候选摘要",
+    "method_step_registration_enabled": "法步骤登记已启用",
     "parent_job_id": "父业编号",
     "parent_reevaluation": "父业重评估",
     "accepted_parent_reevaluation": "已接收果包父业重评估",
@@ -271,7 +314,13 @@ FIELD_LABELS = {
     "parent_integration_candidate_appearance_id": "父业整合候选相编号",
     "parent_integration_evidence": "父业整合证据",
     "parent_integration_evidence_appearance_id": "父业整合证据相编号",
+    "parent_integration_job_id": "父业整合业编号",
     "parent_integration_prompt": "父业整合请求内容",
+    "parent_integration_repair_attempt": "父业整合修复轮次",
+    "parent_integration_repair_job_id": "父业整合修复业编号",
+    "parent_integration_repair_limit": "父业整合修复上限",
+    "parent_integration_repair_prompt": "父业整合修复请求内容",
+    "parent_integration_repair_response": "父业整合修复响应",
     "parent_integration_response": "父业整合响应",
     "parent_integration_status": "父业整合状态",
     "parent_integration_summary": "父业整合摘要",
@@ -311,9 +360,15 @@ FIELD_LABELS = {
     "repairable_checks": "可修复校验项",
     "readable_log_path": "可读日志路径",
     "reason": "原因",
+    "decision_evidence_appearance_id": "裁决证据相编号",
+    "decision_text": "裁决内容",
+    "evidence_hardness": "证据硬度",
+    "evidence_id": "证据相编号",
+    "evidence_kind": "证据类型",
     "required_context_gaps": "缺失上下文",
     "response": "AI 响应",
     "result": "结果输出",
+    "runtime_options": "运行选项",
     "review": "方法自验",
     "root_job_id": "根业编号",
     "sandbox_path": "沙盒路径",
@@ -364,12 +419,19 @@ JOB_TREE_ACTION_LABELS = {
     "job_ready": "业已就绪",
     "job_running": "业运行中",
     "method_call_frame_opened": "法调用帧已打开",
+    "method_learning_candidate_recorded": "方法学习候选已记录",
+    "method_step_child_created": "法步骤候选子业已创建",
     "parent_verification_evidence_attached": "父业校验证据已挂载",
     "parent_reevaluation_recorded": "父业重评估已记录",
     "accepted_parent_reevaluation_recorded": "已接收果包父业重评估已记录",
+    "human_decision_child_created": "人类裁决子业已创建",
+    "parent_integration_job_created": "父业整合业已创建",
     "parent_integration_candidate_submitted": "父业整合候选已提交",
     "parent_integration_rejected": "父业整合已拒收",
     "parent_integration_requested": "父业整合已请求",
+    "parent_integration_repair_child_created": "父业整合修复业已创建",
+    "parent_integration_repair_accepted": "父业整合修复已接收",
+    "parent_integration_repair_rejected": "父业整合修复已拒收",
     "parent_integration_skipped": "父业整合已跳过",
     "parent_integration_followup_registered": "父业整合后续分业登记已记录",
     "root_created": "根业已创建",
@@ -576,6 +638,10 @@ def _should_render_as_block(key: str, value: str) -> bool:
         "method_binding_reason",
         "method_budget",
         "method_catalog",
+        "method_learning_candidate",
+        "method_step_candidate_summary",
+        "runtime_options",
+        "candidate_lineage",
         "child_job_response",
         "child_package_repair_instruction",
         "child_package_repair_response",
@@ -592,6 +658,8 @@ def _should_render_as_block(key: str, value: str) -> bool:
         "parent_integration_candidate",
         "parent_integration_evidence",
         "parent_integration_prompt",
+        "parent_integration_repair_prompt",
+        "parent_integration_repair_response",
         "parent_integration_response",
         "parent_integration_summary",
         "parent_consumption_summary",

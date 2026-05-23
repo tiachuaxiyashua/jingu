@@ -203,6 +203,35 @@ class RuntimeKernelTest(unittest.TestCase):
         self.assertEqual(accepted["state"], STATE_ACCEPTED)
         self.assertEqual(len(events), 6)
 
+    def test_human_decision_return_is_recorded_as_evidence(self) -> None:
+        root = self.service.create_root_job(wish="wish")
+        decision_job = self.service.create_child_job(
+            parent_job_id=root["job_id"],
+            target="Clarify direction",
+            acceptance_criteria="Record returned human decision.",
+        )
+
+        result = self.service.record_human_decision(
+            decision_job["job_id"],
+            decision_text="Use branch A and keep branch B as a fallback.",
+        )
+        events = self.service.list_events(decision_job["job_id"])
+        event_types = [event["event_type"] for event in events]
+
+        self.assertIn("human_decision_returned", event_types)
+        self.assertEqual(
+            result["decision_evidence"]["metadata"],
+            json.dumps(
+                {
+                    "evidence_hardness": "human_decision",
+                    "evidence_kind": "human_decision_return",
+                    "size": len("Use branch A and keep branch B as a fallback.".encode("utf-8")),
+                },
+                ensure_ascii=False,
+                sort_keys=True,
+            ),
+        )
+
     def _running_job(self) -> str:
         job = self.service.create_root_job(wish="wish")
         self.service.mark_ready(job["job_id"])

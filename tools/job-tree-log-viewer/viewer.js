@@ -3,6 +3,7 @@
 const EVENT_LABELS = {
   sandbox_created: "沙盒已创建",
   runtime_initialized: "运行库已初始化",
+  runtime_options_recorded: "运行选项已记录",
   method_source_resolved: "方法来源已解析",
   method_context_loaded: "方法上下文已加载",
   method_law_fragment_loaded: "法片段已加载",
@@ -45,6 +46,9 @@ const EVENT_LABELS = {
   method_self_review_requested: "方法自验已请求",
   method_self_review_received: "方法自验已收到",
   method_update_candidate_recorded: "方法更新候选已记录",
+  method_learning_candidate_recorded: "方法学习候选已记录",
+  method_step_candidate_recorded: "法步骤候选已记录",
+  method_step_candidate_skipped: "法步骤候选已跳过",
   split_proposal_requested: "分业申请已请求",
   split_proposal_received: "分业申请已收到",
   split_proposal_accepted: "分业申请已登记",
@@ -69,11 +73,22 @@ const EVENT_LABELS = {
   accepted_parent_reevaluation_recorded: "已接收果包父业重评估已记录",
   parent_reevaluation_recorded: "父业重评估已记录",
   parent_integration_requested: "父业整合已请求",
+  parent_integration_job_created: "父业整合业已创建",
   parent_integration_received: "父业整合响应已收到",
   parent_integration_candidate_submitted: "父业整合候选已提交",
   parent_integration_rejected: "父业整合已拒收",
   parent_integration_skipped: "父业整合已跳过",
+  parent_integration_repair_job_created: "父业整合修复业已创建",
+  parent_integration_repair_requested: "父业整合修复已请求",
+  parent_integration_repair_received: "父业整合修复响应已收到",
+  parent_integration_repair_rejected: "父业整合修复已拒收",
+  parent_integration_repair_accepted: "父业整合修复已接收",
   parent_integration_followup_registration_finished: "父业整合后续分业登记已结束",
+  advancement_wave_started: "推进波次已开始",
+  advancement_wave_finished: "推进波次已结束",
+  advancement_loop_finished: "推进循环已结束",
+  human_decision_requested: "人类裁决已请求",
+  human_decision_returned: "人类裁决已回流",
   result_output_recorded: "结果输出已记录",
   chat_turn_finished: "对话轮次已完成",
   chat_session_finished: "对话会话已结束",
@@ -94,6 +109,8 @@ const ACTION_LABELS = {
   verification_candidate_attached: "校验报告候选已挂载",
   verification_evidence_attached: "校验证据已挂载",
   parent_verification_evidence_attached: "父业校验证据已回流",
+  method_learning_candidate_recorded: "方法学习候选已记录",
+  method_step_child_created: "法步骤候选子业已创建",
   repair_verification_evidence_attached: "修复校验证据已挂载",
   repair_child_created: "修复子业已创建",
   repair_child_ready: "修复子业已就绪",
@@ -122,9 +139,14 @@ const ACTION_LABELS = {
   child_package_repair_limit_reached: "子业果包修复上限已触达",
   parent_reevaluation_recorded: "父业重评估已记录",
   accepted_parent_reevaluation_recorded: "已接收果包父业重评估已记录",
+  human_decision_child_created: "人类裁决子业已创建",
+  parent_integration_job_created: "父业整合业已创建",
   parent_integration_requested: "父业整合已请求",
   parent_integration_candidate_submitted: "父业整合候选已提交",
   parent_integration_rejected: "父业整合已拒收",
+  parent_integration_repair_child_created: "父业整合修复业已创建",
+  parent_integration_repair_accepted: "父业整合修复已接收",
+  parent_integration_repair_rejected: "父业整合修复已拒收",
   parent_integration_skipped: "父业整合已跳过",
   parent_integration_followup_registered: "父业整合后续分业登记已记录",
 };
@@ -150,14 +172,23 @@ const FIELD_LABELS = {
   split_proposal_prompt: "分业申请请求",
   repair_prompt: "修复请求",
   acceptance_routing_prompt: "验收路由请求",
+  runtime_options: "运行选项",
+  advancement_wave: "推进波次",
+  advancement_wave_count: "推进波次数量",
+  advancement_wave_limit: "推进波次上限",
+  advancement_stop_reason: "推进停止原因",
+  parent_integration_repair_prompt: "父业整合修复请求",
   method_law_content: "法片段内容",
   method_call_frame: "法调用帧",
+  method_learning_candidate: "方法学习候选",
+  method_step_candidate_summary: "法步骤候选摘要",
   response: "AI 响应",
   child_job_response: "子业响应",
   child_result_package: "子业果包",
   child_package_review_judgment: "子业果包验收判断",
   child_package_repair_response: "子业果包修复响应",
   parent_integration_response: "父业整合响应",
+  parent_integration_repair_response: "父业整合修复响应",
   parent_integration_candidate: "父业整合候选",
   split_proposal_response: "分业申请响应",
   repair_response: "修复响应",
@@ -171,6 +202,9 @@ const FIELD_LABELS = {
   acceptance_routing_evidence: "验收路由证据",
   verification_parent_evidence: "父业校验证据",
   verification_gaps: "校验缺口",
+  evidence_hardness: "证据硬度",
+  evidence_kind: "证据类型",
+  candidate_lineage: "候选血缘",
   job_tree_action: "业树动作",
   job_state: "业状态",
   process_step: "运行步骤",
@@ -181,12 +215,22 @@ const FIELD_LABELS = {
   parent_job_id: "父业编号",
   child_job_id: "子业编号",
   root_job_id: "根业编号",
+  parent_integration_job_id: "父业整合业编号",
+  parent_integration_repair_job_id: "父业整合修复业编号",
+  method_learning_candidate_appearance_id: "方法学习候选相编号",
+  decision_evidence_appearance_id: "裁决证据相编号",
+  decision_text: "裁决内容",
   appearance_id: "相编号",
   reason: "原因",
   parent_integration_status: "父业整合状态",
   consumed_child_jobs: "已消费子业编号",
   integration_open_gaps: "整合开放缺口",
   parent_integration_summary: "父业整合摘要",
+  parent_integration_repair_attempt: "父业整合修复轮次",
+  parent_integration_repair_limit: "父业整合修复上限",
+  human_decision_request_kind: "人类裁决请求类型",
+  method_step_candidate_count: "法步骤候选数量",
+  method_step_registration_enabled: "法步骤登记已启用",
   acceptance_route_action: "验收路由动作",
   acceptance_route_kind: "验收路由类型",
   verification_status: "校验状态",
@@ -196,7 +240,9 @@ const STEP_FIELD_GROUPS = {
   inputs: [
     "input",
     "provider_messages",
+    "runtime_options",
     "parent_integration_prompt",
+    "parent_integration_repair_prompt",
     "accepted_child_packages",
     "child_package_review_prompt",
     "split_proposal_prompt",
@@ -204,6 +250,7 @@ const STEP_FIELD_GROUPS = {
     "acceptance_routing_prompt",
     "method_law_content",
     "method_call_frame",
+    "method_step_candidate_summary",
   ],
   outputs: [
     "response",
@@ -212,7 +259,9 @@ const STEP_FIELD_GROUPS = {
     "child_package_review_judgment",
     "child_package_repair_response",
     "parent_integration_response",
+    "parent_integration_repair_response",
     "parent_integration_candidate",
+    "method_learning_candidate",
     "split_proposal_response",
     "repair_response",
     "verification_report",
@@ -227,6 +276,9 @@ const STEP_FIELD_GROUPS = {
     "acceptance_routing_evidence",
     "verification_parent_evidence",
     "verification_gaps",
+    "evidence_hardness",
+    "evidence_kind",
+    "candidate_lineage",
   ],
   state: [
     "job_tree_action",
@@ -239,8 +291,22 @@ const STEP_FIELD_GROUPS = {
     "parent_job_id",
     "child_job_id",
     "root_job_id",
+    "parent_integration_job_id",
+    "parent_integration_repair_job_id",
+    "method_learning_candidate_appearance_id",
+    "decision_evidence_appearance_id",
+    "decision_text",
     "appearance_id",
+    "advancement_wave",
+    "advancement_wave_count",
+    "advancement_wave_limit",
+    "advancement_stop_reason",
     "parent_integration_status",
+    "parent_integration_repair_attempt",
+    "parent_integration_repair_limit",
+    "human_decision_request_kind",
+    "method_step_candidate_count",
+    "method_step_registration_enabled",
     "consumed_child_jobs",
     "integration_open_gaps",
     "parent_integration_summary",
@@ -253,6 +319,7 @@ const STEP_FIELD_GROUPS = {
 
 const IMPORTANT_EVENTS = new Set([
   "root_job_created",
+  "runtime_options_recorded",
   "job_ready",
   "job_running",
   "job_tree_management_recorded",
@@ -274,6 +341,11 @@ const IMPORTANT_EVENTS = new Set([
   "acceptance_routing_evidence_submitted",
   "acceptance_routing_skipped",
   "feedback_job_created",
+  "human_decision_requested",
+  "human_decision_returned",
+  "method_learning_candidate_recorded",
+  "method_step_candidate_recorded",
+  "method_step_candidate_skipped",
   "split_proposal_requested",
   "split_proposal_accepted",
   "split_proposal_rejected",
@@ -289,10 +361,19 @@ const IMPORTANT_EVENTS = new Set([
   "accepted_parent_reevaluation_recorded",
   "parent_reevaluation_recorded",
   "parent_integration_requested",
+  "parent_integration_job_created",
   "parent_integration_candidate_submitted",
   "parent_integration_rejected",
+  "parent_integration_repair_job_created",
+  "parent_integration_repair_requested",
+  "parent_integration_repair_received",
+  "parent_integration_repair_rejected",
+  "parent_integration_repair_accepted",
   "parent_integration_skipped",
   "parent_integration_followup_registration_finished",
+  "advancement_wave_started",
+  "advancement_wave_finished",
+  "advancement_loop_finished",
   "result_output_recorded",
   "chat_turn_finished",
   "chat_session_finished",
@@ -307,6 +388,13 @@ const VIEWER_STATE = {
   cursor: 0,
   selectedJobId: "",
   playTimer: null,
+  filters: {
+    search: "",
+    phase: "",
+    eventType: "",
+    jobId: "",
+    appearanceId: "",
+  },
 };
 
 function parseJsonl(text) {
@@ -378,12 +466,21 @@ function emptyProjection() {
       routes: 0,
       childReviews: 0,
       parentIntegrations: 0,
+      integrationRepairs: 0,
+      humanDecisions: 0,
+      weakEvidence: 0,
+      methodLearning: 0,
       snapshots: 0,
     },
     milestones: {
       routeActions: [],
       repairCreated: 0,
       feedbackCreated: 0,
+      integrationRepairCreated: 0,
+      humanDecisionRequests: 0,
+      humanDecisionReturns: 0,
+      weakEvidenceEvents: 0,
+      methodLearningCandidates: 0,
       childPackageReviews: [],
       parentIntegrations: [],
       verificationResults: [],
@@ -485,6 +582,69 @@ function applyEvent(projection, event) {
     }
   }
 
+  if (event.event_type === "human_decision_requested") {
+    projection.milestones.humanDecisionRequests += 1;
+    const node = ensureNode(projection, data.job_id);
+    if (node) {
+      node.kind = "feedback";
+      node.feedbackKind = stringValue(data.human_decision_request_kind || data.feedback_job_kind);
+      addNodeAction(node, event, "人类裁决已请求");
+    }
+  }
+
+  if (event.event_type === "human_decision_returned") {
+    projection.milestones.humanDecisionReturns += 1;
+    const node = ensureNode(projection, data.job_id);
+    if (node) {
+      node.evidence.add(stringValue(data.decision_evidence_appearance_id));
+      addNodeAction(node, event, "人类裁决已回流");
+    }
+  }
+
+  if (event.event_type === "method_learning_candidate_recorded") {
+    projection.milestones.methodLearningCandidates += 1;
+    const node = ensureNode(projection, data.job_id);
+    if (node) {
+      node.candidates.add(stringValue(data.method_learning_candidate_appearance_id || data.appearance_id));
+      addNodeAction(node, event, "方法学习候选已记录");
+    }
+  }
+
+  if (event.event_type === "parent_integration_job_created") {
+    const childId = stringValue(data.parent_integration_job_id || data.child_job_id);
+    const parentId = stringValue(data.parent_job_id || data.job_id);
+    const node = ensureNode(projection, childId);
+    if (node) {
+      node.kind = "integration";
+      node.parentJobId = node.parentJobId || parentId;
+      node.rootJobId = node.rootJobId || rootFrom(data, parentId);
+      node.target = stringValue(data.job_target || node.target || "父业整合业");
+      node.state = node.state || "running";
+      addLink(projection, parentId, childId);
+      addNodeAction(node, event, "父业整合业已创建");
+    }
+  }
+
+  if (event.event_type === "parent_integration_repair_job_created") {
+    projection.milestones.integrationRepairCreated += 1;
+    const childId = stringValue(data.parent_integration_repair_job_id || data.child_job_id);
+    const parentId = stringValue(data.parent_job_id || data.job_id);
+    const node = ensureNode(projection, childId);
+    if (node) {
+      node.kind = "integration-repair";
+      node.parentJobId = node.parentJobId || parentId;
+      node.rootJobId = node.rootJobId || rootFrom(data, parentId);
+      node.target = stringValue(data.job_target || node.target || "父业整合修复业");
+      node.state = node.state || "running";
+      addLink(projection, parentId, childId);
+      addNodeAction(node, event, "父业整合修复业已创建");
+    }
+  }
+
+  if (stringValue(data.evidence_hardness).includes("weak")) {
+    projection.milestones.weakEvidenceEvents += 1;
+  }
+
   if (event.event_type === "job_tree_management_recorded") {
     applyJobTreeManagement(projection, event);
   }
@@ -560,13 +720,23 @@ function applyEvent(projection, event) {
   }
 
   if (event.event_type.startsWith("parent_integration_")) {
+    const integrationNodeId = stringValue(
+      event.event_type === "parent_integration_candidate_submitted"
+        ? data.job_id
+        : data.parent_integration_repair_job_id || data.parent_integration_job_id || data.parent_job_id || data.job_id,
+    );
     projection.milestones.parentIntegrations.push({
       index: event.index,
       status: stringValue(data.parent_integration_status || event.event_type),
       parentJobId: stringValue(data.parent_job_id || data.job_id),
     });
-    const node = ensureNode(projection, data.parent_job_id || data.job_id);
+    const node = ensureNode(projection, integrationNodeId);
     if (node) {
+      if (event.event_type.includes("repair")) {
+        node.kind = node.kind === "unknown" ? "integration-repair" : node.kind;
+      } else if (event.event_type !== "parent_integration_candidate_submitted") {
+        node.kind = node.kind === "unknown" ? "integration" : node.kind;
+      }
       addNodeAction(node, event, eventLabel(event));
       if (data.parent_integration_candidate_appearance_id) {
         node.candidates.add(stringValue(data.parent_integration_candidate_appearance_id));
@@ -773,6 +943,12 @@ function classifyKind(node, action, data) {
   if (action.startsWith("verification_child") || target.includes("校验")) {
     return "verification";
   }
+  if (action.includes("parent_integration_repair") || target.includes("整合修复")) {
+    return "integration-repair";
+  }
+  if (action.includes("parent_integration") || target.includes("整合")) {
+    return "integration";
+  }
   if (action.startsWith("repair_child") || target.includes("修复")) {
     return "repair";
   }
@@ -804,6 +980,10 @@ function assignDepths(projection) {
   projection.stats.routes = projection.milestones.routeActions.length;
   projection.stats.childReviews = projection.milestones.childPackageReviews.length;
   projection.stats.parentIntegrations = projection.milestones.parentIntegrations.length;
+  projection.stats.integrationRepairs = projection.milestones.integrationRepairCreated;
+  projection.stats.humanDecisions = projection.milestones.humanDecisionRequests + projection.milestones.humanDecisionReturns;
+  projection.stats.weakEvidence = projection.milestones.weakEvidenceEvents;
+  projection.stats.methodLearning = projection.milestones.methodLearningCandidates;
 }
 
 function computeDepth(nodeId, parentByChild) {
@@ -907,7 +1087,13 @@ function stepTraceFromEvent(event) {
     message: event.message,
     jobId: stringValue(data.job_id),
     parentJobId: stringValue(data.parent_job_id),
-    childJobId: stringValue(data.child_job_id || data.verification_job_id || data.feedback_job_id),
+    childJobId: stringValue(
+      data.child_job_id ||
+        data.verification_job_id ||
+        data.feedback_job_id ||
+        data.parent_integration_job_id ||
+        data.parent_integration_repair_job_id,
+    ),
     action: stringValue(data.process_action || data.job_tree_action || data.acceptance_route_action || ""),
     phase: stringValue(data.process_phase || phaseFromEvent(event)),
     status: stringValue(data.process_status || data.parent_integration_status || data.verification_status || ""),
@@ -960,6 +1146,12 @@ function phaseFromEvent(event) {
   if (type.includes("split_proposal")) {
     return "split_proposal";
   }
+  if (type.includes("advancement")) {
+    return "advancement";
+  }
+  if (type.includes("human_decision")) {
+    return "feedback";
+  }
   if (type.includes("verification")) {
     return "verification";
   }
@@ -984,6 +1176,20 @@ function setupViewer() {
   document.getElementById("toEndButton").addEventListener("click", () => setCursor(VIEWER_STATE.events.length));
   document.getElementById("nextImportantButton").addEventListener("click", nextImportant);
   document.getElementById("playButton").addEventListener("click", togglePlay);
+  for (const [elementId, filterKey] of [
+    ["searchFilter", "search"],
+    ["phaseFilter", "phase"],
+    ["eventTypeFilter", "eventType"],
+    ["jobFilter", "jobId"],
+    ["appearanceFilter", "appearanceId"],
+  ]) {
+    const element = document.getElementById(elementId);
+    element.addEventListener("input", () => {
+      VIEWER_STATE.filters[filterKey] = element.value.trim();
+      render();
+    });
+  }
+  document.getElementById("clearFiltersButton").addEventListener("click", clearFilters);
 }
 
 function handleFileSelected(event) {
@@ -1000,6 +1206,11 @@ function handleFileSelected(event) {
       VIEWER_STATE.events = events;
       VIEWER_STATE.cursor = 0;
       VIEWER_STATE.selectedJobId = "";
+      VIEWER_STATE.filters.search = "";
+      VIEWER_STATE.filters.phase = "";
+      VIEWER_STATE.filters.eventType = "";
+      VIEWER_STATE.filters.jobId = "";
+      VIEWER_STATE.filters.appearanceId = "";
       showViewer();
       render();
     } catch (error) {
@@ -1022,6 +1233,23 @@ function showError(message) {
   const errorState = document.getElementById("errorState");
   errorState.textContent = message;
   errorState.classList.remove("hidden");
+}
+
+function clearFilters() {
+  VIEWER_STATE.filters = {
+    search: "",
+    phase: "",
+    eventType: "",
+    jobId: "",
+    appearanceId: "",
+  };
+  for (const elementId of ["searchFilter", "phaseFilter", "eventTypeFilter", "jobFilter", "appearanceFilter"]) {
+    const element = document.getElementById(elementId);
+    if (element) {
+      element.value = "";
+    }
+  }
+  render();
 }
 
 function setCursor(nextCursor) {
@@ -1122,6 +1350,10 @@ function renderSummary(projection) {
     ["反馈业", projection.stats.feedback],
     ["果包验收", projection.stats.childReviews],
     ["父业整合", projection.stats.parentIntegrations],
+    ["整合修复", projection.stats.integrationRepairs],
+    ["人裁", projection.stats.humanDecisions],
+    ["弱证", projection.stats.weakEvidence],
+    ["学法候选", projection.stats.methodLearning],
     ["路由", route ? `${route.action || "未知"}` : "无"],
   ];
   document.getElementById("summaryGrid").innerHTML = items
@@ -1234,6 +1466,8 @@ function kindLabel(kind) {
     root: "根业",
     verification: "校验业",
     repair: "修复业",
+    integration: "整合业",
+    "integration-repair": "整合修复业",
     feedback: "反馈业",
     child: "子业",
     terminal: "终止",
@@ -1323,25 +1557,69 @@ function detailRow(label, value) {
   return `<div class="detail-row"><span>${escapeHtml(label)}</span><span>${escapeHtml(value)}</span></div>`;
 }
 
+function filterEventsForTimeline(events, filters) {
+  return events.filter((event) => eventMatchesFilters(event, filters));
+}
+
+function eventMatchesFilters(event, filters) {
+  const active = filters || {};
+  const trace = stepTraceFromEvent(event);
+  const phase = stringValue(active.phase).toLowerCase();
+  const eventType = stringValue(active.eventType).toLowerCase();
+  const jobId = stringValue(active.jobId).toLowerCase();
+  const appearanceId = stringValue(active.appearanceId).toLowerCase();
+  const search = stringValue(active.search).toLowerCase();
+  const dataText = JSON.stringify(event.raw || event).toLowerCase();
+  if (phase && stringValue(trace && trace.phase).toLowerCase() !== phase) {
+    return false;
+  }
+  if (eventType && !stringValue(event.event_type).toLowerCase().includes(eventType)) {
+    return false;
+  }
+  if (jobId && !dataText.includes(jobId)) {
+    return false;
+  }
+  if (appearanceId && !dataText.includes(appearanceId)) {
+    return false;
+  }
+  if (search) {
+    const labelText = `${eventLabel(event)} ${event.message || ""}`.toLowerCase();
+    if (!dataText.includes(search) && !labelText.includes(search)) {
+      return false;
+    }
+  }
+  return true;
+}
+
 function renderTimeline(projection) {
   const timeline = document.getElementById("timeline");
-  const events = VIEWER_STATE.events;
+  const events = filterEventsForTimeline(VIEWER_STATE.events, VIEWER_STATE.filters);
   const center = Math.max(0, projection.cursor - 1);
-  const start = Math.max(0, center - 70);
-  const end = Math.min(events.length, Math.max(center + 50, 120));
+  const currentPosition = events.findIndex((event) => event.index === center);
+  const visibleCenter = currentPosition >= 0 ? currentPosition : Math.max(0, events.findIndex((event) => event.index > center));
+  const start = Math.max(0, visibleCenter - 70);
+  const end = Math.min(events.length, Math.max(visibleCenter + 50, 120));
   timeline.innerHTML = events.slice(start, end).map((event) => {
     const trace = stepTraceFromEvent(event);
     const current = event.index === center && projection.cursor > 0 ? " current" : "";
     const important = isImportantEvent(event) ? " important" : "";
     const ioRich = trace && (trace.inputs.length || trace.outputs.length || trace.evidence.length) ? " io-rich" : "";
+    const filteredMatch = hasActiveFilters(VIEWER_STATE.filters) ? " filtered-match" : "";
     const actionText = trace && trace.action ? ` | ${ACTION_LABELS[trace.action] || trace.action}` : "";
     return `
-      <li class="${current}${important}${ioRich}">
+      <li class="${current}${important}${ioRich}${filteredMatch}">
         <span class="timeline-label">${event.index + 1}. ${escapeHtml(eventLabel(event))}${escapeHtml(actionText)}</span>
         <span class="timeline-time">${escapeHtml(event.timestamp || event.event_type)}</span>
       </li>
     `;
   }).join("");
+  if (!events.length) {
+    timeline.innerHTML = '<li class="trace-empty">当前过滤条件没有匹配事件。</li>';
+  }
+}
+
+function hasActiveFilters(filters) {
+  return Object.values(filters || {}).some((value) => stringValue(value));
 }
 
 function renderControls() {
@@ -1352,6 +1630,7 @@ function renderControls() {
   document.getElementById("toEndButton").disabled = !hasEvents || VIEWER_STATE.cursor >= VIEWER_STATE.events.length;
   document.getElementById("nextImportantButton").disabled = !hasEvents || VIEWER_STATE.cursor >= VIEWER_STATE.events.length;
   document.getElementById("playButton").disabled = !hasEvents || VIEWER_STATE.cursor >= VIEWER_STATE.events.length;
+  document.getElementById("clearFiltersButton").disabled = !hasActiveFilters(VIEWER_STATE.filters);
 }
 
 if (typeof document !== "undefined") {
@@ -1363,6 +1642,7 @@ if (typeof module !== "undefined") {
     parseJsonl,
     projectEvents,
     stepTraceFromEvent,
+    filterEventsForTimeline,
     isImportantEvent,
     eventLabel,
     closureText,

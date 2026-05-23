@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import shutil
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -31,6 +32,9 @@ from jingu.sandbox.flow import (
     FLOW_ACCEPTANCE_ROUTING_REQUESTED,
     FLOW_ACCEPTANCE_ROUTING_SKIPPED,
     FLOW_ACCEPTED_PARENT_REEVALUATION_RECORDED,
+    FLOW_ADVANCEMENT_LOOP_FINISHED,
+    FLOW_ADVANCEMENT_WAVE_FINISHED,
+    FLOW_ADVANCEMENT_WAVE_STARTED,
     FLOW_CANDIDATE_SUBMITTED,
     FLOW_CHILD_PACKAGE_REPAIR_LIMIT_REACHED,
     FLOW_CHILD_PACKAGE_REPAIR_PACKAGE_SUBMITTED,
@@ -50,6 +54,7 @@ from jingu.sandbox.flow import (
     FLOW_CHAT_TURN_FINISHED,
     FLOW_EVIDENCE_SUBMITTED,
     FLOW_FEEDBACK_JOB_CREATED,
+    FLOW_HUMAN_DECISION_REQUESTED,
     FLOW_FRONTIER_DISPATCH_FINISHED,
     FLOW_FRONTIER_DISPATCH_SKIPPED,
     FLOW_FRONTIER_DISPATCH_STARTED,
@@ -63,9 +68,12 @@ from jingu.sandbox.flow import (
     FLOW_METHOD_CALL_FRAME_OPENED,
     FLOW_METHOD_LAW_FRAGMENT_BOUND,
     FLOW_METHOD_LAW_FRAGMENT_LOADED,
+    FLOW_METHOD_LEARNING_CANDIDATE_RECORDED,
     FLOW_METHOD_SELF_REVIEW_RECEIVED,
     FLOW_METHOD_SELF_REVIEW_REQUESTED,
     FLOW_METHOD_SOURCE_RESOLVED,
+    FLOW_METHOD_STEP_CANDIDATE_RECORDED,
+    FLOW_METHOD_STEP_CANDIDATE_SKIPPED,
     FLOW_METHOD_UPDATE_CANDIDATE_RECORDED,
     FLOW_SPLIT_PROPOSAL_ACCEPTED,
     FLOW_SPLIT_PROPOSAL_RECEIVED,
@@ -80,7 +88,13 @@ from jingu.sandbox.flow import (
     FLOW_PARENT_REEVALUATION_RECORDED,
     FLOW_PARENT_INTEGRATION_CANDIDATE_SUBMITTED,
     FLOW_PARENT_INTEGRATION_FOLLOWUP_REGISTRATION_FINISHED,
+    FLOW_PARENT_INTEGRATION_JOB_CREATED,
     FLOW_PARENT_INTEGRATION_RECEIVED,
+    FLOW_PARENT_INTEGRATION_REPAIR_ACCEPTED,
+    FLOW_PARENT_INTEGRATION_REPAIR_JOB_CREATED,
+    FLOW_PARENT_INTEGRATION_REPAIR_RECEIVED,
+    FLOW_PARENT_INTEGRATION_REPAIR_REJECTED,
+    FLOW_PARENT_INTEGRATION_REPAIR_REQUESTED,
     FLOW_PARENT_INTEGRATION_REJECTED,
     FLOW_PARENT_INTEGRATION_REQUESTED,
     FLOW_PARENT_INTEGRATION_SKIPPED,
@@ -94,6 +108,7 @@ from jingu.sandbox.flow import (
     FLOW_ROOT_JOB_CREATED,
     FLOW_RUN_FINISHED,
     FLOW_RUNTIME_INITIALIZED,
+    FLOW_RUNTIME_OPTIONS_RECORDED,
     FLOW_SANDBOX_CREATED,
     FLOW_SANDBOX_DESTROYED,
     FLOW_USER_INPUT_RECORDED,
@@ -140,6 +155,9 @@ VERIFICATION_FEEDBACK_JOB_ACCEPTANCE_CRITERIA = "产出下一步修复方向、�
 DEFAULT_MAX_REPAIR_ATTEMPTS = 1
 DEFAULT_MAX_FRONTIER_DISPATCHES = 2
 DEFAULT_MAX_CHILD_PACKAGE_REPAIR_ATTEMPTS = 1
+DEFAULT_MAX_ADVANCEMENT_WAVES = 1
+DEFAULT_MAX_PARENT_INTEGRATION_REPAIR_ATTEMPTS = 1
+DEFAULT_REGISTER_METHOD_STEP_CANDIDATES = False
 ACCEPTANCE_ROUTE_ACTIONS = frozenset({"continue", "repair", "feedback"})
 ACCEPTANCE_FEEDBACK_JOB_KINDS = frozenset({"high_value", "directional"})
 CHILD_PACKAGE_REVIEW_ACTIONS = frozenset({"accept", "repair"})
@@ -159,6 +177,7 @@ CHILD_RESULT_PACKAGE_FIELDS = (
     "open_questions",
     "suggested_follow_up_jobs",
 )
+RESULT_PACKAGE_METADATA_KIND = "result_package"
 REPAIRABLE_CHECK_KINDS = frozenset(
     {
         "cjk_length_range",
@@ -167,6 +186,79 @@ REPAIRABLE_CHECK_KINDS = frozenset(
         "incomplete_output_signal",
     }
 )
+
+
+@dataclass(frozen=True)
+class SandboxRuntimeOptions:
+    max_repair_attempts: int = DEFAULT_MAX_REPAIR_ATTEMPTS
+    max_frontier_dispatches: int = DEFAULT_MAX_FRONTIER_DISPATCHES
+    max_child_package_repair_attempts: int = DEFAULT_MAX_CHILD_PACKAGE_REPAIR_ATTEMPTS
+    max_advancement_waves: int = DEFAULT_MAX_ADVANCEMENT_WAVES
+    max_parent_integration_repair_attempts: int = DEFAULT_MAX_PARENT_INTEGRATION_REPAIR_ATTEMPTS
+    register_method_step_candidates: bool = DEFAULT_REGISTER_METHOD_STEP_CANDIDATES
+
+    @classmethod
+    def from_values(
+        cls,
+        *,
+        max_repair_attempts: int = DEFAULT_MAX_REPAIR_ATTEMPTS,
+        max_frontier_dispatches: int = DEFAULT_MAX_FRONTIER_DISPATCHES,
+        max_child_package_repair_attempts: int = DEFAULT_MAX_CHILD_PACKAGE_REPAIR_ATTEMPTS,
+        max_advancement_waves: int = DEFAULT_MAX_ADVANCEMENT_WAVES,
+        max_parent_integration_repair_attempts: int = DEFAULT_MAX_PARENT_INTEGRATION_REPAIR_ATTEMPTS,
+        register_method_step_candidates: bool = DEFAULT_REGISTER_METHOD_STEP_CANDIDATES,
+    ) -> "SandboxRuntimeOptions":
+        return cls(
+            max_repair_attempts=normalize_max_repair_attempts(max_repair_attempts),
+            max_frontier_dispatches=normalize_max_frontier_dispatches(max_frontier_dispatches),
+            max_child_package_repair_attempts=normalize_max_child_package_repair_attempts(
+                max_child_package_repair_attempts
+            ),
+            max_advancement_waves=normalize_max_advancement_waves(max_advancement_waves),
+            max_parent_integration_repair_attempts=normalize_max_parent_integration_repair_attempts(
+                max_parent_integration_repair_attempts
+            ),
+            register_method_step_candidates=bool(register_method_step_candidates),
+        )
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "max_repair_attempts": self.max_repair_attempts,
+            "max_frontier_dispatches": self.max_frontier_dispatches,
+            "max_child_package_repair_attempts": self.max_child_package_repair_attempts,
+            "max_advancement_waves": self.max_advancement_waves,
+            "max_parent_integration_repair_attempts": self.max_parent_integration_repair_attempts,
+            "register_method_step_candidates": self.register_method_step_candidates,
+        }
+
+    def log_fields(self) -> dict[str, str]:
+        return {
+            "runtime_options": json.dumps(self.as_dict(), ensure_ascii=False, sort_keys=True, indent=2),
+            "repair_max_attempts": str(self.max_repair_attempts),
+            "frontier_dispatch_limit": str(self.max_frontier_dispatches),
+            "child_package_repair_limit": str(self.max_child_package_repair_attempts),
+            "advancement_wave_limit": str(self.max_advancement_waves),
+            "parent_integration_repair_limit": str(self.max_parent_integration_repair_attempts),
+            "method_step_registration_enabled": str(self.register_method_step_candidates).lower(),
+        }
+
+
+def write_runtime_options_event(
+    *,
+    flow: FlowWriter,
+    options: SandboxRuntimeOptions,
+    step: str,
+    turn: str | None = None,
+) -> None:
+    data = {**turn_field(turn), **options.log_fields()}
+    flow.write(FLOW_RUNTIME_OPTIONS_RECORDED, "runtime options recorded", **data)
+    write_process_step(
+        flow=flow,
+        step=step,
+        phase="runtime",
+        action="记录本次沙盒运行显式运行选项",
+        **data,
+    )
 
 
 def write_process_step(
@@ -316,6 +408,213 @@ def bind_method_law_fragments_to_job(
         action="opened method call frame for current job",
         **frame_data,
     )
+
+
+def register_method_step_candidates(
+    *,
+    flow: FlowWriter,
+    service: RuntimeService,
+    method: MethodContext,
+    parent_job_id: str,
+    step_prefix: str,
+    enabled: bool,
+    turn: str | None = None,
+) -> dict[str, Any]:
+    if not enabled:
+        data = {
+            **turn_field(turn),
+            "job_id": parent_job_id,
+            "method_name": method.name,
+            "method_checksum": method.checksum,
+            "method_step_registration_enabled": "false",
+            "reason": "runtime option register_method_step_candidates is false",
+        }
+        flow.write(FLOW_METHOD_STEP_CANDIDATE_SKIPPED, "method step candidate skipped", **data)
+        write_process_step(
+            flow=flow,
+            step=f"{step_prefix}.skip",
+            phase="method",
+            action="运行选项未开启法步骤候选登记",
+            status="skipped",
+            **data,
+        )
+        return {"created": [], "skipped_reason": data["reason"]}
+
+    created: list[dict[str, str]] = []
+    for fragment in method.fragments:
+        if not fragment.title or fragment.title == "method-body":
+            continue
+        child = service.create_child_job(
+            parent_job_id=parent_job_id,
+            target=f"执行法步骤候选：{fragment.title}",
+            actor_id="system",
+            acceptance_criteria=(
+                "产出当前法片段在本业中的可消费局部果、证据、开放缺口和回流点；"
+                "不得宣告父业或根业完成。"
+            ),
+            required_context_gaps=[],
+        )
+        child_job_id = str(child["job_id"])
+        item = {
+            "child_job_id": child_job_id,
+            "method_law_id": fragment.fragment_id,
+            "method_law_title": fragment.title,
+            "method_law_checksum": fragment.checksum,
+        }
+        created.append(item)
+        data = {
+            **turn_field(turn),
+            "job_id": parent_job_id,
+            "parent_job_id": parent_job_id,
+            "child_job_id": child_job_id,
+            "method_name": method.name,
+            "method_checksum": method.checksum,
+            "method_law_id": fragment.fragment_id,
+            "method_law_title": fragment.title,
+            "method_law_checksum": fragment.checksum,
+            "method_return_point": "父业法步骤候选回流",
+        }
+        flow.write(FLOW_METHOD_STEP_CANDIDATE_RECORDED, "method step candidate recorded", **data)
+        write_job_tree_mirror(
+            flow=flow,
+            service=service,
+            turn=turn,
+            job_id=child_job_id,
+            action="method_step_child_created",
+            child_job_id=child_job_id,
+        )
+        write_process_step(
+            flow=flow,
+            step=f"{step_prefix}.create",
+            phase="method",
+            action="从已绑定法片段登记候选法步骤子业",
+            **data,
+        )
+
+    summary = {
+        **turn_field(turn),
+        "job_id": parent_job_id,
+        "method_step_registration_enabled": "true",
+        "method_step_candidate_count": str(len(created)),
+        "method_step_candidate_summary": json.dumps(created, ensure_ascii=False, sort_keys=True, indent=2),
+    }
+    if created:
+        flow.write(FLOW_METHOD_STEP_CANDIDATE_RECORDED, "method step candidates recorded", **summary)
+    else:
+        summary["reason"] = "method fragments did not contain named step headings"
+        flow.write(FLOW_METHOD_STEP_CANDIDATE_SKIPPED, "method step candidate skipped", **summary)
+    return {"created": created, "skipped_reason": "" if created else summary.get("reason", "")}
+
+
+def parse_method_update_candidates(review: str) -> list[Any]:
+    try:
+        payload = load_json_object(review, error_prefix="method self-review response")
+    except RuntimeError:
+        return []
+    if not isinstance(payload, dict):
+        return []
+    candidates = payload.get("method_update_candidates") or []
+    if isinstance(candidates, str):
+        text = candidates.strip()
+        return [text] if text else []
+    if isinstance(candidates, list):
+        return [item for item in candidates if str(item).strip()]
+    if isinstance(candidates, dict):
+        return [candidates]
+    return []
+
+
+def record_method_learning_candidate(
+    *,
+    flow: FlowWriter,
+    service: RuntimeService,
+    method: MethodContext,
+    job_id: str,
+    review: str,
+    step_prefix: str,
+    turn: str | None = None,
+) -> dict[str, Any] | None:
+    update_candidates = parse_method_update_candidates(review)
+    if not update_candidates:
+        return None
+    payload = {
+        "candidate_kind": "method_learning_candidate",
+        "candidate_only": True,
+        "method_name": method.name,
+        "method_path": str(method.path),
+        "method_checksum": method.checksum,
+        "method_update_candidates": update_candidates,
+        "source_review": review,
+        "does_not_mutate_method_file": True,
+    }
+    candidate_text = json.dumps(payload, ensure_ascii=False, sort_keys=True, indent=2)
+    candidate = service.record_candidate_appearance(
+        job_id,
+        text=candidate_text,
+        actor_id="method_self_review",
+        metadata={
+            "appearance_kind": "method_learning_candidate",
+            "candidate_only": True,
+            "method_name": method.name,
+            "method_checksum": method.checksum,
+        },
+    )["candidate"]
+    evidence_text = json.dumps(
+        {
+            "evidence_kind": "method_learning_candidate_observation",
+            "evidence_hardness": "weak_ai",
+            "method_learning_candidate_appearance_id": candidate["appearance_id"],
+            "method_checksum": method.checksum,
+            "candidate_only": True,
+        },
+        ensure_ascii=False,
+        sort_keys=True,
+        indent=2,
+    )
+    evidence = service.submit_evidence(
+        job_id,
+        text=evidence_text,
+        actor_id="system",
+        metadata={
+            "evidence_kind": "method_learning_candidate_observation",
+            "evidence_hardness": "weak_ai",
+            "appearance_kind": "method_learning_candidate_evidence",
+        },
+    )["evidence"]
+    data = {
+        **turn_field(turn),
+        "job_id": job_id,
+        "method_name": method.name,
+        "method_checksum": method.checksum,
+        "method_learning_candidate_appearance_id": candidate["appearance_id"],
+        "appearance_id": candidate["appearance_id"],
+        "method_learning_candidate": candidate_text,
+        "evidence_hardness": "weak_ai",
+        "evidence_kind": "method_learning_candidate_observation",
+        "candidate_only": "true",
+        "reason": "method self-review returned method_update_candidates",
+    }
+    flow.write(FLOW_METHOD_LEARNING_CANDIDATE_RECORDED, "method learning candidate recorded", **data)
+    write_job_tree_mirror(
+        flow=flow,
+        service=service,
+        turn=turn,
+        job_id=job_id,
+        action="method_learning_candidate_recorded",
+        appearance_id=candidate["appearance_id"],
+        reason=data["reason"],
+    )
+    write_process_step(
+        flow=flow,
+        step=f"{step_prefix}.method_learning_candidate",
+        phase="method",
+        action="把方法自验中的法更新观察保存为候选相而不修改方法文件",
+        **{
+            **data,
+            "evidence_id": evidence["appearance_id"],
+        },
+    )
+    return {"candidate": candidate, "evidence": evidence, "payload": payload}
 
 
 def discover_method_catalog(*, root_method: MethodContext) -> list[dict[str, str]]:
@@ -691,10 +990,14 @@ def run_frontier_child_dispatch(
     turn: str | None = None,
     max_child_dispatches: int = DEFAULT_MAX_FRONTIER_DISPATCHES,
     max_child_package_repair_attempts: int = DEFAULT_MAX_CHILD_PACKAGE_REPAIR_ATTEMPTS,
+    max_parent_integration_repair_attempts: int = DEFAULT_MAX_PARENT_INTEGRATION_REPAIR_ATTEMPTS,
 ) -> dict[str, Any]:
     max_child_dispatches = normalize_max_frontier_dispatches(max_child_dispatches)
     max_child_package_repair_attempts = normalize_max_child_package_repair_attempts(
         max_child_package_repair_attempts
+    )
+    max_parent_integration_repair_attempts = normalize_max_parent_integration_repair_attempts(
+        max_parent_integration_repair_attempts
     )
     tree_service = TreeService(service.paths.workspace)
     frontier_payload = tree_service.get_frontier(root_job_id)
@@ -938,6 +1241,8 @@ def run_frontier_child_dispatch(
                 "child_result_package": package_text,
                 "child_result_package_candidate_id": candidate_id,
                 "child_result_package_evidence_id": evidence_id,
+                "evidence_kind": "result_package_evidence",
+                "evidence_hardness": "ai_or_manual_package",
             }
             flow.write(
                 FLOW_CHILD_RESULT_PACKAGE_SUBMITTED,
@@ -1024,6 +1329,7 @@ def run_frontier_child_dispatch(
                         root_candidate_appearance_id=root_candidate_appearance_id,
                         step_prefix=f"{step_prefix}.child_{index}.parent_integration",
                         turn=turn,
+                        max_repair_attempts=max_parent_integration_repair_attempts,
                     )
                 except Exception as exc:
                     parent_integration_result = {"status": "rejected", "reason": str(exc)}
@@ -1157,6 +1463,7 @@ def run_frontier_child_dispatch(
                 root_candidate_appearance_id=root_candidate_appearance_id,
                 step_prefix=f"{step_prefix}.parent_integration",
                 turn=turn,
+                max_repair_attempts=max_parent_integration_repair_attempts,
             )
         except Exception as exc:
             parent_integration_result = {"status": "rejected", "reason": str(exc)}
@@ -1226,6 +1533,113 @@ def run_frontier_child_dispatch(
         step=f"{step_prefix}.finish",
         phase="frontier_dispatch",
         action="完成本轮前沿子业受控调度",
+        **finish_data,
+    )
+    return summary
+
+
+def run_advancement_loop(
+    *,
+    flow: FlowWriter,
+    service: RuntimeService,
+    client: ChatClient,
+    root_job_id: str,
+    user_input: str,
+    root_method: MethodContext,
+    root_candidate_text: str,
+    root_candidate_appearance_id: str,
+    step_prefix: str,
+    turn: str | None = None,
+    max_advancement_waves: int = DEFAULT_MAX_ADVANCEMENT_WAVES,
+    max_child_dispatches: int = DEFAULT_MAX_FRONTIER_DISPATCHES,
+    max_child_package_repair_attempts: int = DEFAULT_MAX_CHILD_PACKAGE_REPAIR_ATTEMPTS,
+    max_parent_integration_repair_attempts: int = DEFAULT_MAX_PARENT_INTEGRATION_REPAIR_ATTEMPTS,
+) -> dict[str, Any]:
+    max_advancement_waves = normalize_max_advancement_waves(max_advancement_waves)
+    latest_candidate_text = root_candidate_text
+    latest_candidate_appearance_id = root_candidate_appearance_id
+    wave_results: list[dict[str, Any]] = []
+    stop_reason = "wave limit reached"
+
+    if max_advancement_waves == 0:
+        stop_reason = "advancement wave limit is zero"
+
+    for wave in range(1, max_advancement_waves + 1):
+        wave_data = {
+            **turn_field(turn),
+            "root_job_id": root_job_id,
+            "job_id": root_job_id,
+            "advancement_wave": str(wave),
+            "advancement_wave_limit": str(max_advancement_waves),
+        }
+        flow.write(FLOW_ADVANCEMENT_WAVE_STARTED, "advancement wave started", **wave_data)
+        write_process_step(
+            flow=flow,
+            step=f"{step_prefix}.wave_{wave}.start",
+            phase="advancement",
+            action="开始受控推进波次",
+            status="started",
+            **wave_data,
+        )
+        result = run_frontier_child_dispatch(
+            flow=flow,
+            service=service,
+            client=client,
+            root_job_id=root_job_id,
+            user_input=user_input,
+            root_method=root_method,
+            root_candidate_text=latest_candidate_text,
+            root_candidate_appearance_id=latest_candidate_appearance_id,
+            step_prefix=f"{step_prefix}.wave_{wave}",
+            turn=turn,
+            max_child_dispatches=max_child_dispatches,
+            max_child_package_repair_attempts=max_child_package_repair_attempts,
+            max_parent_integration_repair_attempts=max_parent_integration_repair_attempts,
+        )
+        wave_results.append(result)
+        if result.get("latest_parent_candidate_text") and result.get("latest_parent_candidate_appearance_id"):
+            latest_candidate_text = str(result["latest_parent_candidate_text"])
+            latest_candidate_appearance_id = str(result["latest_parent_candidate_appearance_id"])
+        selected_child_jobs = result.get("selected_child_jobs") or []
+        wave_finish_data = {
+            **wave_data,
+            "frontier_dispatch_summary": json.dumps(result, ensure_ascii=False, sort_keys=True, indent=2),
+        }
+        flow.write(FLOW_ADVANCEMENT_WAVE_FINISHED, "advancement wave finished", **wave_finish_data)
+        write_process_step(
+            flow=flow,
+            step=f"{step_prefix}.wave_{wave}.finish",
+            phase="advancement",
+            action="完成受控推进波次",
+            **wave_finish_data,
+        )
+        if not selected_child_jobs:
+            stop_reason = str(result.get("skipped_reason") or "no active frontier after wave")
+            break
+
+    summary = {
+        "wave_results": wave_results,
+        "advancement_wave_count": len(wave_results),
+        "advancement_wave_limit": max_advancement_waves,
+        "advancement_stop_reason": stop_reason,
+        "latest_parent_candidate_text": latest_candidate_text,
+        "latest_parent_candidate_appearance_id": latest_candidate_appearance_id,
+    }
+    finish_data = {
+        **turn_field(turn),
+        "root_job_id": root_job_id,
+        "job_id": root_job_id,
+        "advancement_wave_count": str(len(wave_results)),
+        "advancement_wave_limit": str(max_advancement_waves),
+        "advancement_stop_reason": stop_reason,
+        "frontier_dispatch_summary": json.dumps(summary, ensure_ascii=False, sort_keys=True, indent=2),
+    }
+    flow.write(FLOW_ADVANCEMENT_LOOP_FINISHED, "advancement loop finished", **finish_data)
+    write_process_step(
+        flow=flow,
+        step=f"{step_prefix}.finish",
+        phase="advancement",
+        action="受控推进循环结束",
         **finish_data,
     )
     return summary
@@ -1434,6 +1848,10 @@ def run_child_package_review_loop(
         child_job_id,
         text=review_text,
         actor_id="ai_reviewer",
+        metadata={
+            "evidence_kind": "child_package_review",
+            "evidence_hardness": "weak_ai_review",
+        },
     )["evidence"]
     service.reject_candidate(
         child_job_id,
@@ -1450,6 +1868,8 @@ def run_child_package_review_loop(
         "child_package_review_action": judgment["review_action"],
         "child_package_review_judgment": review_text,
         "child_package_review_evidence_id": review_evidence["appearance_id"],
+        "evidence_kind": "child_package_review",
+        "evidence_hardness": "weak_ai_review",
         "child_package_repair_instruction": judgment["repair_instruction"],
         "child_package_repair_attempt": str(repair_attempt + 1),
         "child_package_repair_limit": str(max_repair_attempts),
@@ -1591,11 +2011,19 @@ def run_child_package_review_loop(
         repair_job_id,
         text=repair_response.content,
         actor_id="ai",
+        metadata={
+            "appearance_kind": "child_package_repair_candidate",
+            "candidate_only": True,
+        },
     )["candidate"]
     repair_evidence = service.submit_evidence(
         repair_job_id,
         text=repair_evidence_text,
         actor_id="system",
+        metadata={
+            "evidence_kind": "child_package_repair",
+            "evidence_hardness": "weak_ai",
+        },
     )["evidence"]
     service.accept_candidate(
         repair_job_id,
@@ -1625,6 +2053,8 @@ def run_child_package_review_loop(
         "child_result_package": repaired_package_text,
         "child_result_package_candidate_id": repaired_candidate_id,
         "child_result_package_evidence_id": repaired_evidence_id,
+        "evidence_kind": "result_package_evidence",
+        "evidence_hardness": "ai_or_manual_package",
     }
     flow.write(
         FLOW_CHILD_PACKAGE_REPAIR_PACKAGE_SUBMITTED,
@@ -1688,6 +2118,10 @@ def accept_reviewed_child_package(
         child_job_id,
         text=review_text,
         actor_id="ai_reviewer",
+        metadata={
+            "evidence_kind": "child_package_review",
+            "evidence_hardness": "weak_ai_review",
+        },
     )["evidence"]
     accepted_job = service.accept_candidate(
         child_job_id,
@@ -1710,6 +2144,8 @@ def accept_reviewed_child_package(
             judgment["evidence"], ensure_ascii=False, sort_keys=True, indent=2
         ),
         "child_package_review_evidence_id": review_evidence["appearance_id"],
+        "evidence_kind": "child_package_review",
+        "evidence_hardness": "weak_ai_review",
         "parent_consumption_summary": judgment["parent_consumption_summary"],
     }
     flow.write(
@@ -1809,6 +2245,16 @@ def read_accepted_child_packages(
                         "job_id": child_job_id,
                         "state": child_state,
                         "reason": "accepted child result appearance is missing location",
+                    }
+                )
+                continue
+            metadata = decode_json(appearance.get("metadata"), {})
+            if metadata.get("kind") != RESULT_PACKAGE_METADATA_KIND:
+                skipped.append(
+                    {
+                        "job_id": child_job_id,
+                        "state": child_state,
+                        "reason": "accepted child result is not a structured result package",
                     }
                 )
                 continue
@@ -2020,9 +2466,14 @@ def build_parent_integration_evidence(
     integration: dict[str, Any],
     parent_candidate_appearance_id: str,
     accepted_child_packages: list[dict[str, Any]],
+    parent_integration_job_id: str = "",
+    parent_integration_repair_job_id: str = "",
 ) -> str:
     payload = {
         "evidence_kind": "parent_integration_evidence",
+        "evidence_hardness": "weak_ai",
+        "parent_integration_job_id": parent_integration_job_id,
+        "parent_integration_repair_job_id": parent_integration_repair_job_id,
         "parent_integration_candidate_appearance_id": parent_candidate_appearance_id,
         "consumed_child_jobs": integration["consumed_child_jobs"],
         "integrator_evidence": integration["evidence"],
@@ -2041,6 +2492,160 @@ def build_parent_integration_evidence(
         "does_not_auto_accept_or_reject": True,
     }
     return json.dumps(payload, ensure_ascii=False, sort_keys=True, indent=2)
+
+
+def build_parent_integration_lineage(
+    *,
+    root_candidate_appearance_id: str,
+    parent_integration_job_id: str,
+    parent_integration_repair_job_id: str,
+    accepted_child_packages: list[dict[str, Any]],
+    integration: dict[str, Any],
+) -> dict[str, Any]:
+    consumed = set(integration["consumed_child_jobs"])
+    return {
+        "upstream_candidate_appearance_id": root_candidate_appearance_id,
+        "parent_integration_job_id": parent_integration_job_id,
+        "parent_integration_repair_job_id": parent_integration_repair_job_id,
+        "consumed_child_package_refs": [
+            {
+                "job_id": item["job_id"],
+                "result_appearance_id": item["result_appearance_id"],
+                "evidence_appearance_id": item["evidence_appearance_id"],
+            }
+            for item in accepted_child_packages
+            if item["job_id"] in consumed
+        ],
+    }
+
+
+def build_parent_integration_repair_messages(
+    *,
+    method: MethodContext,
+    parent_job: dict[str, Any],
+    root_job_id: str,
+    parent_job_id: str,
+    user_input: str,
+    root_candidate_text: str,
+    root_candidate_appearance_id: str,
+    parent_reevaluation: dict[str, Any],
+    accepted_child_packages: list[dict[str, Any]],
+    invalid_response: str,
+    validation_error: str,
+    attempt: int,
+    max_attempts: int,
+    turn: str | None = None,
+) -> list[dict[str, str]]:
+    payload = {
+        "turn": turn or "",
+        "root_job_id": root_job_id,
+        "parent_job_id": parent_job_id,
+        "parent_job": {
+            "job_id": parent_job.get("job_id"),
+            "target": parent_job.get("target"),
+            "state": parent_job.get("state"),
+            "acceptance_criteria": parent_job.get("acceptance_criteria", ""),
+        },
+        "root_user_input": user_input,
+        "root_candidate": {
+            "candidate_appearance_id": root_candidate_appearance_id,
+            "text": root_candidate_text,
+        },
+        "parent_reevaluation": parent_reevaluation,
+        "accepted_child_packages": accepted_child_packages,
+        "invalid_parent_integration_response": invalid_response,
+        "validation_error": validation_error,
+        "repair_budget": {
+            "attempt": attempt,
+            "max_attempts": max_attempts,
+        },
+        "integration_contract": {
+            "top_level": "JSON object only",
+            "required_fields": list(PARENT_INTEGRATION_REQUIRED_FIELDS),
+            "allowed_consumed_child_jobs": [item["job_id"] for item in accepted_child_packages],
+            "boundaries": [
+                "Repair only the JSON contract and missing/invalid fields.",
+                "Do not accept, reject, or complete the parent job.",
+                "Only consume accepted_child_packages listed in this payload.",
+                "Return complete corrected JSON only.",
+            ],
+        },
+    }
+    return [
+        *build_method_system_messages(method),
+        {
+            "role": "system",
+            "content": (
+                "你是金箍业树中的父业整合修复位。"
+                "你只能修复父业整合响应的结构化契约问题，不能改变父业状态或宣告完成。"
+                "只返回 JSON。"
+            ),
+        },
+        {"role": "user", "content": json.dumps(payload, ensure_ascii=False, sort_keys=True, indent=2)},
+    ]
+
+
+def create_running_child_job(
+    *,
+    flow: FlowWriter,
+    service: RuntimeService,
+    parent_job_id: str,
+    target: str,
+    acceptance_criteria: str,
+    created_event_type: str,
+    created_message: str,
+    tree_action: str,
+    step_prefix: str,
+    phase: str,
+    turn: str | None = None,
+    extra_data: dict[str, str] | None = None,
+) -> dict[str, Any]:
+    job = service.create_child_job(
+        parent_job_id=parent_job_id,
+        target=target,
+        acceptance_criteria=acceptance_criteria,
+        required_context_gaps=[],
+        actor_id="system",
+    )
+    child_job_id = str(job["job_id"])
+    normalized_extra = {
+        key: (child_job_id if value == "__child_job_id__" else value)
+        for key, value in (extra_data or {}).items()
+    }
+    data = {
+        **turn_field(turn),
+        "job_id": parent_job_id,
+        "parent_job_id": parent_job_id,
+        "child_job_id": child_job_id,
+        **normalized_extra,
+    }
+    flow.write(created_event_type, created_message, **data)
+    write_job_tree_mirror(
+        flow=flow,
+        service=service,
+        turn=turn,
+        job_id=child_job_id,
+        action=tree_action,
+        child_job_id=child_job_id,
+    )
+    write_process_step(
+        flow=flow,
+        step=f"{step_prefix}.create",
+        phase=phase,
+        action="创建可观察子业",
+        **data,
+    )
+    service.mark_ready(child_job_id, actor_id="system")
+    service.start_job(child_job_id, actor_id="system")
+    write_job_tree_mirror(
+        flow=flow,
+        service=service,
+        turn=turn,
+        job_id=child_job_id,
+        action="job_running",
+        child_job_id=child_job_id,
+    )
+    return job
 
 
 def ensure_parent_running_for_integration(
@@ -2111,7 +2716,9 @@ def run_parent_integration(
     root_candidate_appearance_id: str,
     step_prefix: str,
     turn: str | None = None,
+    max_repair_attempts: int = DEFAULT_MAX_PARENT_INTEGRATION_REPAIR_ATTEMPTS,
 ) -> dict[str, Any]:
+    max_repair_attempts = normalize_max_parent_integration_repair_attempts(max_repair_attempts)
     tree_service = TreeService(service.paths.workspace)
     parent_reevaluation = tree_service.reevaluate_parent(parent_job_id)
     package_read = read_accepted_child_packages(service=service, parent_job_id=parent_job_id)
@@ -2163,6 +2770,29 @@ def run_parent_integration(
         return {"status": "skipped", "reason": skipped_data["reason"]}
 
     parent_job = service.get_status(parent_job_id)
+    parent_target = str(parent_job.get("target") or parent_job_id)
+    integration_job = create_running_child_job(
+        flow=flow,
+        service=service,
+        parent_job_id=parent_job_id,
+        target=f"整合已接收子业果包：{parent_target}",
+        acceptance_criteria=(
+            "把已接收子业果包整合为父业候选、证据、开放缺口和后续分业建议；"
+            "不得接收、拒收或宣告父业/根业完成。"
+        ),
+        created_event_type=FLOW_PARENT_INTEGRATION_JOB_CREATED,
+        created_message="parent integration job created",
+        tree_action="parent_integration_job_created",
+        step_prefix=f"{step_prefix}.job",
+        phase="parent_integration",
+        turn=turn,
+        extra_data={
+            "root_job_id": root_job_id,
+            "parent_integration_job_id": "__child_job_id__",
+            "job_target": f"整合已接收子业果包：{parent_target}",
+        },
+    )
+    parent_integration_job_id = str(integration_job["job_id"])
     messages = build_parent_integration_messages(
         method=method,
         parent_job=parent_job,
@@ -2176,7 +2806,10 @@ def run_parent_integration(
     )
     request_data = {
         **base_data,
+        "job_id": parent_integration_job_id,
+        "parent_integration_job_id": parent_integration_job_id,
         "parent_integration_prompt": messages[-1]["content"],
+        "parent_integration_repair_limit": str(max_repair_attempts),
         "provider_message_count": str(len(messages)),
     }
     flow.write(FLOW_PARENT_INTEGRATION_REQUESTED, "parent integration requested", **request_data)
@@ -2184,7 +2817,7 @@ def run_parent_integration(
         flow=flow,
         service=service,
         turn=turn,
-        job_id=parent_job_id,
+        job_id=parent_integration_job_id,
         action="parent_integration_requested",
     )
     write_provider_messages(
@@ -2192,7 +2825,7 @@ def run_parent_integration(
         call_kind="parent_job_integration",
         messages=messages,
         turn=turn,
-        job_id=parent_job_id,
+        job_id=parent_integration_job_id,
     )
     write_process_step(
         flow=flow,
@@ -2209,10 +2842,12 @@ def run_parent_integration(
         messages=messages,
         call_kind="parent_job_integration",
         turn=turn,
-        job_id=parent_job_id,
+        job_id=parent_integration_job_id,
     )
     response_data = {
         **base_data,
+        "job_id": parent_integration_job_id,
+        "parent_integration_job_id": parent_integration_job_id,
         "parent_integration_response": response.content,
     }
     flow.write(FLOW_PARENT_INTEGRATION_RECEIVED, "parent integration received", **response_data)
@@ -2225,25 +2860,46 @@ def run_parent_integration(
     )
 
     accepted_child_job_ids = {item["job_id"] for item in accepted_child_packages}
+    raw_integration_candidate = service.submit_candidate(
+        parent_integration_job_id,
+        text=response.content,
+        actor_id="ai_integrator",
+        metadata={
+            "appearance_kind": "parent_integration_raw_response",
+            "candidate_only": True,
+        },
+    )["candidate"]
+    write_job_tree_mirror(
+        flow=flow,
+        service=service,
+        turn=turn,
+        job_id=parent_integration_job_id,
+        action="candidate_attached",
+        appearance_id=raw_integration_candidate["appearance_id"],
+        child_job_id=parent_integration_job_id,
+    )
+    parent_integration_repair_job_id = ""
     try:
         integration = parse_parent_integration_output(
             response.content,
             accepted_child_job_ids=accepted_child_job_ids,
         )
     except RuntimeError as exc:
+        parse_error = str(exc)
         rejected_data = {
             **response_data,
             "parent_integration_status": "rejected",
-            "reason": str(exc),
+            "parent_integration_repair_limit": str(max_repair_attempts),
+            "reason": parse_error,
         }
         flow.write(FLOW_PARENT_INTEGRATION_REJECTED, "parent integration rejected", **rejected_data)
         write_job_tree_mirror(
             flow=flow,
             service=service,
             turn=turn,
-            job_id=parent_job_id,
+            job_id=parent_integration_job_id,
             action="parent_integration_rejected",
-            reason=str(exc),
+            reason=parse_error,
         )
         write_process_step(
             flow=flow,
@@ -2253,7 +2909,292 @@ def run_parent_integration(
             status="rejected",
             **rejected_data,
         )
-        return {"status": "rejected", "reason": str(exc)}
+        if max_repair_attempts <= 0:
+            invalid_evidence = service.submit_evidence(
+                parent_integration_job_id,
+                text=json.dumps(
+                    {
+                        "evidence_kind": "parent_integration_parse_failure",
+                        "evidence_hardness": "deterministic",
+                        "reason": parse_error,
+                    },
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    indent=2,
+                ),
+                actor_id="system",
+                metadata={
+                    "evidence_kind": "parent_integration_parse_failure",
+                    "evidence_hardness": "deterministic",
+                },
+            )["evidence"]
+            service.reject_candidate(
+                parent_integration_job_id,
+                candidate_appearance_id=raw_integration_candidate["appearance_id"],
+                reason=parse_error,
+                actor_id="system",
+            )
+            return {
+                "status": "rejected",
+                "reason": parse_error,
+                "parent_integration_job_id": parent_integration_job_id,
+                "evidence_appearance_id": invalid_evidence["appearance_id"],
+            }
+
+        repair_job = create_running_child_job(
+            flow=flow,
+            service=service,
+            parent_job_id=parent_job_id,
+            target=f"修复父业整合响应：{parent_target}",
+            acceptance_criteria=(
+                "修复父业整合响应，使其满足整合 JSON 契约；"
+                "不得改变父业完成状态，不得消费未接收子业。"
+            ),
+            created_event_type=FLOW_PARENT_INTEGRATION_REPAIR_JOB_CREATED,
+            created_message="parent integration repair job created",
+            tree_action="parent_integration_repair_child_created",
+            step_prefix=f"{step_prefix}.repair_job",
+            phase="parent_integration_repair",
+            turn=turn,
+            extra_data={
+                "root_job_id": root_job_id,
+                "parent_integration_job_id": parent_integration_job_id,
+                "parent_integration_repair_job_id": "__child_job_id__",
+                "reason": parse_error,
+            },
+        )
+        parent_integration_repair_job_id = str(repair_job["job_id"])
+        repair_messages = build_parent_integration_repair_messages(
+            method=method,
+            parent_job=parent_job,
+            root_job_id=root_job_id,
+            parent_job_id=parent_job_id,
+            user_input=user_input,
+            root_candidate_text=root_candidate_text,
+            root_candidate_appearance_id=root_candidate_appearance_id,
+            parent_reevaluation=parent_reevaluation,
+            accepted_child_packages=accepted_child_packages,
+            invalid_response=response.content,
+            validation_error=parse_error,
+            attempt=1,
+            max_attempts=max_repair_attempts,
+            turn=turn,
+        )
+        repair_request_data = {
+            **turn_field(turn),
+            "root_job_id": root_job_id,
+            "job_id": parent_integration_repair_job_id,
+            "parent_job_id": parent_job_id,
+            "parent_integration_job_id": parent_integration_job_id,
+            "parent_integration_repair_job_id": parent_integration_repair_job_id,
+            "parent_integration_repair_attempt": "1",
+            "parent_integration_repair_limit": str(max_repair_attempts),
+            "parent_integration_repair_prompt": repair_messages[-1]["content"],
+            "reason": parse_error,
+            "provider_message_count": str(len(repair_messages)),
+        }
+        flow.write(
+            FLOW_PARENT_INTEGRATION_REPAIR_REQUESTED,
+            "parent integration repair requested",
+            **repair_request_data,
+        )
+        write_provider_messages(
+            flow=flow,
+            call_kind="parent_integration_repair",
+            messages=repair_messages,
+            turn=turn,
+            job_id=parent_integration_repair_job_id,
+        )
+        write_process_step(
+            flow=flow,
+            step=f"{step_prefix}.repair.request",
+            phase="parent_integration_repair",
+            action="向父业整合修复位发送无效响应、错误和修复契约",
+            status="started",
+            **repair_request_data,
+        )
+        repair_response = complete_with_provider_logging(
+            flow=flow,
+            client=client,
+            messages=repair_messages,
+            call_kind="parent_integration_repair",
+            turn=turn,
+            job_id=parent_integration_repair_job_id,
+        )
+        repair_response_data = {
+            **repair_request_data,
+            "parent_integration_repair_response": repair_response.content,
+        }
+        flow.write(
+            FLOW_PARENT_INTEGRATION_REPAIR_RECEIVED,
+            "parent integration repair received",
+            **repair_response_data,
+        )
+        repair_candidate = service.submit_candidate(
+            parent_integration_repair_job_id,
+            text=repair_response.content,
+            actor_id="ai_integrator_repair",
+            metadata={
+                "appearance_kind": "parent_integration_repair_response",
+                "candidate_only": True,
+            },
+        )["candidate"]
+        try:
+            integration = parse_parent_integration_output(
+                repair_response.content,
+                accepted_child_job_ids=accepted_child_job_ids,
+            )
+        except RuntimeError as repair_exc:
+            repair_error = str(repair_exc)
+            repair_evidence = service.submit_evidence(
+                parent_integration_repair_job_id,
+                text=json.dumps(
+                    {
+                        "evidence_kind": "parent_integration_repair_parse_failure",
+                        "evidence_hardness": "deterministic",
+                        "reason": repair_error,
+                    },
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    indent=2,
+                ),
+                actor_id="system",
+                metadata={
+                    "evidence_kind": "parent_integration_repair_parse_failure",
+                    "evidence_hardness": "deterministic",
+                },
+            )["evidence"]
+            service.reject_candidate(
+                parent_integration_repair_job_id,
+                candidate_appearance_id=repair_candidate["appearance_id"],
+                reason=repair_error,
+                actor_id="system",
+            )
+            service.reject_candidate(
+                parent_integration_job_id,
+                candidate_appearance_id=raw_integration_candidate["appearance_id"],
+                reason=parse_error,
+                actor_id="system",
+            )
+            repair_rejected = {
+                **repair_response_data,
+                "parent_integration_status": "repair_rejected",
+                "appearance_id": repair_candidate["appearance_id"],
+                "evidence_id": repair_evidence["appearance_id"],
+                "evidence_hardness": "deterministic",
+                "evidence_kind": "parent_integration_repair_parse_failure",
+                "reason": repair_error,
+            }
+            flow.write(
+                FLOW_PARENT_INTEGRATION_REPAIR_REJECTED,
+                "parent integration repair rejected",
+                **repair_rejected,
+            )
+            write_job_tree_mirror(
+                flow=flow,
+                service=service,
+                turn=turn,
+                job_id=parent_integration_repair_job_id,
+                action="parent_integration_repair_rejected",
+                appearance_id=repair_candidate["appearance_id"],
+                reason=repair_error,
+            )
+            return {
+                "status": "rejected",
+                "reason": repair_error,
+                "parent_integration_job_id": parent_integration_job_id,
+                "parent_integration_repair_job_id": parent_integration_repair_job_id,
+            }
+
+        repair_evidence_text = json.dumps(
+            {
+                "evidence_kind": "parent_integration_repair_validation",
+                "evidence_hardness": "deterministic",
+                "original_error": parse_error,
+                "repaired_contract_valid": True,
+                "consumed_child_jobs": integration["consumed_child_jobs"],
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+            indent=2,
+        )
+        repair_evidence = service.submit_evidence(
+            parent_integration_repair_job_id,
+            text=repair_evidence_text,
+            actor_id="system",
+            metadata={
+                "evidence_kind": "parent_integration_repair_validation",
+                "evidence_hardness": "deterministic",
+            },
+        )["evidence"]
+        service.accept_candidate(
+            parent_integration_repair_job_id,
+            candidate_appearance_id=repair_candidate["appearance_id"],
+            evidence_appearance_id=repair_evidence["appearance_id"],
+            completion_scope="self",
+            actor_id="system",
+        )
+        flow.write(
+            FLOW_PARENT_INTEGRATION_REPAIR_ACCEPTED,
+            "parent integration repair accepted",
+            **{
+                **repair_response_data,
+                "appearance_id": repair_candidate["appearance_id"],
+                "evidence_id": repair_evidence["appearance_id"],
+                "evidence_hardness": "deterministic",
+                "evidence_kind": "parent_integration_repair_validation",
+                "parent_integration_status": "repair_accepted",
+            },
+        )
+        write_job_tree_mirror(
+            flow=flow,
+            service=service,
+            turn=turn,
+            job_id=parent_integration_repair_job_id,
+            action="parent_integration_repair_accepted",
+            appearance_id=repair_candidate["appearance_id"],
+        )
+        service.start_job(parent_integration_job_id, actor_id="system")
+        repaired_integration_candidate = service.submit_candidate(
+            parent_integration_job_id,
+            text=repair_response.content,
+            actor_id="ai_integrator_repair",
+            metadata={
+                "appearance_kind": "parent_integration_repaired_response",
+                "candidate_only": True,
+            },
+        )["candidate"]
+        raw_integration_candidate = repaired_integration_candidate
+
+    integration_job_evidence_text = json.dumps(
+        {
+            "evidence_kind": "parent_integration_contract_validation",
+            "evidence_hardness": "deterministic",
+            "parent_integration_job_id": parent_integration_job_id,
+            "parent_integration_repair_job_id": parent_integration_repair_job_id,
+            "contract_valid": True,
+            "consumed_child_jobs": integration["consumed_child_jobs"],
+        },
+        ensure_ascii=False,
+        sort_keys=True,
+        indent=2,
+    )
+    integration_job_evidence = service.submit_evidence(
+        parent_integration_job_id,
+        text=integration_job_evidence_text,
+        actor_id="system",
+        metadata={
+            "evidence_kind": "parent_integration_contract_validation",
+            "evidence_hardness": "deterministic",
+        },
+    )["evidence"]
+    service.accept_candidate(
+        parent_integration_job_id,
+        candidate_appearance_id=raw_integration_candidate["appearance_id"],
+        evidence_appearance_id=integration_job_evidence["appearance_id"],
+        completion_scope="self",
+        actor_id="system",
+    )
 
     ensure_parent_running_for_integration(
         flow=flow,
@@ -2262,31 +3203,55 @@ def run_parent_integration(
         step_prefix=step_prefix,
         turn=turn,
     )
+    candidate_lineage = build_parent_integration_lineage(
+        root_candidate_appearance_id=root_candidate_appearance_id,
+        parent_integration_job_id=parent_integration_job_id,
+        parent_integration_repair_job_id=parent_integration_repair_job_id,
+        accepted_child_packages=accepted_child_packages,
+        integration=integration,
+    )
     parent_candidate = service.submit_candidate(
         parent_job_id,
         text=integration["integrated_candidate_text"],
         actor_id="ai_integrator",
+        metadata={
+            "appearance_kind": "parent_integration_candidate",
+            "candidate_lineage": candidate_lineage,
+            "candidate_only": True,
+        },
     )["candidate"]
     parent_evidence_text = build_parent_integration_evidence(
         integration=integration,
         parent_candidate_appearance_id=parent_candidate["appearance_id"],
         accepted_child_packages=accepted_child_packages,
+        parent_integration_job_id=parent_integration_job_id,
+        parent_integration_repair_job_id=parent_integration_repair_job_id,
     )
     parent_evidence = service.submit_evidence(
         parent_job_id,
         text=parent_evidence_text,
         actor_id="system",
+        metadata={
+            "evidence_kind": "parent_integration_evidence",
+            "evidence_hardness": "weak_ai",
+            "parent_integration_job_id": parent_integration_job_id,
+        },
     )["evidence"]
     submitted_data = {
         **turn_field(turn),
         "root_job_id": root_job_id,
         "parent_job_id": parent_job_id,
         "job_id": parent_job_id,
+        "parent_integration_job_id": parent_integration_job_id,
+        "parent_integration_repair_job_id": parent_integration_repair_job_id,
         "parent_integration_status": "integrated",
         "parent_integration_candidate": integration["integrated_candidate_text"],
         "parent_integration_candidate_appearance_id": parent_candidate["appearance_id"],
         "parent_integration_evidence": parent_evidence_text,
         "parent_integration_evidence_appearance_id": parent_evidence["appearance_id"],
+        "candidate_lineage": json.dumps(candidate_lineage, ensure_ascii=False, sort_keys=True, indent=2),
+        "evidence_hardness": "weak_ai",
+        "evidence_kind": "parent_integration_evidence",
         "consumed_child_jobs": json.dumps(
             integration["consumed_child_jobs"], ensure_ascii=False, sort_keys=True
         ),
@@ -2363,9 +3328,12 @@ def run_parent_integration(
     return {
         "status": "integrated",
         "parent_job_id": parent_job_id,
+        "parent_integration_job_id": parent_integration_job_id,
+        "parent_integration_repair_job_id": parent_integration_repair_job_id,
         "candidate_text": integration["integrated_candidate_text"],
         "candidate_appearance_id": parent_candidate["appearance_id"],
         "evidence_appearance_id": parent_evidence["appearance_id"],
+        "candidate_lineage": candidate_lineage,
         "integration": integration,
         "split_result": split_result,
     }
@@ -2853,6 +3821,11 @@ def run_candidate_verification(
         verification_job_id,
         text=report_json,
         actor_id="system",
+        metadata={
+            "appearance_kind": "candidate_verification_report",
+            "candidate_only": True,
+            "evidence_hardness": "deterministic",
+        },
     )["candidate"]
     result_data = {
         **child_job_data,
@@ -2861,6 +3834,8 @@ def run_candidate_verification(
         "verification_candidate_appearance_id": verification_candidate["appearance_id"],
         "verification_report": report_json,
         "verification_gaps": json.dumps(report["gaps"], ensure_ascii=False, sort_keys=True),
+        "evidence_hardness": "deterministic",
+        "evidence_kind": "candidate_verification_report",
     }
     flow.write(
         FLOW_VERIFICATION_RESULT_RECORDED,
@@ -2889,12 +3864,18 @@ def run_candidate_verification(
         verification_job_id,
         text=report_json,
         actor_id="system",
+        metadata={
+            "evidence_kind": "candidate_verification_report",
+            "evidence_hardness": "deterministic",
+        },
     )["evidence"]
     child_evidence_data = {
         **child_job_data,
         "verification_status": str(report["overall_status"]),
         "verification_candidate_appearance_id": verification_candidate["appearance_id"],
         "verification_evidence_appearance_id": verification_evidence["appearance_id"],
+        "evidence_hardness": "deterministic",
+        "evidence_kind": "candidate_verification_report",
     }
     flow.write(
         FLOW_VERIFICATION_EVIDENCE_SUBMITTED,
@@ -2929,6 +3910,10 @@ def run_candidate_verification(
         parent_job_id,
         text=parent_evidence_text,
         actor_id="system",
+        metadata={
+            "evidence_kind": "candidate_verification_summary",
+            "evidence_hardness": "deterministic",
+        },
     )["evidence"]
     parent_evidence_data = {
         **base_data,
@@ -2939,6 +3924,8 @@ def run_candidate_verification(
         "verification_status": str(report["overall_status"]),
         "verification_parent_evidence_appearance_id": parent_evidence["appearance_id"],
         "verification_parent_evidence": parent_evidence_text,
+        "evidence_hardness": "deterministic",
+        "evidence_kind": "candidate_verification_summary",
     }
     flow.write(
         FLOW_PARENT_VERIFICATION_EVIDENCE_SUBMITTED,
@@ -2985,6 +3972,18 @@ def normalize_max_frontier_dispatches(value: int) -> int:
 def normalize_max_child_package_repair_attempts(value: int) -> int:
     if value < 0:
         raise ValueError("max child package repair attempts must be zero or greater")
+    return value
+
+
+def normalize_max_advancement_waves(value: int) -> int:
+    if value < 0:
+        raise ValueError("max advancement waves must be zero or greater")
+    return value
+
+
+def normalize_max_parent_integration_repair_attempts(value: int) -> int:
+    if value < 0:
+        raise ValueError("max parent integration repair attempts must be zero or greater")
     return value
 
 
@@ -3169,6 +4168,10 @@ def run_candidate_repair_loop(
         parent_job_id,
         text=summary_text,
         actor_id="system",
+        metadata={
+            "evidence_kind": "candidate_repair_loop_summary",
+            "evidence_hardness": "deterministic",
+        },
     )["evidence"]
     event_data = {
         **turn_field(turn),
@@ -3181,6 +4184,8 @@ def run_candidate_repair_loop(
         "repair_latest_candidate_appearance_id": latest_candidate_appearance_id,
         "repair_loop_summary": summary_text,
         "appearance_id": summary_evidence["appearance_id"],
+        "evidence_kind": "candidate_repair_loop_summary",
+        "evidence_hardness": "deterministic",
     }
     if feedback_job_id is not None:
         event_data["repair_feedback_job_id"] = feedback_job_id
@@ -3385,6 +4390,11 @@ def run_single_repair_attempt(
         repair_job_id,
         text=repair_response.content,
         actor_id="ai",
+        metadata={
+            "appearance_kind": "candidate_repair_result",
+            "candidate_only": True,
+            "repair_source": repair_source,
+        },
     )["candidate"]
     candidate_data = {
         **base_data,
@@ -3502,6 +4512,10 @@ def create_verification_feedback_job(
         feedback_job_id,
         text=feedback_evidence_text,
         actor_id="system",
+        metadata={
+            "evidence_kind": "verification_feedback",
+            "evidence_hardness": "deterministic",
+        },
     )["evidence"]
     flow.write(
         FLOW_EVIDENCE_SUBMITTED,
@@ -3514,6 +4528,8 @@ def create_verification_feedback_job(
             "repair_loop_outcome": outcome,
             "repair_reason": reason,
             "verification_feedback_evidence": feedback_evidence_text,
+            "evidence_kind": "verification_feedback",
+            "evidence_hardness": "deterministic",
         },
     )
     write_job_tree_mirror(
@@ -3795,6 +4811,10 @@ def run_acceptance_routing(
         parent_job_id,
         text=evidence_text,
         actor_id="system",
+        metadata={
+            "evidence_kind": "acceptance_routing_judgment",
+            "evidence_hardness": "weak_ai_review",
+        },
     )["evidence"]
     evidence_data = {
         **turn_field(turn),
@@ -3804,6 +4824,8 @@ def run_acceptance_routing(
         "acceptance_route_action": judgment["route_action"],
         "acceptance_route_kind": judgment["feedback_job_kind"],
         "acceptance_routing_evidence": evidence_text,
+        "evidence_kind": "acceptance_routing_judgment",
+        "evidence_hardness": "weak_ai_review",
     }
     flow.write(
         FLOW_ACCEPTANCE_ROUTING_EVIDENCE_SUBMITTED,
@@ -4069,10 +5091,32 @@ def create_acceptance_feedback_job(
         feedback_job_kind=judgment["feedback_job_kind"],
         reason=judgment["reason"],
     )
+    if judgment["feedback_job_kind"] in ACCEPTANCE_FEEDBACK_JOB_KINDS:
+        decision_data = {
+            **data,
+            "job_id": feedback_job_id,
+            "parent_job_id": parent_job_id,
+            "human_decision_request_kind": judgment["feedback_job_kind"],
+        }
+        flow.write(FLOW_HUMAN_DECISION_REQUESTED, "human decision requested", **decision_data)
+        write_job_tree_mirror(
+            flow=flow,
+            service=service,
+            turn=turn,
+            job_id=feedback_job_id,
+            action="human_decision_child_created",
+            child_job_id=feedback_job_id,
+            feedback_job_kind=judgment["feedback_job_kind"],
+            reason=judgment["reason"],
+        )
     evidence = service.submit_evidence(
         feedback_job_id,
         text=routing_evidence_text,
         actor_id="system",
+        metadata={
+            "evidence_kind": "acceptance_feedback_seed",
+            "evidence_hardness": "weak_ai_review",
+        },
     )["evidence"]
     flow.write(
         FLOW_EVIDENCE_SUBMITTED,
@@ -4085,6 +5129,8 @@ def create_acceptance_feedback_job(
             "acceptance_route_action": judgment["route_action"],
             "acceptance_route_kind": judgment["feedback_job_kind"],
             "acceptance_routing_evidence": routing_evidence_text,
+            "evidence_kind": "acceptance_feedback_seed",
+            "evidence_hardness": "weak_ai_review",
         },
     )
     write_job_tree_mirror(
@@ -4295,6 +5341,9 @@ class AiSandboxRunner:
         max_repair_attempts: int = DEFAULT_MAX_REPAIR_ATTEMPTS,
         max_frontier_dispatches: int = DEFAULT_MAX_FRONTIER_DISPATCHES,
         max_child_package_repair_attempts: int = DEFAULT_MAX_CHILD_PACKAGE_REPAIR_ATTEMPTS,
+        max_advancement_waves: int = DEFAULT_MAX_ADVANCEMENT_WAVES,
+        max_parent_integration_repair_attempts: int = DEFAULT_MAX_PARENT_INTEGRATION_REPAIR_ATTEMPTS,
+        register_method_step_candidates: bool = DEFAULT_REGISTER_METHOD_STEP_CANDIDATES,
     ) -> None:
         self.sandbox_path = resolve_sandbox_path(sandbox_path)
         self.log_dir = resolve_log_dir(log_dir)
@@ -4303,11 +5352,22 @@ class AiSandboxRunner:
         self.config_path = Path(config_path) if config_path is not None else None
         self.method_path = Path(method_path) if method_path is not None else None
         self.client = client
-        self.max_repair_attempts = normalize_max_repair_attempts(max_repair_attempts)
-        self.max_frontier_dispatches = normalize_max_frontier_dispatches(max_frontier_dispatches)
-        self.max_child_package_repair_attempts = normalize_max_child_package_repair_attempts(
-            max_child_package_repair_attempts
+        self.runtime_options = SandboxRuntimeOptions.from_values(
+            max_repair_attempts=max_repair_attempts,
+            max_frontier_dispatches=max_frontier_dispatches,
+            max_child_package_repair_attempts=max_child_package_repair_attempts,
+            max_advancement_waves=max_advancement_waves,
+            max_parent_integration_repair_attempts=max_parent_integration_repair_attempts,
+            register_method_step_candidates=register_method_step_candidates,
         )
+        self.max_repair_attempts = self.runtime_options.max_repair_attempts
+        self.max_frontier_dispatches = self.runtime_options.max_frontier_dispatches
+        self.max_child_package_repair_attempts = self.runtime_options.max_child_package_repair_attempts
+        self.max_advancement_waves = self.runtime_options.max_advancement_waves
+        self.max_parent_integration_repair_attempts = (
+            self.runtime_options.max_parent_integration_repair_attempts
+        )
+        self.register_method_step_candidates = self.runtime_options.register_method_step_candidates
         self.flow = FlowWriter(
             self.sandbox_path,
             self.diagnostic_log_path,
@@ -4357,6 +5417,11 @@ class AiSandboxRunner:
                 phase="runtime",
                 action="initialized runtime repository inside sandbox",
             )
+            write_runtime_options_event(
+                flow=self.flow,
+                options=self.runtime_options,
+                step="runtime.options",
+            )
             method = self._load_method_for_turn()
 
             root = service.create_root_job(wish=message, target=message, actor_id="human")
@@ -4388,6 +5453,14 @@ class AiSandboxRunner:
                 return_point="当前根业候选提交、校验和验收路由。",
                 budget={"max_repair_attempts": self.max_repair_attempts},
                 depth=0,
+            )
+            register_method_step_candidates(
+                flow=self.flow,
+                service=service,
+                method=method,
+                parent_job_id=job_id,
+                step_prefix="method.step_candidates",
+                enabled=self.register_method_step_candidates,
             )
 
             service.mark_ready(job_id, actor_id="system")
@@ -4485,6 +5558,10 @@ class AiSandboxRunner:
                 job_id,
                 text=response.content,
                 actor_id="ai",
+                metadata={
+                    "appearance_kind": "root_candidate",
+                    "candidate_only": True,
+                },
             )["candidate"]
             self.flow.write(
                 FLOW_CANDIDATE_SUBMITTED,
@@ -4515,16 +5592,30 @@ class AiSandboxRunner:
                 user_input=message,
                 assistant_response=response.content,
             )
+            record_method_learning_candidate(
+                flow=self.flow,
+                service=service,
+                method=method,
+                job_id=job_id,
+                review=review,
+                step_prefix="method.self_review",
+            )
             evidence = service.submit_evidence(
                 job_id,
                 text=method_evidence_payload(method=method, review=review),
                 actor_id="system",
+                metadata={
+                    "evidence_kind": "method_self_review",
+                    "evidence_hardness": "weak_ai",
+                },
             )["evidence"]
             self.flow.write(
                 FLOW_EVIDENCE_SUBMITTED,
                 "evidence submitted",
                 job_id=job_id,
                 appearance_id=evidence["appearance_id"],
+                evidence_kind="method_self_review",
+                evidence_hardness="weak_ai",
             )
             write_job_tree_mirror(
                 flow=self.flow,
@@ -4552,7 +5643,7 @@ class AiSandboxRunner:
                 candidate_appearance_id=candidate["appearance_id"],
                 step_prefix="split_proposal",
             )
-            frontier_result = run_frontier_child_dispatch(
+            frontier_result = run_advancement_loop(
                 flow=self.flow,
                 service=service,
                 client=client,
@@ -4561,9 +5652,11 @@ class AiSandboxRunner:
                 root_method=method,
                 root_candidate_text=response.content,
                 root_candidate_appearance_id=candidate["appearance_id"],
-                step_prefix="frontier_dispatch",
+                step_prefix="advancement",
+                max_advancement_waves=self.max_advancement_waves,
                 max_child_dispatches=self.max_frontier_dispatches,
                 max_child_package_repair_attempts=self.max_child_package_repair_attempts,
+                max_parent_integration_repair_attempts=self.max_parent_integration_repair_attempts,
             )
             verification_candidate_text = str(
                 frontier_result.get("latest_parent_candidate_text") or response.content
@@ -4754,6 +5847,9 @@ class AiSandboxChatSession:
         max_repair_attempts: int = DEFAULT_MAX_REPAIR_ATTEMPTS,
         max_frontier_dispatches: int = DEFAULT_MAX_FRONTIER_DISPATCHES,
         max_child_package_repair_attempts: int = DEFAULT_MAX_CHILD_PACKAGE_REPAIR_ATTEMPTS,
+        max_advancement_waves: int = DEFAULT_MAX_ADVANCEMENT_WAVES,
+        max_parent_integration_repair_attempts: int = DEFAULT_MAX_PARENT_INTEGRATION_REPAIR_ATTEMPTS,
+        register_method_step_candidates: bool = DEFAULT_REGISTER_METHOD_STEP_CANDIDATES,
     ) -> None:
         self.sandbox_path = resolve_sandbox_path(sandbox_path)
         self.log_dir = resolve_log_dir(log_dir)
@@ -4762,11 +5858,22 @@ class AiSandboxChatSession:
         self.config_path = Path(config_path) if config_path is not None else None
         self.method_path = Path(method_path) if method_path is not None else None
         self.client = client
-        self.max_repair_attempts = normalize_max_repair_attempts(max_repair_attempts)
-        self.max_frontier_dispatches = normalize_max_frontier_dispatches(max_frontier_dispatches)
-        self.max_child_package_repair_attempts = normalize_max_child_package_repair_attempts(
-            max_child_package_repair_attempts
+        self.runtime_options = SandboxRuntimeOptions.from_values(
+            max_repair_attempts=max_repair_attempts,
+            max_frontier_dispatches=max_frontier_dispatches,
+            max_child_package_repair_attempts=max_child_package_repair_attempts,
+            max_advancement_waves=max_advancement_waves,
+            max_parent_integration_repair_attempts=max_parent_integration_repair_attempts,
+            register_method_step_candidates=register_method_step_candidates,
         )
+        self.max_repair_attempts = self.runtime_options.max_repair_attempts
+        self.max_frontier_dispatches = self.runtime_options.max_frontier_dispatches
+        self.max_child_package_repair_attempts = self.runtime_options.max_child_package_repair_attempts
+        self.max_advancement_waves = self.runtime_options.max_advancement_waves
+        self.max_parent_integration_repair_attempts = (
+            self.runtime_options.max_parent_integration_repair_attempts
+        )
+        self.register_method_step_candidates = self.runtime_options.register_method_step_candidates
         self.flow = FlowWriter(
             self.sandbox_path,
             self.diagnostic_log_path,
@@ -4808,6 +5915,11 @@ class AiSandboxChatSession:
         self.service = RuntimeService(self.sandbox_path)
         self.service.initialize()
         self.flow.write(FLOW_RUNTIME_INITIALIZED, "runtime initialized")
+        write_runtime_options_event(
+            flow=self.flow,
+            options=self.runtime_options,
+            step="chat.runtime.options",
+        )
         self.flow.write(FLOW_CHAT_SESSION_STARTED, "chat session started")
         write_process_step(
             flow=self.flow,
@@ -4872,6 +5984,15 @@ class AiSandboxChatSession:
             return_point="当前对话轮根业候选提交、校验和验收路由。",
             budget={"max_repair_attempts": self.max_repair_attempts, "turn": turn},
             depth=0,
+            turn=turn,
+        )
+        register_method_step_candidates(
+            flow=self.flow,
+            service=self.service,
+            method=method,
+            parent_job_id=job_id,
+            step_prefix="chat.method.step_candidates",
+            enabled=self.register_method_step_candidates,
             turn=turn,
         )
 
@@ -4989,6 +6110,10 @@ class AiSandboxChatSession:
             job_id,
             text=response.content,
             actor_id="ai",
+            metadata={
+                "appearance_kind": "root_candidate",
+                "candidate_only": True,
+            },
         )["candidate"]
         self.flow.write(
             FLOW_CANDIDATE_SUBMITTED,
@@ -5023,10 +6148,23 @@ class AiSandboxChatSession:
             user_input=user_input,
             assistant_response=response.content,
         )
+        record_method_learning_candidate(
+            flow=self.flow,
+            service=self.service,
+            method=method,
+            job_id=job_id,
+            review=review,
+            step_prefix="chat.method.self_review",
+            turn=turn,
+        )
         evidence = self.service.submit_evidence(
             job_id,
             text=method_evidence_payload(method=method, review=review),
             actor_id="system",
+            metadata={
+                "evidence_kind": "method_self_review",
+                "evidence_hardness": "weak_ai",
+            },
         )["evidence"]
         self.flow.write(
             FLOW_EVIDENCE_SUBMITTED,
@@ -5034,6 +6172,8 @@ class AiSandboxChatSession:
             turn=turn,
             job_id=job_id,
             appearance_id=evidence["appearance_id"],
+            evidence_kind="method_self_review",
+            evidence_hardness="weak_ai",
         )
         write_job_tree_mirror(
             flow=self.flow,
@@ -5064,7 +6204,7 @@ class AiSandboxChatSession:
             step_prefix="chat.split_proposal",
             turn=turn,
         )
-        frontier_result = run_frontier_child_dispatch(
+        frontier_result = run_advancement_loop(
             flow=self.flow,
             service=self.service,
             client=client,
@@ -5073,10 +6213,12 @@ class AiSandboxChatSession:
             root_method=method,
             root_candidate_text=response.content,
             root_candidate_appearance_id=candidate["appearance_id"],
-            step_prefix="chat.frontier_dispatch",
+            step_prefix="chat.advancement",
             turn=turn,
+            max_advancement_waves=self.max_advancement_waves,
             max_child_dispatches=self.max_frontier_dispatches,
             max_child_package_repair_attempts=self.max_child_package_repair_attempts,
+            max_parent_integration_repair_attempts=self.max_parent_integration_repair_attempts,
         )
         verification_candidate_text = str(
             frontier_result.get("latest_parent_candidate_text") or response.content

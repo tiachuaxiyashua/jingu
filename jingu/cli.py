@@ -19,9 +19,12 @@ from jingu.sandbox.paths import (
     resolve_sandbox_path,
 )
 from jingu.sandbox.runner import (
+    DEFAULT_MAX_ADVANCEMENT_WAVES,
     DEFAULT_MAX_CHILD_PACKAGE_REPAIR_ATTEMPTS,
     DEFAULT_MAX_FRONTIER_DISPATCHES,
+    DEFAULT_MAX_PARENT_INTEGRATION_REPAIR_ATTEMPTS,
     DEFAULT_MAX_REPAIR_ATTEMPTS,
+    DEFAULT_REGISTER_METHOD_STEP_CANDIDATES,
     AiSandboxChatSession,
     AiSandboxRunner,
 )
@@ -78,6 +81,12 @@ def build_parser() -> argparse.ArgumentParser:
     evidence_submit = evidence_subparsers.add_parser("submit", help="Submit evidence.")
     evidence_submit.add_argument("job_id")
     add_content_arguments(evidence_submit)
+
+    decision_parser = subparsers.add_parser("decision", help="Human decision return commands.")
+    decision_subparsers = decision_parser.add_subparsers(dest="decision_command", required=True)
+    decision_return = decision_subparsers.add_parser("return", help="Record a returned human decision as evidence.")
+    decision_return.add_argument("job_id")
+    decision_return.add_argument("--text", required=True)
 
     accept_parser = subparsers.add_parser("accept", help="Accept a candidate result with evidence.")
     accept_parser.add_argument("job_id")
@@ -147,6 +156,17 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         default=DEFAULT_MAX_CHILD_PACKAGE_REPAIR_ATTEMPTS,
     )
+    ai_run.add_argument("--max-advancement-waves", type=int, default=DEFAULT_MAX_ADVANCEMENT_WAVES)
+    ai_run.add_argument(
+        "--max-parent-integration-repair-attempts",
+        type=int,
+        default=DEFAULT_MAX_PARENT_INTEGRATION_REPAIR_ATTEMPTS,
+    )
+    ai_run.add_argument(
+        "--register-method-step-candidates",
+        action="store_true",
+        default=DEFAULT_REGISTER_METHOD_STEP_CANDIDATES,
+    )
     ai_monitor = ai_subparsers.add_parser("monitor", help="Monitor the current AI sandbox flow.")
     ai_monitor.add_argument("--sandbox", type=Path)
     ai_monitor.add_argument("--log-dir", type=Path)
@@ -166,6 +186,17 @@ def build_parser() -> argparse.ArgumentParser:
         "--max-child-package-repair-attempts",
         type=int,
         default=DEFAULT_MAX_CHILD_PACKAGE_REPAIR_ATTEMPTS,
+    )
+    ai_chat.add_argument("--max-advancement-waves", type=int, default=DEFAULT_MAX_ADVANCEMENT_WAVES)
+    ai_chat.add_argument(
+        "--max-parent-integration-repair-attempts",
+        type=int,
+        default=DEFAULT_MAX_PARENT_INTEGRATION_REPAIR_ATTEMPTS,
+    )
+    ai_chat.add_argument(
+        "--register-method-step-candidates",
+        action="store_true",
+        default=DEFAULT_REGISTER_METHOD_STEP_CANDIDATES,
     )
 
     return parser
@@ -203,6 +234,9 @@ def run(args: argparse.Namespace) -> Any:
 
     if args.command == "evidence" and args.evidence_command == "submit":
         return service.submit_evidence(args.job_id, file_path=args.file, text=args.text)
+
+    if args.command == "decision" and args.decision_command == "return":
+        return service.record_human_decision(args.job_id, decision_text=args.text, actor_id="human")
 
     if args.command == "accept":
         return service.accept_candidate(
@@ -278,6 +312,9 @@ def run_result_only(args: argparse.Namespace) -> str:
             max_repair_attempts=args.max_repair_attempts,
             max_frontier_dispatches=args.max_frontier_dispatches,
             max_child_package_repair_attempts=args.max_child_package_repair_attempts,
+            max_advancement_waves=args.max_advancement_waves,
+            max_parent_integration_repair_attempts=args.max_parent_integration_repair_attempts,
+            register_method_step_candidates=args.register_method_step_candidates,
         ).run(args.message)
     raise JinguRuntimeError("unknown result-only command")
 
@@ -308,6 +345,9 @@ def run_chat(args: argparse.Namespace) -> None:
         max_repair_attempts=args.max_repair_attempts,
         max_frontier_dispatches=args.max_frontier_dispatches,
         max_child_package_repair_attempts=args.max_child_package_repair_attempts,
+        max_advancement_waves=args.max_advancement_waves,
+        max_parent_integration_repair_attempts=args.max_parent_integration_repair_attempts,
+        register_method_step_candidates=args.register_method_step_candidates,
     )
     session.start()
     print("Jingu AI chat started. Type /exit to finish.", flush=True)

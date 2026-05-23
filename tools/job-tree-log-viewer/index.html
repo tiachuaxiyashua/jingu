@@ -43,6 +43,43 @@
         </div>
       </section>
 
+      <section class="filter-band" aria-label="时间线过滤">
+        <label>
+          <span>搜索</span>
+          <input id="searchFilter" type="search" placeholder="事件、输入、输出、相编号">
+        </label>
+        <label>
+          <span>阶段</span>
+          <select id="phaseFilter">
+            <option value="">全部</option>
+            <option value="method">方法</option>
+            <option value="provider">Provider</option>
+            <option value="split_proposal">分业</option>
+            <option value="frontier_dispatch">前沿调度</option>
+            <option value="advancement">推进</option>
+            <option value="child_package_review">果包验收</option>
+            <option value="parent_integration">父业整合</option>
+            <option value="repair">修复</option>
+            <option value="verification">校验</option>
+            <option value="acceptance">验收路由</option>
+            <option value="feedback">反馈</option>
+          </select>
+        </label>
+        <label>
+          <span>事件</span>
+          <input id="eventTypeFilter" type="text" placeholder="event_type">
+        </label>
+        <label>
+          <span>业编号</span>
+          <input id="jobFilter" type="text" placeholder="job_...">
+        </label>
+        <label>
+          <span>相编号</span>
+          <input id="appearanceFilter" type="text" placeholder="appearance_...">
+        </label>
+        <button id="clearFiltersButton" type="button">清空</button>
+      </section>
+
       <section class="summary-grid" id="summaryGrid"></section>
 
       <section class="workspace">

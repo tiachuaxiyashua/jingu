@@ -26,7 +26,12 @@ function parseArgs(argv) {
       arg === "--expect-feedback" ||
       arg === "--expect-closure" ||
       arg === "--expect-child-review" ||
-      arg === "--expect-parent-integration"
+      arg === "--expect-parent-integration" ||
+      arg === "--expect-integration-repair" ||
+      arg === "--expect-human-decision" ||
+      arg === "--expect-evidence-hardness" ||
+      arg === "--expect-method-learning" ||
+      arg === "--expect-filter"
     ) {
       const filePath = argv[index + 1];
       if (!filePath || filePath.startsWith("--")) {
@@ -105,6 +110,46 @@ function validateScenario(scenario) {
     );
   }
 
+  if (scenario.expectation === "integration-repair") {
+    assert(
+      projection.milestones.integrationRepairCreated > 0,
+      "expected parent integration repair milestone",
+    );
+    assert(nodeKinds.includes("integration-repair"), "expected integration repair node");
+  }
+
+  if (scenario.expectation === "human-decision") {
+    assert(
+      projection.milestones.humanDecisionRequests + projection.milestones.humanDecisionReturns > 0,
+      "expected human decision request or return milestone",
+    );
+  }
+
+  if (scenario.expectation === "evidence-hardness") {
+    assert(projection.milestones.weakEvidenceEvents > 0, "expected weak evidence hardness milestone");
+    assert(
+      traces.some((trace) => trace && trace.evidence.some((item) => item.key === "evidence_hardness")),
+      "expected evidence hardness trace item",
+    );
+  }
+
+  if (scenario.expectation === "method-learning") {
+    assert(projection.milestones.methodLearningCandidates > 0, "expected method learning candidate milestone");
+    assert(
+      traces.some((trace) => trace && trace.outputs.some((item) => item.key === "method_learning_candidate")),
+      "expected method learning candidate output trace",
+    );
+  }
+
+  if (scenario.expectation === "filter") {
+    const filtered = viewer.filterEventsForTimeline(events, { phase: "parent_integration" });
+    assert(filtered.length > 0, "expected phase filter to return events");
+    assert(
+      filtered.every((event) => viewer.stepTraceFromEvent(event).phase === "parent_integration"),
+      "expected phase filter to keep only parent integration events",
+    );
+  }
+
   console.log(
     [
       `ok ${scenario.expectation}`,
@@ -114,6 +159,8 @@ function validateScenario(scenario) {
       `routes=${routeActions.join(",") || "none"}`,
       `childReviews=${projection.stats.childReviews}`,
       `parentIntegrations=${projection.stats.parentIntegrations}`,
+      `integrationRepairs=${projection.stats.integrationRepairs}`,
+      `humanDecisions=${projection.stats.humanDecisions}`,
       `closure=${closure}`,
     ].join(" | "),
   );
@@ -130,7 +177,9 @@ function printUsage() {
     "Usage: node scripts/validate_job_tree_viewer.js " +
       "--expect-repair <log.jsonl> --expect-feedback <log.jsonl> " +
       "--expect-child-review <log.jsonl> --expect-parent-integration <log.jsonl> " +
-      "--expect-closure <log.jsonl>",
+      "--expect-integration-repair <log.jsonl> --expect-human-decision <log.jsonl> " +
+      "--expect-evidence-hardness <log.jsonl> --expect-method-learning <log.jsonl> " +
+      "--expect-filter <log.jsonl> --expect-closure <log.jsonl>",
   );
 }
 

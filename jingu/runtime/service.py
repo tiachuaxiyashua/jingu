@@ -16,6 +16,7 @@ from jingu.runtime.constants import (
     APPEARANCE_STATE_STABLE,
     EVENT_CANDIDATE_ACCEPTED,
     EVENT_CANDIDATE_REJECTED,
+    EVENT_CANDIDATE_OBSERVATION_RECORDED,
     EVENT_CANDIDATE_SUBMITTED,
     EVENT_CHILD_JOB_CREATED,
     EVENT_EVIDENCE_SUBMITTED,
@@ -23,6 +24,7 @@ from jingu.runtime.constants import (
     EVENT_JOB_MARKED_READY,
     EVENT_JOB_STARTED,
     EVENT_METHOD_LAW_BOUND,
+    EVENT_HUMAN_DECISION_RETURNED,
     EVENT_ROOT_JOB_CREATED,
     STATE_ACCEPTED,
     STATE_DRAFT,
@@ -229,6 +231,7 @@ class RuntimeService:
         file_path: Path | str | None = None,
         text: str | None = None,
         actor_id: str = "human",
+        metadata: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         appearance_id = new_id("appearance")
         with self.repository.transaction() as connection:
@@ -244,7 +247,7 @@ class RuntimeService:
                 location=stored["location"],
                 summary=stored["summary"],
                 source_job_id=job_id,
-                metadata={"size": stored["size"]},
+                metadata={**(metadata or {}), "size": stored["size"]},
             )
             updated = self.repository.update_job(
                 connection,
@@ -268,6 +271,7 @@ class RuntimeService:
         file_path: Path | str | None = None,
         text: str | None = None,
         actor_id: str = "human",
+        metadata: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         appearance_id = new_id("appearance")
         with self.repository.transaction() as connection:
@@ -282,7 +286,7 @@ class RuntimeService:
                 location=stored["location"],
                 summary=stored["summary"],
                 source_job_id=job_id,
-                metadata={"size": stored["size"]},
+                metadata={**(metadata or {}), "size": stored["size"]},
             )
             job = self.repository.update_job(connection, job_id, evidence_appearance_id=appearance_id)
             self.repository.append_event(
@@ -293,6 +297,83 @@ class RuntimeService:
                 payload={"evidence_appearance_id": appearance_id},
             )
             return {"job": self._hydrate_job(connection, job), "evidence": appearance}
+
+    def record_candidate_appearance(
+        self,
+        job_id: str,
+        *,
+        text: str,
+        actor_id: str = "system",
+        metadata: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        appearance_id = new_id("appearance")
+        with self.repository.transaction() as connection:
+            self.repository.require_job(connection, job_id)
+            stored = self._store_content(appearance_id, file_path=None, text=text)
+            appearance = self.repository.create_appearance(
+                connection,
+                appearance_id=appearance_id,
+                appearance_type=APPEARANCE_CANDIDATE_RESULT,
+                state=APPEARANCE_STATE_CANDIDATE,
+                checksum=stored["checksum"],
+                location=stored["location"],
+                summary=stored["summary"],
+                source_job_id=job_id,
+                metadata={**(metadata or {}), "size": stored["size"]},
+            )
+            self.repository.append_event(
+                connection,
+                job_id=job_id,
+                event_type=EVENT_CANDIDATE_OBSERVATION_RECORDED,
+                actor_id=actor_id,
+                payload={
+                    "candidate_appearance_id": appearance_id,
+                    "appearance_kind": str((metadata or {}).get("appearance_kind") or ""),
+                    "candidate_only": bool((metadata or {}).get("candidate_only") or False),
+                },
+            )
+            return {
+                "job": self._hydrate_job(connection, self.repository.require_job(connection, job_id)),
+                "candidate": appearance,
+            }
+
+    def record_human_decision(
+        self,
+        job_id: str,
+        *,
+        decision_text: str,
+        actor_id: str = "human",
+        metadata: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        decision_metadata = {
+            "evidence_kind": "human_decision_return",
+            "evidence_hardness": "human_decision",
+            **(metadata or {}),
+        }
+        evidence_result = self.submit_evidence(
+            job_id,
+            text=decision_text,
+            actor_id=actor_id,
+            metadata=decision_metadata,
+        )
+        evidence = evidence_result["evidence"]
+        with self.repository.transaction() as connection:
+            self.repository.append_event(
+                connection,
+                job_id=job_id,
+                event_type=EVENT_HUMAN_DECISION_RETURNED,
+                actor_id=actor_id,
+                payload={
+                    "decision_evidence_appearance_id": evidence["appearance_id"],
+                    "decision_text": decision_text,
+                    "evidence_hardness": "human_decision",
+                    "evidence_kind": "human_decision_return",
+                },
+            )
+        return {
+            "job": self.get_status(job_id),
+            "decision_evidence": evidence,
+        }
 
     def accept_candidate(
         self,

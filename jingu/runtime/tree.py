@@ -282,26 +282,22 @@ class TreeService:
             job_id,
             text=serialized,
             actor_id=actor_id,
+            metadata={"kind": PACKAGE_METADATA_KIND, "appearance_kind": PACKAGE_METADATA_KIND},
         )
         evidence_body = evidence_text or str(validated["evidence_summary"])
         evidence_result = self.runtime.submit_evidence(
             job_id,
             text=evidence_body,
             actor_id=actor_id,
+            metadata={
+                "evidence_kind": "result_package_evidence",
+                "evidence_hardness": "ai_or_manual_package",
+            },
         )
 
         candidate = candidate_result["candidate"]
         evidence = evidence_result["evidence"]
         with self.runtime.repository.transaction() as connection:
-            self.runtime.repository.update_appearance(
-                connection,
-                candidate["appearance_id"],
-                metadata=json.dumps(
-                    {"kind": PACKAGE_METADATA_KIND},
-                    ensure_ascii=False,
-                    sort_keys=True,
-                ),
-            )
             self.runtime.repository.append_event(
                 connection,
                 job_id=job_id,

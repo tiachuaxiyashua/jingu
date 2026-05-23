@@ -1291,6 +1291,225 @@ class AiSandboxChatTest(unittest.TestCase):
         )
         self.assertTrue(judgment["does_not_auto_accept_or_reject"])
 
+    def test_parent_integration_repair_creates_repair_job_and_lineage(self) -> None:
+        with TemporaryDirectory() as tmp:
+            sandbox = Path(tmp) / "sandbox"
+            log_dir = Path(tmp) / "logs"
+            method_path = write_method_file(Path(tmp))
+            child_proposal = {
+                "target": "Produce parent support material",
+                "blocking_reason": "parent needs a consumable child package",
+                "output_contract": "structured child result package",
+                "acceptance_criteria": "package has conclusion, artifacts, evidence, gaps, and follow-up jobs",
+                "estimated_effort": 1,
+                "depth_limit": 3,
+                "required_context_gaps": [],
+                "method_path": "",
+                "method_binding_reason": "",
+                "method_return_point": "",
+            }
+            client = FakeChatClient(
+                responses=[
+                    "root draft",
+                    method_review_json(),
+                    split_proposals_json([child_proposal]),
+                    child_result_package_json(),
+                    child_package_review_accept_json(),
+                    split_proposals_json(),
+                    "{not valid integration json",
+                    parent_integration_response("repaired integrated parent candidate"),
+                    split_proposals_json(),
+                    acceptance_continue_json(),
+                ]
+            )
+
+            answer = AiSandboxRunner(
+                sandbox_path=sandbox,
+                log_dir=log_dir,
+                method_path=method_path,
+                client=client,
+            ).run("integrate child material")
+
+            self.assertEqual(answer, "repaired integrated parent candidate")
+            records = [
+                json.loads(line)
+                for line in next(log_dir.glob("ai-run-*.jsonl")).read_text(encoding="utf-8").splitlines()
+                if line.strip()
+            ]
+            event_types = [record["event_type"] for record in records]
+            self.assertIn("parent_integration_job_created", event_types)
+            self.assertIn("parent_integration_repair_job_created", event_types)
+            self.assertIn("parent_integration_repair_accepted", event_types)
+            self.assertIn("parent_integration_candidate_submitted", event_types)
+            serialized = "\n".join(json.dumps(record, ensure_ascii=False) for record in records)
+            self.assertIn("candidate_lineage", serialized)
+            self.assertIn("parent_integration_job_id", serialized)
+            self.assertIn("evidence_hardness", serialized)
+
+    def test_invalid_parent_integration_repair_does_not_mutate_parent_candidate(self) -> None:
+        with TemporaryDirectory() as tmp:
+            sandbox = Path(tmp) / "sandbox"
+            log_dir = Path(tmp) / "logs"
+            method_path = write_method_file(Path(tmp))
+            child_proposal = {
+                "target": "Produce parent support material",
+                "blocking_reason": "parent needs a consumable child package",
+                "output_contract": "structured child result package",
+                "acceptance_criteria": "package has conclusion, artifacts, evidence, gaps, and follow-up jobs",
+                "estimated_effort": 1,
+                "depth_limit": 3,
+                "required_context_gaps": [],
+                "method_path": "",
+                "method_binding_reason": "",
+                "method_return_point": "",
+            }
+            client = FakeChatClient(
+                responses=[
+                    "root draft",
+                    method_review_json(),
+                    split_proposals_json([child_proposal]),
+                    child_result_package_json(),
+                    child_package_review_accept_json(),
+                    split_proposals_json(),
+                    "{not valid integration json",
+                    "{still invalid",
+                    acceptance_continue_json(),
+                ]
+            )
+
+            answer = AiSandboxRunner(
+                sandbox_path=sandbox,
+                log_dir=log_dir,
+                method_path=method_path,
+                client=client,
+            ).run("do not mutate parent on invalid repair")
+
+            self.assertEqual(answer, "root draft")
+            records = [
+                json.loads(line)
+                for line in next(log_dir.glob("ai-run-*.jsonl")).read_text(encoding="utf-8").splitlines()
+                if line.strip()
+            ]
+            event_types = [record["event_type"] for record in records]
+            self.assertIn("parent_integration_repair_rejected", event_types)
+            self.assertNotIn("parent_integration_candidate_submitted", event_types)
+
+    def test_advancement_loop_processes_followup_child_in_second_wave(self) -> None:
+        with TemporaryDirectory() as tmp:
+            sandbox = Path(tmp) / "sandbox"
+            log_dir = Path(tmp) / "logs"
+            method_path = write_method_file(Path(tmp))
+
+            def proposal(target: str) -> dict:
+                return {
+                    "target": target,
+                    "blocking_reason": "needed by parent",
+                    "output_contract": "structured child result package",
+                    "acceptance_criteria": "package is consumable by parent",
+                    "estimated_effort": 1,
+                    "depth_limit": 3,
+                    "required_context_gaps": [],
+                    "method_path": "",
+                    "method_binding_reason": "",
+                    "method_return_point": "",
+                }
+
+            client = FakeChatClient(
+                responses=[
+                    "root draft",
+                    method_review_json(),
+                    split_proposals_json([proposal("first child")]),
+                    child_result_package_json(conclusion="first"),
+                    child_package_review_accept_json(),
+                    split_proposals_json(),
+                    parent_integration_response("first integration"),
+                    split_proposals_json([proposal("second child")]),
+                    child_result_package_json(conclusion="second"),
+                    child_package_review_accept_json(),
+                    split_proposals_json(),
+                    parent_integration_response("second integration"),
+                    split_proposals_json(),
+                    acceptance_continue_json(),
+                ]
+            )
+
+            answer = AiSandboxRunner(
+                sandbox_path=sandbox,
+                log_dir=log_dir,
+                method_path=method_path,
+                client=client,
+                max_advancement_waves=2,
+            ).run("advance multiple child waves")
+
+            self.assertEqual(answer, "second integration")
+            records = [
+                json.loads(line)
+                for line in next(log_dir.glob("ai-run-*.jsonl")).read_text(encoding="utf-8").splitlines()
+                if line.strip()
+            ]
+            event_types = [record["event_type"] for record in records]
+            self.assertEqual(event_types.count("advancement_wave_started"), 2)
+            self.assertGreaterEqual(event_types.count("child_job_dispatch_started"), 2)
+            self.assertIn("advancement_loop_finished", event_types)
+
+    def test_method_learning_candidate_and_method_step_candidate_are_visible(self) -> None:
+        with TemporaryDirectory() as tmp:
+            sandbox = Path(tmp) / "sandbox"
+            log_dir = Path(tmp) / "logs"
+            method_path = write_method_file(
+                Path(tmp),
+                "\n".join(
+                    [
+                        "---",
+                        "name: step-method",
+                        "---",
+                        "# Step One",
+                        "Do the first step.",
+                        "# Step Two",
+                        "Do the second step.",
+                    ]
+                ),
+            )
+            review_with_update = json.dumps(
+                {
+                    "method_use_summary": "used visible steps",
+                    "evidence": ["method law ids referenced"],
+                    "gaps": [],
+                    "observed_failure_modes": [],
+                    "method_update_candidates": ["Add a measurable acceptance checklist."],
+                },
+                ensure_ascii=False,
+            )
+            client = FakeChatClient(
+                responses=[
+                    "candidate",
+                    review_with_update,
+                    split_proposals_json(),
+                    acceptance_continue_json(),
+                ]
+            )
+
+            AiSandboxRunner(
+                sandbox_path=sandbox,
+                log_dir=log_dir,
+                method_path=method_path,
+                client=client,
+                max_frontier_dispatches=0,
+                register_method_step_candidates=True,
+            ).run("show method learning and steps")
+
+            records = [
+                json.loads(line)
+                for line in next(log_dir.glob("ai-run-*.jsonl")).read_text(encoding="utf-8").splitlines()
+                if line.strip()
+            ]
+            event_types = [record["event_type"] for record in records]
+            self.assertIn("method_learning_candidate_recorded", event_types)
+            self.assertIn("method_step_candidate_recorded", event_types)
+            serialized = "\n".join(json.dumps(record, ensure_ascii=False) for record in records)
+            self.assertIn("candidate_only", serialized)
+            self.assertIn("method_step_candidate_summary", serialized)
+
     def test_runner_preserves_existing_saved_logs_in_log_dir(self) -> None:
         with TemporaryDirectory() as tmp:
             sandbox = Path(tmp) / "sandbox"
