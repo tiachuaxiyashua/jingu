@@ -134,7 +134,8 @@ button:disabled {
 .control-band,
 .summary-grid,
 .workspace,
-.lower-grid {
+.trace-grid,
+.raw-band {
   border: 1px solid var(--line);
   border-radius: 8px;
   background: var(--surface);
@@ -174,7 +175,7 @@ button:disabled {
 
 .summary-grid {
   display: grid;
-  grid-template-columns: repeat(8, minmax(0, 1fr));
+  grid-template-columns: repeat(10, minmax(0, 1fr));
   gap: 1px;
   overflow: hidden;
   background: var(--line);
@@ -201,7 +202,7 @@ button:disabled {
 
 .workspace {
   display: grid;
-  grid-template-columns: minmax(720px, 1fr) 380px;
+  grid-template-columns: 340px minmax(620px, 1fr) 380px;
   min-height: 500px;
   overflow: hidden;
 }
@@ -219,6 +220,11 @@ button:disabled {
   align-content: start;
   gap: 14px;
   border-left: 1px solid var(--line);
+  background: #fbfcfa;
+}
+
+.timeline-panel {
+  border-right: 1px solid var(--line);
   background: #fbfcfa;
 }
 
@@ -400,22 +406,88 @@ button:disabled {
   color: var(--muted);
 }
 
-.lower-grid {
+.trace-grid {
   display: grid;
-  grid-template-columns: minmax(560px, 1fr) 520px;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  min-height: 260px;
+  overflow: hidden;
+}
+
+.trace-pane {
+  min-width: 0;
+  padding: 12px;
+  border-right: 1px solid var(--line);
+}
+
+.trace-pane:last-child {
+  border-right: 0;
+}
+
+.trace-pane h2,
+.raw-panel h2 {
+  margin: 0 0 10px;
+  font-size: 15px;
+}
+
+.trace-content {
+  display: grid;
+  gap: 8px;
+  max-height: 300px;
+  overflow: auto;
+}
+
+.trace-item {
+  border: 1px solid #dde5e0;
+  border-radius: 6px;
+  background: #fbfcfa;
+}
+
+.trace-item-title {
+  padding: 7px 8px;
+  border-bottom: 1px solid #e5ebe7;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.trace-item-body {
+  max-height: 180px;
+  margin: 0;
+  padding: 8px;
+  overflow: auto;
+  color: var(--text);
+  font-size: 12px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.trace-empty {
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.step-title {
+  margin: 0 0 8px;
+  font-size: 13px;
+  font-weight: 700;
+  overflow-wrap: anywhere;
+}
+
+.raw-band {
   min-height: 300px;
   overflow: hidden;
 }
 
 .raw-panel {
-  border-left: 1px solid var(--line);
+  padding: 12px;
   background: #fbfcfa;
 }
 
 .timeline {
   display: grid;
   gap: 6px;
-  max-height: 310px;
+  max-height: 430px;
   margin: 0;
   padding: 0 4px 0 22px;
   overflow: auto;
@@ -438,6 +510,14 @@ button:disabled {
   font-weight: 700;
 }
 
+.timeline li.io-rich {
+  border-left: 4px solid var(--blue);
+}
+
+.timeline-label {
+  display: block;
+}
+
 .timeline-time {
   display: block;
   color: var(--muted);
@@ -445,7 +525,7 @@ button:disabled {
 }
 
 .raw-json {
-  max-height: 280px;
+  max-height: 300px;
   margin: 10px 0 0;
   padding: 10px;
   overflow: auto;

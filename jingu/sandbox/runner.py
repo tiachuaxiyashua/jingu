@@ -16,6 +16,7 @@ from jingu.runtime.constants import (
     STATE_DRAFT,
     STATE_READY,
     STATE_REJECTED,
+    STATE_REVIEWING,
     STATE_RUNNING,
 )
 from jingu.runtime.object_store import checksum_text
@@ -77,6 +78,12 @@ from jingu.sandbox.flow import (
     FLOW_PROVIDER_STREAM_FINISHED,
     FLOW_PARENT_VERIFICATION_EVIDENCE_SUBMITTED,
     FLOW_PARENT_REEVALUATION_RECORDED,
+    FLOW_PARENT_INTEGRATION_CANDIDATE_SUBMITTED,
+    FLOW_PARENT_INTEGRATION_FOLLOWUP_REGISTRATION_FINISHED,
+    FLOW_PARENT_INTEGRATION_RECEIVED,
+    FLOW_PARENT_INTEGRATION_REJECTED,
+    FLOW_PARENT_INTEGRATION_REQUESTED,
+    FLOW_PARENT_INTEGRATION_SKIPPED,
     FLOW_RESULT_OUTPUT_RECORDED,
     FLOW_REPAIR_CANDIDATE_SUBMITTED,
     FLOW_REPAIR_JOB_CREATED,
@@ -136,6 +143,14 @@ DEFAULT_MAX_CHILD_PACKAGE_REPAIR_ATTEMPTS = 1
 ACCEPTANCE_ROUTE_ACTIONS = frozenset({"continue", "repair", "feedback"})
 ACCEPTANCE_FEEDBACK_JOB_KINDS = frozenset({"high_value", "directional"})
 CHILD_PACKAGE_REVIEW_ACTIONS = frozenset({"accept", "repair"})
+PARENT_INTEGRATION_REQUIRED_FIELDS = (
+    "integrated_candidate_text",
+    "consumed_child_jobs",
+    "evidence",
+    "open_gaps",
+    "suggested_follow_up_jobs",
+    "parent_consumption_summary",
+)
 FRONTIER_DISPATCH_STATES = frozenset({STATE_DRAFT, STATE_READY, STATE_RUNNING})
 CHILD_RESULT_PACKAGE_FIELDS = (
     "conclusion",
@@ -750,6 +765,8 @@ def run_frontier_child_dispatch(
 
     selected_children = active_child_frontier[:max_child_dispatches]
     dispatch_results: list[dict[str, Any]] = []
+    parent_integration_results: list[dict[str, Any]] = []
+    latest_root_integration: dict[str, Any] | None = None
     for index, child in enumerate(selected_children, start=1):
         child_job_id = str(child["job_id"])
         parent_job_id = str(child.get("parent_job_id") or root_job_id)
@@ -826,6 +843,7 @@ def run_frontier_child_dispatch(
             )
             continue
 
+        parent_integration_result_for_child: dict[str, Any] | None = None
         child_method, child_method_source = load_child_dispatch_method(
             child_job=child,
             root_method=root_method,
@@ -993,6 +1011,58 @@ def run_frontier_child_dispatch(
                     step_prefix=f"{step_prefix}.child_{index}.package_review",
                     turn=turn,
                 )
+                try:
+                    parent_integration_result = run_parent_integration(
+                        flow=flow,
+                        service=service,
+                        client=client,
+                        method=root_method if parent_job_id == root_job_id else child_method,
+                        root_job_id=root_job_id,
+                        parent_job_id=parent_job_id,
+                        user_input=user_input,
+                        root_candidate_text=root_candidate_text,
+                        root_candidate_appearance_id=root_candidate_appearance_id,
+                        step_prefix=f"{step_prefix}.child_{index}.parent_integration",
+                        turn=turn,
+                    )
+                except Exception as exc:
+                    parent_integration_result = {"status": "rejected", "reason": str(exc)}
+                    error_data = {
+                        **turn_field(turn),
+                        "root_job_id": root_job_id,
+                        "parent_job_id": parent_job_id,
+                        "job_id": parent_job_id,
+                        "parent_integration_status": "rejected",
+                        "reason": str(exc),
+                    }
+                    flow.write(
+                        FLOW_PARENT_INTEGRATION_REJECTED,
+                        "parent integration rejected",
+                        **error_data,
+                    )
+                    write_job_tree_mirror(
+                        flow=flow,
+                        service=service,
+                        turn=turn,
+                        job_id=parent_job_id,
+                        action="parent_integration_rejected",
+                        reason=str(exc),
+                    )
+                    write_process_step(
+                        flow=flow,
+                        step=f"{step_prefix}.child_{index}.parent_integration.error",
+                        phase="parent_integration",
+                        action="父业整合运行异常，保持父业候选不变",
+                        status="rejected",
+                        **error_data,
+                    )
+                parent_integration_results.append(parent_integration_result)
+                parent_integration_result_for_child = parent_integration_result
+                if (
+                    parent_job_id == root_job_id
+                    and parent_integration_result.get("status") == "integrated"
+                ):
+                    latest_root_integration = parent_integration_result
             else:
                 parent_reevaluation = tree_service.reevaluate_parent(parent_job_id)
                 reevaluation_data = {
@@ -1035,6 +1105,7 @@ def run_frontier_child_dispatch(
                     "candidate_appearance_id": review_result.get("candidate_id", candidate_id),
                     "evidence_appearance_id": review_result.get("evidence_id", evidence_id),
                     "child_split_result": child_split_result,
+                    "parent_integration_result": parent_integration_result_for_child,
                 }
             )
         except Exception as exc:
@@ -1072,9 +1143,66 @@ def run_frontier_child_dispatch(
                 {"child_job_id": child_job_id, "status": "rejected", "reason": str(exc)}
             )
 
+    if selected_children and not parent_integration_results:
+        try:
+            parent_integration_result = run_parent_integration(
+                flow=flow,
+                service=service,
+                client=client,
+                method=root_method,
+                root_job_id=root_job_id,
+                parent_job_id=root_job_id,
+                user_input=user_input,
+                root_candidate_text=root_candidate_text,
+                root_candidate_appearance_id=root_candidate_appearance_id,
+                step_prefix=f"{step_prefix}.parent_integration",
+                turn=turn,
+            )
+        except Exception as exc:
+            parent_integration_result = {"status": "rejected", "reason": str(exc)}
+            error_data = {
+                **turn_field(turn),
+                "root_job_id": root_job_id,
+                "parent_job_id": root_job_id,
+                "job_id": root_job_id,
+                "parent_integration_status": "rejected",
+                "reason": str(exc),
+            }
+            flow.write(
+                FLOW_PARENT_INTEGRATION_REJECTED,
+                "parent integration rejected",
+                **error_data,
+            )
+            write_job_tree_mirror(
+                flow=flow,
+                service=service,
+                turn=turn,
+                job_id=root_job_id,
+                action="parent_integration_rejected",
+                reason=str(exc),
+            )
+            write_process_step(
+                flow=flow,
+                step=f"{step_prefix}.parent_integration.error",
+                phase="parent_integration",
+                action="父业整合运行异常，保持父业候选不变",
+                status="rejected",
+                **error_data,
+            )
+        parent_integration_results.append(parent_integration_result)
+        if parent_integration_result.get("status") == "integrated":
+            latest_root_integration = parent_integration_result
+
     summary = {
         "selected_child_jobs": [str(job["job_id"]) for job in selected_children],
         "dispatch_results": dispatch_results,
+        "parent_integration_results": parent_integration_results,
+        "latest_parent_candidate_text": (
+            latest_root_integration.get("candidate_text") if latest_root_integration else ""
+        ),
+        "latest_parent_candidate_appearance_id": (
+            latest_root_integration.get("candidate_appearance_id") if latest_root_integration else ""
+        ),
         "frontier_job_count": len(active_child_frontier),
         "frontier_dispatch_limit": max_child_dispatches,
     }
@@ -1639,6 +1767,608 @@ def accept_reviewed_child_package(
         **reevaluation_data,
     )
     return {"job": accepted_job, "review_evidence": review_evidence, "parent_reevaluation": parent_reevaluation}
+
+
+def read_accepted_child_packages(
+    *,
+    service: RuntimeService,
+    parent_job_id: str,
+) -> dict[str, Any]:
+    packages: list[dict[str, Any]] = []
+    skipped: list[dict[str, str]] = []
+    with service.repository.transaction() as connection:
+        service.repository.require_job(connection, parent_job_id)
+        children = service.repository.list_child_jobs(connection, parent_job_id)
+        for child in children:
+            child_job_id = str(child["job_id"])
+            child_state = str(child.get("state") or "")
+            if child_state != STATE_ACCEPTED:
+                skipped.append(
+                    {
+                        "job_id": child_job_id,
+                        "state": child_state,
+                        "reason": "child is not accepted",
+                    }
+                )
+                continue
+            result_appearance_id = str(child.get("result_appearance_id") or "")
+            evidence_appearance_id = str(child.get("evidence_appearance_id") or "")
+            if not result_appearance_id:
+                skipped.append(
+                    {
+                        "job_id": child_job_id,
+                        "state": child_state,
+                        "reason": "accepted child has no result appearance",
+                    }
+                )
+                continue
+            appearance = service.repository.get_appearance(connection, result_appearance_id)
+            if not appearance or not appearance.get("location"):
+                skipped.append(
+                    {
+                        "job_id": child_job_id,
+                        "state": child_state,
+                        "reason": "accepted child result appearance is missing location",
+                    }
+                )
+                continue
+            content_path = service.paths.resolve_runtime_location(str(appearance["location"]))
+            if not content_path.exists():
+                skipped.append(
+                    {
+                        "job_id": child_job_id,
+                        "state": child_state,
+                        "reason": "accepted child result object is missing",
+                    }
+                )
+                continue
+            try:
+                package_text = content_path.read_text(encoding="utf-8")
+                package = json.loads(package_text)
+            except (OSError, json.JSONDecodeError) as exc:
+                skipped.append(
+                    {
+                        "job_id": child_job_id,
+                        "state": child_state,
+                        "reason": f"accepted child result package cannot be read as JSON: {exc}",
+                    }
+                )
+                continue
+            if not isinstance(package, dict):
+                skipped.append(
+                    {
+                        "job_id": child_job_id,
+                        "state": child_state,
+                        "reason": "accepted child result package is not a JSON object",
+                    }
+                )
+                continue
+            missing = [field for field in CHILD_RESULT_PACKAGE_FIELDS if field not in package]
+            if missing:
+                skipped.append(
+                    {
+                        "job_id": child_job_id,
+                        "state": child_state,
+                        "reason": "accepted child result package is missing fields: "
+                        + ", ".join(sorted(missing)),
+                    }
+                )
+                continue
+            packages.append(
+                {
+                    "job_id": child_job_id,
+                    "target": str(child.get("target") or ""),
+                    "result_appearance_id": result_appearance_id,
+                    "evidence_appearance_id": evidence_appearance_id,
+                    "package": package,
+                    "package_text": package_text,
+                }
+            )
+    return {"packages": packages, "skipped": skipped}
+
+
+def build_parent_integration_messages(
+    *,
+    method: MethodContext,
+    parent_job: dict[str, Any],
+    root_job_id: str,
+    user_input: str,
+    root_candidate_text: str,
+    root_candidate_appearance_id: str,
+    parent_reevaluation: dict[str, Any],
+    accepted_child_packages: list[dict[str, Any]],
+    turn: str | None = None,
+) -> list[dict[str, str]]:
+    child_job_ids = [item["job_id"] for item in accepted_child_packages]
+    payload = {
+        "turn": turn or "",
+        "root_job_id": root_job_id,
+        "parent_job": {
+            "job_id": parent_job.get("job_id"),
+            "parent_job_id": parent_job.get("parent_job_id"),
+            "target": parent_job.get("target"),
+            "state": parent_job.get("state"),
+            "acceptance_criteria": parent_job.get("acceptance_criteria", ""),
+            "required_context_gaps": parent_job.get("required_context_gaps", []),
+        },
+        "root_user_input": user_input,
+        "root_candidate": {
+            "candidate_appearance_id": root_candidate_appearance_id,
+            "text": root_candidate_text,
+        },
+        "parent_reevaluation": parent_reevaluation,
+        "accepted_child_packages": [
+            {
+                "job_id": item["job_id"],
+                "target": item["target"],
+                "result_appearance_id": item["result_appearance_id"],
+                "evidence_appearance_id": item["evidence_appearance_id"],
+                "package": item["package"],
+            }
+            for item in accepted_child_packages
+        ],
+        "integration_contract": {
+            "top_level": "JSON object only",
+            "required_fields": list(PARENT_INTEGRATION_REQUIRED_FIELDS),
+            "field_types": {
+                "integrated_candidate_text": "non-empty string; the complete parent-scope candidate after consuming accepted child packages",
+                "consumed_child_jobs": "non-empty list of accepted child job ids consumed in this integration",
+                "evidence": "non-empty list of strings explaining why each child package was used",
+                "open_gaps": "list of remaining parent-level gaps or questions",
+                "suggested_follow_up_jobs": "list of parent-level follow-up job targets if new blocking work is visible",
+                "parent_consumption_summary": "non-empty string summarizing how the parent consumed child packages",
+            },
+            "allowed_consumed_child_jobs": child_job_ids,
+            "boundaries": [
+                "Do not accept, reject, or complete the parent job.",
+                "Do not accept, reject, or complete the root job.",
+                "Only consume child packages listed in accepted_child_packages.",
+                "If a child package is insufficient, put the remaining problem in open_gaps or suggested_follow_up_jobs.",
+                "Return complete parent-scope candidate text; do not return only a summary unless the parent target itself only asks for a summary.",
+            ],
+        },
+    }
+    return [
+        *build_method_system_messages(method),
+        {
+            "role": "system",
+            "content": (
+                "你是金箍业树中的父业整合位。"
+                "你只能把已接收子业果包整合成父业候选结果和证据，"
+                "不能接收、拒收或宣告父业或根业完成。"
+                "只返回 JSON，不要输出解释性正文。"
+            ),
+        },
+        {
+            "role": "user",
+            "content": json.dumps(payload, ensure_ascii=False, sort_keys=True, indent=2),
+        },
+    ]
+
+
+def parse_parent_integration_output(
+    content: str,
+    *,
+    accepted_child_job_ids: set[str],
+) -> dict[str, Any]:
+    payload = load_json_object(content, error_prefix="parent integration response")
+    if not isinstance(payload, dict):
+        raise RuntimeError("parent integration response must be a JSON object")
+    missing = [
+        field
+        for field in PARENT_INTEGRATION_REQUIRED_FIELDS
+        if field not in payload
+    ]
+    if missing:
+        raise RuntimeError(
+            "parent integration response is missing fields: " + ", ".join(sorted(missing))
+        )
+
+    integrated_candidate_text = str(payload.get("integrated_candidate_text") or "").strip()
+    if not integrated_candidate_text:
+        raise RuntimeError("parent integration response integrated_candidate_text is required")
+    consumed_child_jobs = normalize_string_list(
+        payload.get("consumed_child_jobs") or [],
+        field_name="consumed_child_jobs",
+        error_prefix="parent integration response",
+    )
+    consumed_child_jobs = list(dict.fromkeys(consumed_child_jobs))
+    if not consumed_child_jobs:
+        raise RuntimeError("parent integration response consumed_child_jobs must be non-empty")
+    invalid_consumed = [
+        job_id for job_id in consumed_child_jobs if job_id not in accepted_child_job_ids
+    ]
+    if invalid_consumed:
+        raise RuntimeError(
+            "parent integration response consumed unaccepted child jobs: "
+            + ", ".join(invalid_consumed)
+        )
+
+    evidence = normalize_string_list(
+        payload.get("evidence") or [],
+        field_name="evidence",
+        error_prefix="parent integration response",
+    )
+    if not evidence:
+        raise RuntimeError("parent integration response evidence must be non-empty")
+    open_gaps = normalize_string_list(
+        payload.get("open_gaps") or [],
+        field_name="open_gaps",
+        error_prefix="parent integration response",
+    )
+    suggested_follow_up_jobs = normalize_string_list(
+        payload.get("suggested_follow_up_jobs") or [],
+        field_name="suggested_follow_up_jobs",
+        error_prefix="parent integration response",
+    )
+    parent_consumption_summary = str(payload.get("parent_consumption_summary") or "").strip()
+    if not parent_consumption_summary:
+        raise RuntimeError("parent integration response parent_consumption_summary is required")
+    return {
+        "integrated_candidate_text": integrated_candidate_text,
+        "consumed_child_jobs": consumed_child_jobs,
+        "evidence": evidence,
+        "open_gaps": open_gaps,
+        "suggested_follow_up_jobs": suggested_follow_up_jobs,
+        "parent_consumption_summary": parent_consumption_summary,
+        "does_not_auto_accept_or_reject": True,
+    }
+
+
+def build_parent_integration_evidence(
+    *,
+    integration: dict[str, Any],
+    parent_candidate_appearance_id: str,
+    accepted_child_packages: list[dict[str, Any]],
+) -> str:
+    payload = {
+        "evidence_kind": "parent_integration_evidence",
+        "parent_integration_candidate_appearance_id": parent_candidate_appearance_id,
+        "consumed_child_jobs": integration["consumed_child_jobs"],
+        "integrator_evidence": integration["evidence"],
+        "open_gaps": integration["open_gaps"],
+        "suggested_follow_up_jobs": integration["suggested_follow_up_jobs"],
+        "parent_consumption_summary": integration["parent_consumption_summary"],
+        "accepted_child_package_refs": [
+            {
+                "job_id": item["job_id"],
+                "result_appearance_id": item["result_appearance_id"],
+                "evidence_appearance_id": item["evidence_appearance_id"],
+            }
+            for item in accepted_child_packages
+            if item["job_id"] in set(integration["consumed_child_jobs"])
+        ],
+        "does_not_auto_accept_or_reject": True,
+    }
+    return json.dumps(payload, ensure_ascii=False, sort_keys=True, indent=2)
+
+
+def ensure_parent_running_for_integration(
+    *,
+    flow: FlowWriter,
+    service: RuntimeService,
+    parent_job_id: str,
+    step_prefix: str,
+    turn: str | None = None,
+) -> None:
+    status = service.get_status(parent_job_id)
+    state = str(status["state"])
+    if state == STATE_RUNNING:
+        return
+    if state in TERMINAL_JOB_STATES:
+        raise RuntimeError("cannot submit parent integration candidate to terminal parent job")
+    if state == STATE_DRAFT:
+        service.mark_ready(parent_job_id, actor_id="system")
+        ready_data = {**turn_field(turn), "job_id": parent_job_id}
+        flow.write(FLOW_JOB_READY, "parent job marked ready for integration", **ready_data)
+        write_job_tree_mirror(
+            flow=flow,
+            service=service,
+            turn=turn,
+            job_id=parent_job_id,
+            action="job_ready",
+        )
+        write_process_step(
+            flow=flow,
+            step=f"{step_prefix}.parent_ready",
+            phase="parent_integration",
+            action="父业整合提交候选前将父业置为就绪",
+            **ready_data,
+        )
+        state = STATE_READY
+    if state in {STATE_READY, STATE_REVIEWING, STATE_REJECTED}:
+        service.start_job(parent_job_id, actor_id="system")
+        running_data = {**turn_field(turn), "job_id": parent_job_id}
+        flow.write(FLOW_JOB_RUNNING, "parent job running for integration", **running_data)
+        write_job_tree_mirror(
+            flow=flow,
+            service=service,
+            turn=turn,
+            job_id=parent_job_id,
+            action="job_running",
+        )
+        write_process_step(
+            flow=flow,
+            step=f"{step_prefix}.parent_run",
+            phase="parent_integration",
+            action="父业整合提交候选前启动父业",
+            **running_data,
+        )
+        return
+    raise RuntimeError(f"parent job is not ready for integration candidate submission: {state}")
+
+
+def run_parent_integration(
+    *,
+    flow: FlowWriter,
+    service: RuntimeService,
+    client: ChatClient,
+    method: MethodContext,
+    root_job_id: str,
+    parent_job_id: str,
+    user_input: str,
+    root_candidate_text: str,
+    root_candidate_appearance_id: str,
+    step_prefix: str,
+    turn: str | None = None,
+) -> dict[str, Any]:
+    tree_service = TreeService(service.paths.workspace)
+    parent_reevaluation = tree_service.reevaluate_parent(parent_job_id)
+    package_read = read_accepted_child_packages(service=service, parent_job_id=parent_job_id)
+    accepted_child_packages = package_read["packages"]
+    skipped_child_packages = package_read["skipped"]
+    base_data = {
+        **turn_field(turn),
+        "root_job_id": root_job_id,
+        "parent_job_id": parent_job_id,
+        "job_id": parent_job_id,
+        "accepted_child_packages": json.dumps(
+            accepted_child_packages,
+            ensure_ascii=False,
+            sort_keys=True,
+            indent=2,
+        ),
+        "parent_reevaluation": json.dumps(
+            parent_reevaluation, ensure_ascii=False, sort_keys=True, indent=2
+        ),
+    }
+    if skipped_child_packages:
+        base_data["reason"] = json.dumps(
+            skipped_child_packages, ensure_ascii=False, sort_keys=True, indent=2
+        )
+
+    if not accepted_child_packages:
+        skipped_data = {
+            **base_data,
+            "parent_integration_status": "skipped",
+            "reason": base_data.get("reason") or "no accepted child result packages",
+        }
+        flow.write(FLOW_PARENT_INTEGRATION_SKIPPED, "parent integration skipped", **skipped_data)
+        write_job_tree_mirror(
+            flow=flow,
+            service=service,
+            turn=turn,
+            job_id=parent_job_id,
+            action="parent_integration_skipped",
+            reason=skipped_data["reason"],
+        )
+        write_process_step(
+            flow=flow,
+            step=f"{step_prefix}.skip",
+            phase="parent_integration",
+            action="没有已接收子业果包，跳过父业整合",
+            status="skipped",
+            **skipped_data,
+        )
+        return {"status": "skipped", "reason": skipped_data["reason"]}
+
+    parent_job = service.get_status(parent_job_id)
+    messages = build_parent_integration_messages(
+        method=method,
+        parent_job=parent_job,
+        root_job_id=root_job_id,
+        user_input=user_input,
+        root_candidate_text=root_candidate_text,
+        root_candidate_appearance_id=root_candidate_appearance_id,
+        parent_reevaluation=parent_reevaluation,
+        accepted_child_packages=accepted_child_packages,
+        turn=turn,
+    )
+    request_data = {
+        **base_data,
+        "parent_integration_prompt": messages[-1]["content"],
+        "provider_message_count": str(len(messages)),
+    }
+    flow.write(FLOW_PARENT_INTEGRATION_REQUESTED, "parent integration requested", **request_data)
+    write_job_tree_mirror(
+        flow=flow,
+        service=service,
+        turn=turn,
+        job_id=parent_job_id,
+        action="parent_integration_requested",
+    )
+    write_provider_messages(
+        flow=flow,
+        call_kind="parent_job_integration",
+        messages=messages,
+        turn=turn,
+        job_id=parent_job_id,
+    )
+    write_process_step(
+        flow=flow,
+        step=f"{step_prefix}.request",
+        phase="parent_integration",
+        action="向父业整合位发送已接收子业果包和父业重评估",
+        status="started",
+        **request_data,
+    )
+
+    response = complete_with_provider_logging(
+        flow=flow,
+        client=client,
+        messages=messages,
+        call_kind="parent_job_integration",
+        turn=turn,
+        job_id=parent_job_id,
+    )
+    response_data = {
+        **base_data,
+        "parent_integration_response": response.content,
+    }
+    flow.write(FLOW_PARENT_INTEGRATION_RECEIVED, "parent integration received", **response_data)
+    write_process_step(
+        flow=flow,
+        step=f"{step_prefix}.receive",
+        phase="parent_integration",
+        action="收到父业整合位响应",
+        **response_data,
+    )
+
+    accepted_child_job_ids = {item["job_id"] for item in accepted_child_packages}
+    try:
+        integration = parse_parent_integration_output(
+            response.content,
+            accepted_child_job_ids=accepted_child_job_ids,
+        )
+    except RuntimeError as exc:
+        rejected_data = {
+            **response_data,
+            "parent_integration_status": "rejected",
+            "reason": str(exc),
+        }
+        flow.write(FLOW_PARENT_INTEGRATION_REJECTED, "parent integration rejected", **rejected_data)
+        write_job_tree_mirror(
+            flow=flow,
+            service=service,
+            turn=turn,
+            job_id=parent_job_id,
+            action="parent_integration_rejected",
+            reason=str(exc),
+        )
+        write_process_step(
+            flow=flow,
+            step=f"{step_prefix}.invalid",
+            phase="parent_integration",
+            action="父业整合响应不符合结构化契约，保持父业候选不变",
+            status="rejected",
+            **rejected_data,
+        )
+        return {"status": "rejected", "reason": str(exc)}
+
+    ensure_parent_running_for_integration(
+        flow=flow,
+        service=service,
+        parent_job_id=parent_job_id,
+        step_prefix=step_prefix,
+        turn=turn,
+    )
+    parent_candidate = service.submit_candidate(
+        parent_job_id,
+        text=integration["integrated_candidate_text"],
+        actor_id="ai_integrator",
+    )["candidate"]
+    parent_evidence_text = build_parent_integration_evidence(
+        integration=integration,
+        parent_candidate_appearance_id=parent_candidate["appearance_id"],
+        accepted_child_packages=accepted_child_packages,
+    )
+    parent_evidence = service.submit_evidence(
+        parent_job_id,
+        text=parent_evidence_text,
+        actor_id="system",
+    )["evidence"]
+    submitted_data = {
+        **turn_field(turn),
+        "root_job_id": root_job_id,
+        "parent_job_id": parent_job_id,
+        "job_id": parent_job_id,
+        "parent_integration_status": "integrated",
+        "parent_integration_candidate": integration["integrated_candidate_text"],
+        "parent_integration_candidate_appearance_id": parent_candidate["appearance_id"],
+        "parent_integration_evidence": parent_evidence_text,
+        "parent_integration_evidence_appearance_id": parent_evidence["appearance_id"],
+        "consumed_child_jobs": json.dumps(
+            integration["consumed_child_jobs"], ensure_ascii=False, sort_keys=True
+        ),
+        "integration_open_gaps": json.dumps(
+            integration["open_gaps"], ensure_ascii=False, sort_keys=True
+        ),
+        "parent_integration_summary": integration["parent_consumption_summary"],
+    }
+    flow.write(
+        FLOW_PARENT_INTEGRATION_CANDIDATE_SUBMITTED,
+        "parent integration candidate submitted",
+        **submitted_data,
+    )
+    write_job_tree_mirror(
+        flow=flow,
+        service=service,
+        turn=turn,
+        job_id=parent_job_id,
+        action="parent_integration_candidate_submitted",
+        appearance_id=parent_candidate["appearance_id"],
+    )
+    write_process_step(
+        flow=flow,
+        step=f"{step_prefix}.candidate_submit",
+        phase="parent_integration",
+        action="提交父业整合候选和证据，但不接收父业或根业",
+        **submitted_data,
+    )
+
+    try:
+        split_result = run_split_proposal_registration(
+            flow=flow,
+            service=service,
+            client=client,
+            method=method,
+            parent_job_id=parent_job_id,
+            user_input=user_input,
+            candidate_text=integration["integrated_candidate_text"],
+            candidate_appearance_id=parent_candidate["appearance_id"],
+            step_prefix=f"{step_prefix}.split_proposal",
+            turn=turn,
+        )
+    except Exception as exc:
+        split_result = {"accepted": [], "rejected": [], "skipped_reason": str(exc)}
+    followup_data = {
+        **turn_field(turn),
+        "root_job_id": root_job_id,
+        "parent_job_id": parent_job_id,
+        "job_id": parent_job_id,
+        "parent_integration_status": "followup_registered",
+        "split_registration_summary": json.dumps(
+            split_result, ensure_ascii=False, sort_keys=True, indent=2
+        ),
+    }
+    flow.write(
+        FLOW_PARENT_INTEGRATION_FOLLOWUP_REGISTRATION_FINISHED,
+        "parent integration follow-up registration finished",
+        **followup_data,
+    )
+    write_job_tree_mirror(
+        flow=flow,
+        service=service,
+        turn=turn,
+        job_id=parent_job_id,
+        action="parent_integration_followup_registered",
+    )
+    write_process_step(
+        flow=flow,
+        step=f"{step_prefix}.followup_registration",
+        phase="parent_integration",
+        action="父业整合候选已交给分业申请链路登记后续阻塞点",
+        **followup_data,
+    )
+    return {
+        "status": "integrated",
+        "parent_job_id": parent_job_id,
+        "candidate_text": integration["integrated_candidate_text"],
+        "candidate_appearance_id": parent_candidate["appearance_id"],
+        "evidence_appearance_id": parent_evidence["appearance_id"],
+        "integration": integration,
+        "split_result": split_result,
+    }
 
 
 def build_child_dispatch_messages(
@@ -3822,7 +4552,7 @@ class AiSandboxRunner:
                 candidate_appearance_id=candidate["appearance_id"],
                 step_prefix="split_proposal",
             )
-            run_frontier_child_dispatch(
+            frontier_result = run_frontier_child_dispatch(
                 flow=self.flow,
                 service=service,
                 client=client,
@@ -3835,13 +4565,20 @@ class AiSandboxRunner:
                 max_child_dispatches=self.max_frontier_dispatches,
                 max_child_package_repair_attempts=self.max_child_package_repair_attempts,
             )
+            verification_candidate_text = str(
+                frontier_result.get("latest_parent_candidate_text") or response.content
+            )
+            verification_candidate_appearance_id = str(
+                frontier_result.get("latest_parent_candidate_appearance_id")
+                or candidate["appearance_id"]
+            )
             verification_result = run_candidate_verification(
                 flow=self.flow,
                 service=service,
                 parent_job_id=job_id,
                 user_input=message,
-                candidate_text=response.content,
-                parent_candidate_appearance_id=candidate["appearance_id"],
+                candidate_text=verification_candidate_text,
+                parent_candidate_appearance_id=verification_candidate_appearance_id,
                 step_prefix="candidate.verify",
             )
             repair_result = run_candidate_repair_loop(
@@ -3851,8 +4588,8 @@ class AiSandboxRunner:
                 method=method,
                 parent_job_id=job_id,
                 user_input=message,
-                initial_candidate_text=response.content,
-                initial_candidate_appearance_id=candidate["appearance_id"],
+                initial_candidate_text=verification_candidate_text,
+                initial_candidate_appearance_id=verification_candidate_appearance_id,
                 initial_verification_result=verification_result,
                 max_repair_attempts=self.max_repair_attempts,
                 step_prefix="candidate.verify",
@@ -4327,7 +5064,7 @@ class AiSandboxChatSession:
             step_prefix="chat.split_proposal",
             turn=turn,
         )
-        run_frontier_child_dispatch(
+        frontier_result = run_frontier_child_dispatch(
             flow=self.flow,
             service=self.service,
             client=client,
@@ -4341,13 +5078,20 @@ class AiSandboxChatSession:
             max_child_dispatches=self.max_frontier_dispatches,
             max_child_package_repair_attempts=self.max_child_package_repair_attempts,
         )
+        verification_candidate_text = str(
+            frontier_result.get("latest_parent_candidate_text") or response.content
+        )
+        verification_candidate_appearance_id = str(
+            frontier_result.get("latest_parent_candidate_appearance_id")
+            or candidate["appearance_id"]
+        )
         verification_result = run_candidate_verification(
             flow=self.flow,
             service=self.service,
             parent_job_id=job_id,
             user_input=user_input,
-            candidate_text=response.content,
-            parent_candidate_appearance_id=candidate["appearance_id"],
+            candidate_text=verification_candidate_text,
+            parent_candidate_appearance_id=verification_candidate_appearance_id,
             step_prefix="chat.candidate.verify",
             turn=turn,
         )
@@ -4358,8 +5102,8 @@ class AiSandboxChatSession:
             method=method,
             parent_job_id=job_id,
             user_input=user_input,
-            initial_candidate_text=response.content,
-            initial_candidate_appearance_id=candidate["appearance_id"],
+            initial_candidate_text=verification_candidate_text,
+            initial_candidate_appearance_id=verification_candidate_appearance_id,
             initial_verification_result=verification_result,
             max_repair_attempts=self.max_repair_attempts,
             step_prefix="chat.candidate.verify",

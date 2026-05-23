@@ -45,6 +45,35 @@ const EVENT_LABELS = {
   method_self_review_requested: "方法自验已请求",
   method_self_review_received: "方法自验已收到",
   method_update_candidate_recorded: "方法更新候选已记录",
+  split_proposal_requested: "分业申请已请求",
+  split_proposal_received: "分业申请已收到",
+  split_proposal_accepted: "分业申请已登记",
+  split_proposal_rejected: "分业申请已拒绝",
+  split_proposal_skipped: "分业登记已跳过",
+  frontier_dispatch_started: "前沿子业调度已开始",
+  frontier_dispatch_skipped: "前沿子业调度已跳过",
+  frontier_dispatch_finished: "前沿子业调度已结束",
+  child_job_dispatch_started: "子业调度已开始",
+  child_job_response_received: "子业响应已收到",
+  child_result_package_submitted: "子业果包已提交",
+  child_result_package_rejected: "子业果包已拒绝",
+  child_package_review_requested: "子业果包验收已请求",
+  child_package_review_received: "子业果包验收已收到",
+  child_package_review_accepted: "子业果包验收已接收",
+  child_package_review_rejected: "子业果包验收已打回",
+  child_package_repair_requested: "子业果包修复已请求",
+  child_package_repair_response_received: "子业果包修复响应已收到",
+  child_package_repair_package_submitted: "子业果包修复包已提交",
+  child_package_repair_rejected: "子业果包修复已拒绝",
+  child_package_repair_limit_reached: "子业果包修复上限已触达",
+  accepted_parent_reevaluation_recorded: "已接收果包父业重评估已记录",
+  parent_reevaluation_recorded: "父业重评估已记录",
+  parent_integration_requested: "父业整合已请求",
+  parent_integration_received: "父业整合响应已收到",
+  parent_integration_candidate_submitted: "父业整合候选已提交",
+  parent_integration_rejected: "父业整合已拒收",
+  parent_integration_skipped: "父业整合已跳过",
+  parent_integration_followup_registration_finished: "父业整合后续分业登记已结束",
   result_output_recorded: "结果输出已记录",
   chat_turn_finished: "对话轮次已完成",
   chat_session_finished: "对话会话已结束",
@@ -74,6 +103,30 @@ const ACTION_LABELS = {
   feedback_child_created: "反馈子业已创建",
   feedback_child_skipped: "反馈子业已跳过",
   acceptance_route_continued: "验收路由继续",
+  split_proposal_child_created: "分业申请子业已创建",
+  split_proposal_rejected: "分业申请已拒绝",
+  split_proposal_skipped: "分业登记已跳过",
+  frontier_dispatch_started: "前沿子业调度已开始",
+  frontier_dispatch_skipped: "前沿子业调度已跳过",
+  frontier_dispatch_finished: "前沿子业调度已结束",
+  child_dispatch_started: "子业调度已开始",
+  child_package_submitted: "子业果包已提交",
+  child_package_rejected: "子业果包已拒绝",
+  child_package_review_requested: "子业果包验收已请求",
+  child_package_review_rejected: "子业果包验收已打回",
+  child_package_accepted: "子业果包已接收",
+  child_package_repair_child_created: "子业果包修复业已创建",
+  child_package_repair_child_running: "子业果包修复业运行中",
+  child_package_repair_package_submitted: "子业果包修复包已提交",
+  child_package_repair_rejected: "子业果包修复已拒绝",
+  child_package_repair_limit_reached: "子业果包修复上限已触达",
+  parent_reevaluation_recorded: "父业重评估已记录",
+  accepted_parent_reevaluation_recorded: "已接收果包父业重评估已记录",
+  parent_integration_requested: "父业整合已请求",
+  parent_integration_candidate_submitted: "父业整合候选已提交",
+  parent_integration_rejected: "父业整合已拒收",
+  parent_integration_skipped: "父业整合已跳过",
+  parent_integration_followup_registered: "父业整合后续分业登记已记录",
 };
 
 const STATE_LABELS = {
@@ -86,6 +139,116 @@ const STATE_LABELS = {
   rejected: "已拒收",
   waiting_human: "等待人裁",
   abandoned: "废弃",
+};
+
+const FIELD_LABELS = {
+  input: "用户输入",
+  provider_messages: "Provider 请求消息",
+  parent_integration_prompt: "父业整合请求",
+  accepted_child_packages: "已接收子业果包",
+  child_package_review_prompt: "子业果包验收请求",
+  split_proposal_prompt: "分业申请请求",
+  repair_prompt: "修复请求",
+  acceptance_routing_prompt: "验收路由请求",
+  method_law_content: "法片段内容",
+  method_call_frame: "法调用帧",
+  response: "AI 响应",
+  child_job_response: "子业响应",
+  child_result_package: "子业果包",
+  child_package_review_judgment: "子业果包验收判断",
+  child_package_repair_response: "子业果包修复响应",
+  parent_integration_response: "父业整合响应",
+  parent_integration_candidate: "父业整合候选",
+  split_proposal_response: "分业申请响应",
+  repair_response: "修复响应",
+  verification_report: "校验报告",
+  result: "结果输出",
+  evidence: "证据",
+  child_package_review_evidence: "子业果包验收证据",
+  accepted_parent_reevaluation: "已接收果包父业重评估",
+  parent_reevaluation: "父业重评估",
+  parent_integration_evidence: "父业整合证据",
+  acceptance_routing_evidence: "验收路由证据",
+  verification_parent_evidence: "父业校验证据",
+  verification_gaps: "校验缺口",
+  job_tree_action: "业树动作",
+  job_state: "业状态",
+  process_step: "运行步骤",
+  process_phase: "运行阶段",
+  process_action: "运行动作",
+  process_status: "运行状态",
+  job_id: "业编号",
+  parent_job_id: "父业编号",
+  child_job_id: "子业编号",
+  root_job_id: "根业编号",
+  appearance_id: "相编号",
+  reason: "原因",
+  parent_integration_status: "父业整合状态",
+  consumed_child_jobs: "已消费子业编号",
+  integration_open_gaps: "整合开放缺口",
+  parent_integration_summary: "父业整合摘要",
+  acceptance_route_action: "验收路由动作",
+  acceptance_route_kind: "验收路由类型",
+  verification_status: "校验状态",
+};
+
+const STEP_FIELD_GROUPS = {
+  inputs: [
+    "input",
+    "provider_messages",
+    "parent_integration_prompt",
+    "accepted_child_packages",
+    "child_package_review_prompt",
+    "split_proposal_prompt",
+    "repair_prompt",
+    "acceptance_routing_prompt",
+    "method_law_content",
+    "method_call_frame",
+  ],
+  outputs: [
+    "response",
+    "child_job_response",
+    "child_result_package",
+    "child_package_review_judgment",
+    "child_package_repair_response",
+    "parent_integration_response",
+    "parent_integration_candidate",
+    "split_proposal_response",
+    "repair_response",
+    "verification_report",
+    "result",
+  ],
+  evidence: [
+    "evidence",
+    "child_package_review_evidence",
+    "accepted_parent_reevaluation",
+    "parent_reevaluation",
+    "parent_integration_evidence",
+    "acceptance_routing_evidence",
+    "verification_parent_evidence",
+    "verification_gaps",
+  ],
+  state: [
+    "job_tree_action",
+    "job_state",
+    "process_step",
+    "process_phase",
+    "process_action",
+    "process_status",
+    "job_id",
+    "parent_job_id",
+    "child_job_id",
+    "root_job_id",
+    "appearance_id",
+    "parent_integration_status",
+    "consumed_child_jobs",
+    "integration_open_gaps",
+    "parent_integration_summary",
+    "acceptance_route_action",
+    "acceptance_route_kind",
+    "verification_status",
+    "reason",
+  ],
 };
 
 const IMPORTANT_EVENTS = new Set([
@@ -111,6 +274,25 @@ const IMPORTANT_EVENTS = new Set([
   "acceptance_routing_evidence_submitted",
   "acceptance_routing_skipped",
   "feedback_job_created",
+  "split_proposal_requested",
+  "split_proposal_accepted",
+  "split_proposal_rejected",
+  "split_proposal_skipped",
+  "frontier_dispatch_started",
+  "frontier_dispatch_finished",
+  "child_job_dispatch_started",
+  "child_result_package_submitted",
+  "child_result_package_rejected",
+  "child_package_review_requested",
+  "child_package_review_accepted",
+  "child_package_review_rejected",
+  "accepted_parent_reevaluation_recorded",
+  "parent_reevaluation_recorded",
+  "parent_integration_requested",
+  "parent_integration_candidate_submitted",
+  "parent_integration_rejected",
+  "parent_integration_skipped",
+  "parent_integration_followup_registration_finished",
   "result_output_recorded",
   "chat_turn_finished",
   "chat_session_finished",
@@ -194,12 +376,16 @@ function emptyProjection() {
       repairs: 0,
       feedback: 0,
       routes: 0,
+      childReviews: 0,
+      parentIntegrations: 0,
       snapshots: 0,
     },
     milestones: {
       routeActions: [],
       repairCreated: 0,
       feedbackCreated: 0,
+      childPackageReviews: [],
+      parentIntegrations: [],
       verificationResults: [],
       resultOutput: false,
       runFinished: false,
@@ -353,6 +539,41 @@ function applyEvent(projection, event) {
       addNodeAction(node, event, eventLabel(event));
       if (data.appearance_id) {
         node.evidence.add(stringValue(data.appearance_id));
+      }
+    }
+  }
+
+  if (event.event_type.startsWith("child_package_review_")) {
+    projection.milestones.childPackageReviews.push({
+      index: event.index,
+      action: stringValue(data.child_package_review_action || data.parent_integration_status || event.event_type),
+      childJobId: stringValue(data.child_job_id || data.job_id),
+    });
+    const node = ensureNode(projection, data.child_job_id || data.job_id);
+    if (node) {
+      node.kind = node.kind === "unknown" ? "child" : node.kind;
+      addNodeAction(node, event, eventLabel(event));
+      if (event.event_type === "child_package_review_accepted") {
+        node.state = "accepted";
+      }
+    }
+  }
+
+  if (event.event_type.startsWith("parent_integration_")) {
+    projection.milestones.parentIntegrations.push({
+      index: event.index,
+      status: stringValue(data.parent_integration_status || event.event_type),
+      parentJobId: stringValue(data.parent_job_id || data.job_id),
+    });
+    const node = ensureNode(projection, data.parent_job_id || data.job_id);
+    if (node) {
+      addNodeAction(node, event, eventLabel(event));
+      if (data.parent_integration_candidate_appearance_id) {
+        node.candidates.add(stringValue(data.parent_integration_candidate_appearance_id));
+        node.state = "reviewing";
+      }
+      if (data.parent_integration_evidence_appearance_id) {
+        node.evidence.add(stringValue(data.parent_integration_evidence_appearance_id));
       }
     }
   }
@@ -581,6 +802,8 @@ function assignDepths(projection) {
   projection.stats.repairs = projection.milestones.repairCreated;
   projection.stats.feedback = projection.milestones.feedbackCreated;
   projection.stats.routes = projection.milestones.routeActions.length;
+  projection.stats.childReviews = projection.milestones.childPackageReviews.length;
+  projection.stats.parentIntegrations = projection.milestones.parentIntegrations.length;
 }
 
 function computeDepth(nodeId, parentByChild) {
@@ -669,6 +892,87 @@ function escapeHtml(value) {
     .replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;")
     .replace(/'/g, "&#39;");
+}
+
+function stepTraceFromEvent(event) {
+  if (!event) {
+    return null;
+  }
+  const data = event.data || {};
+  return {
+    index: event.index,
+    eventType: event.event_type,
+    label: eventLabel(event),
+    timestamp: event.timestamp,
+    message: event.message,
+    jobId: stringValue(data.job_id),
+    parentJobId: stringValue(data.parent_job_id),
+    childJobId: stringValue(data.child_job_id || data.verification_job_id || data.feedback_job_id),
+    action: stringValue(data.process_action || data.job_tree_action || data.acceptance_route_action || ""),
+    phase: stringValue(data.process_phase || phaseFromEvent(event)),
+    status: stringValue(data.process_status || data.parent_integration_status || data.verification_status || ""),
+    inputs: fieldsToTraceItems(data, STEP_FIELD_GROUPS.inputs),
+    outputs: fieldsToTraceItems(data, STEP_FIELD_GROUPS.outputs),
+    evidence: fieldsToTraceItems(data, STEP_FIELD_GROUPS.evidence),
+    state: fieldsToTraceItems(data, STEP_FIELD_GROUPS.state),
+    raw: event.raw,
+  };
+}
+
+function fieldsToTraceItems(data, keys) {
+  const items = [];
+  for (const key of keys) {
+    if (!Object.prototype.hasOwnProperty.call(data, key)) {
+      continue;
+    }
+    const value = data[key];
+    if (value === undefined || value === null || String(value) === "") {
+      continue;
+    }
+    items.push({
+      key,
+      label: FIELD_LABELS[key] || key,
+      value: prettyValue(value),
+    });
+  }
+  return items;
+}
+
+function prettyValue(value) {
+  if (typeof value !== "string") {
+    return JSON.stringify(value, null, 2);
+  }
+  const parsed = tryParseJson(value);
+  if (parsed !== null) {
+    return JSON.stringify(parsed, null, 2);
+  }
+  return value;
+}
+
+function phaseFromEvent(event) {
+  const type = stringValue(event && event.event_type);
+  if (type.includes("integration")) {
+    return "parent_integration";
+  }
+  if (type.includes("child_package")) {
+    return "child_package_review";
+  }
+  if (type.includes("split_proposal")) {
+    return "split_proposal";
+  }
+  if (type.includes("verification")) {
+    return "verification";
+  }
+  if (type.includes("repair")) {
+    return "repair";
+  }
+  if (type.includes("acceptance")) {
+    return "acceptance";
+  }
+  if (type.includes("provider")) {
+    return "provider";
+  }
+  return "";
 }
 
 function setupViewer() {
@@ -816,6 +1120,8 @@ function renderSummary(projection) {
     ["校验", projection.stats.verification],
     ["修复业", projection.stats.repairs],
     ["反馈业", projection.stats.feedback],
+    ["果包验收", projection.stats.childReviews],
+    ["父业整合", projection.stats.parentIntegrations],
     ["路由", route ? `${route.action || "未知"}` : "无"],
   ];
   document.getElementById("summaryGrid").innerHTML = items
@@ -929,6 +1235,7 @@ function kindLabel(kind) {
     verification: "校验业",
     repair: "修复业",
     feedback: "反馈业",
+    child: "子业",
     terminal: "终止",
     unknown: "业",
   }[kind] || "业";
@@ -937,9 +1244,17 @@ function kindLabel(kind) {
 function renderDetails(projection) {
   const currentEvent = projection.currentEvent;
   const selectedNode = VIEWER_STATE.selectedJobId ? projection.nodeMap.get(VIEWER_STATE.selectedJobId) : null;
-  document.getElementById("currentEventDetail").innerHTML = currentEvent
-    ? eventDetailHtml(currentEvent)
+  const trace = stepTraceFromEvent(currentEvent);
+  document.getElementById("currentStepTitle").textContent = trace
+    ? `${trace.index + 1}. ${trace.label}（${trace.eventType}）`
+    : "尚未重放事件。";
+  document.getElementById("stepActionDetail").innerHTML = trace
+    ? stepActionHtml(trace)
     : '<p class="muted">尚未重放事件。</p>';
+  document.getElementById("stepInput").innerHTML = traceItemsHtml(trace ? trace.inputs : []);
+  document.getElementById("stepOutput").innerHTML = traceItemsHtml(trace ? trace.outputs : []);
+  document.getElementById("stepEvidence").innerHTML = traceItemsHtml(trace ? trace.evidence : []);
+  document.getElementById("stepState").innerHTML = traceItemsHtml(trace ? trace.state : []);
   document.getElementById("selectedJobDetail").innerHTML = selectedNode
     ? nodeDetailHtml(selectedNode)
     : '<p class="muted">尚未出现业节点。</p>';
@@ -948,22 +1263,37 @@ function renderDetails(projection) {
     : "";
 }
 
-function eventDetailHtml(event) {
-  const data = event.data || {};
+function stepActionHtml(trace) {
   const rows = [
-    ["序号", event.index + 1],
-    ["类型", `${eventLabel(event)}（${event.event_type}）`],
-    ["时间", event.timestamp || "未记录"],
-    ["业编号", data.job_id || ""],
-    ["父业", data.parent_job_id || ""],
-    ["子业", data.child_job_id || data.verification_job_id || data.feedback_job_id || ""],
-    ["动作", data.job_tree_action ? ACTION_LABELS[data.job_tree_action] || data.job_tree_action : ""],
-    ["路由", data.acceptance_route_action || ""],
-    ["原因", data.reason || ""],
+    ["序号", trace.index + 1],
+    ["阶段", trace.phase],
+    ["动作", ACTION_LABELS[trace.action] || trace.action],
+    ["状态", trace.status],
+    ["时间", trace.timestamp || "未记录"],
+    ["业编号", trace.jobId],
+    ["父业", trace.parentJobId],
+    ["子业", trace.childJobId],
+    ["说明", trace.message],
   ];
   return rows
     .filter((row) => stringValue(row[1]))
     .map(([label, value]) => detailRow(label, value))
+    .join("");
+}
+
+function traceItemsHtml(items) {
+  if (!items || !items.length) {
+    return '<p class="trace-empty">当前步骤未记录该类信息。</p>';
+  }
+  return items
+    .map((item) => {
+      return `
+        <article class="trace-item">
+          <div class="trace-item-title">${escapeHtml(item.label)}（${escapeHtml(item.key)}）</div>
+          <pre class="trace-item-body">${escapeHtml(item.value)}</pre>
+        </article>
+      `;
+    })
     .join("");
 }
 
@@ -1000,11 +1330,14 @@ function renderTimeline(projection) {
   const start = Math.max(0, center - 70);
   const end = Math.min(events.length, Math.max(center + 50, 120));
   timeline.innerHTML = events.slice(start, end).map((event) => {
+    const trace = stepTraceFromEvent(event);
     const current = event.index === center && projection.cursor > 0 ? " current" : "";
     const important = isImportantEvent(event) ? " important" : "";
+    const ioRich = trace && (trace.inputs.length || trace.outputs.length || trace.evidence.length) ? " io-rich" : "";
+    const actionText = trace && trace.action ? ` | ${ACTION_LABELS[trace.action] || trace.action}` : "";
     return `
-      <li class="${current}${important}">
-        <span>${event.index + 1}. ${escapeHtml(eventLabel(event))}</span>
+      <li class="${current}${important}${ioRich}">
+        <span class="timeline-label">${event.index + 1}. ${escapeHtml(eventLabel(event))}${escapeHtml(actionText)}</span>
         <span class="timeline-time">${escapeHtml(event.timestamp || event.event_type)}</span>
       </li>
     `;
@@ -1029,6 +1362,7 @@ if (typeof module !== "undefined") {
   module.exports = {
     parseJsonl,
     projectEvents,
+    stepTraceFromEvent,
     isImportantEvent,
     eventLabel,
     closureText,

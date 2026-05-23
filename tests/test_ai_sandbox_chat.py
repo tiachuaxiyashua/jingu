@@ -131,6 +131,54 @@ def child_package_review_repair_json(
     )
 
 
+def parent_integration_json(
+    *,
+    consumed_child_jobs: list[str],
+    integrated_candidate_text: str = "integrated parent candidate",
+    evidence: list[str] | None = None,
+    open_gaps: list[str] | None = None,
+    suggested_follow_up_jobs: list[str] | None = None,
+    parent_consumption_summary: str = "parent consumed accepted child packages",
+) -> str:
+    return json.dumps(
+        {
+            "integrated_candidate_text": integrated_candidate_text,
+            "consumed_child_jobs": consumed_child_jobs,
+            "evidence": evidence or ["accepted child package was referenced by job id"],
+            "open_gaps": open_gaps or [],
+            "suggested_follow_up_jobs": suggested_follow_up_jobs or [],
+            "parent_consumption_summary": parent_consumption_summary,
+        },
+        ensure_ascii=False,
+    )
+
+
+def accepted_child_ids_from_messages(messages: list[dict[str, str]]) -> list[str]:
+    payload = json.loads(messages[-1]["content"])
+    return [
+        str(item["job_id"])
+        for item in payload.get("accepted_child_packages", [])
+        if item.get("job_id")
+    ]
+
+
+def parent_integration_response(
+    integrated_candidate_text: str = "integrated parent candidate",
+    *,
+    open_gaps: list[str] | None = None,
+    suggested_follow_up_jobs: list[str] | None = None,
+):
+    def _response(messages: list[dict[str, str]]) -> str:
+        return parent_integration_json(
+            consumed_child_jobs=accepted_child_ids_from_messages(messages),
+            integrated_candidate_text=integrated_candidate_text,
+            open_gaps=open_gaps,
+            suggested_follow_up_jobs=suggested_follow_up_jobs,
+        )
+
+    return _response
+
+
 def acceptance_continue_json(reason: str = "no routing child job needed") -> str:
     return json.dumps(
         {
@@ -183,7 +231,7 @@ def acceptance_repair_json(instruction: str = "Rewrite the candidate with the mi
 
 
 class FakeChatClient:
-    def __init__(self, content: str = "fake answer", responses: list[str] | None = None) -> None:
+    def __init__(self, content: str = "fake answer", responses: list | None = None) -> None:
         self.content = content
         self.responses = responses
         self.messages: list[str] = []
@@ -199,6 +247,8 @@ class FakeChatClient:
         if self.responses:
             index = len(self.message_batches) - 1
             content = self.responses[index] if index < len(self.responses) else self.responses[-1]
+            if callable(content):
+                content = content(messages)
             return ChatResponse(content=content, raw={"ok": True})
         system_text = "\n".join(
             message.get("content", "")
@@ -208,6 +258,8 @@ class FakeChatClient:
         latest_payload = messages[-1].get("content", "") if messages else ""
         if "分业申请提议位" in system_text or "available_method_catalog" in latest_payload:
             return ChatResponse(content=split_proposals_json(), raw={"ok": True})
+        if "父业整合位" in system_text or "integration_contract" in latest_payload:
+            return ChatResponse(content=parent_integration_response()(messages), raw={"ok": True})
         if "验收路由位" in system_text or "routing_contract" in latest_payload:
             return ChatResponse(content=acceptance_continue_json(), raw={"ok": True})
         if "feedback job" in system_text:
@@ -621,10 +673,12 @@ class AiSandboxChatTest(unittest.TestCase):
             self.assertIn("result package is missing fields", serialized)
             self.assertIn("split_proposal_child_created", serialized)
             self.assertIn("method_call_frames", serialized)
+            self.assertIn("parent_integration_skipped", serialized)
             readable_text = next(log_dir.glob("ai-run-*.md")).read_text(encoding="utf-8-sig")
             self.assertIn("分业申请已登记（split_proposal_accepted）", readable_text)
             self.assertIn("分业申请已拒绝（split_proposal_rejected）", readable_text)
             self.assertIn("子业果包已拒绝（child_result_package_rejected）", readable_text)
+            self.assertIn("父业整合已跳过（parent_integration_skipped）", readable_text)
 
     def test_runner_dispatches_child_package_and_registers_grandchild(self) -> None:
         with TemporaryDirectory() as tmp:
@@ -695,6 +749,10 @@ class AiSandboxChatTest(unittest.TestCase):
                         parent_consumption_summary="parent can consume the protagonist card"
                     ),
                     child_split_payload,
+                    parent_integration_response(
+                        "integrated root candidate with protagonist card"
+                    ),
+                    split_proposals_json(),
                     acceptance_continue_json(),
                 ]
             )
@@ -706,7 +764,7 @@ class AiSandboxChatTest(unittest.TestCase):
                 client=client,
             ).run("Create a story candidate and split blocking character work.")
 
-            self.assertEqual(answer, "root candidate that needs character work")
+            self.assertEqual(answer, "integrated root candidate with protagonist card")
             records = [
                 json.loads(line)
                 for line in next(log_dir.glob("ai-run-*.jsonl")).read_text(encoding="utf-8").splitlines()
@@ -721,6 +779,8 @@ class AiSandboxChatTest(unittest.TestCase):
             self.assertEqual(event_types.count("child_package_review_received"), 1)
             self.assertEqual(event_types.count("child_package_review_accepted"), 1)
             self.assertEqual(event_types.count("accepted_parent_reevaluation_recorded"), 1)
+            self.assertEqual(event_types.count("parent_integration_requested"), 1)
+            self.assertEqual(event_types.count("parent_integration_candidate_submitted"), 1)
             self.assertEqual(event_types.count("frontier_dispatch_finished"), 1)
             self.assertEqual(event_types.count("split_proposal_accepted"), 2)
             self.assertNotIn("child_result_package_rejected", event_types)
@@ -730,6 +790,7 @@ class AiSandboxChatTest(unittest.TestCase):
             self.assertIn("quantify protagonist vividness checks", serialized)
             self.assertIn("accepted_parent_reevaluation", serialized)
             self.assertIn("parent can consume the protagonist card", serialized)
+            self.assertIn("integrated root candidate with protagonist card", serialized)
             tree_actions = [
                 record["data"]["job_tree_action"]
                 for record in records
@@ -739,11 +800,18 @@ class AiSandboxChatTest(unittest.TestCase):
             self.assertIn("child_package_submitted", tree_actions)
             self.assertIn("child_package_accepted", tree_actions)
             self.assertIn("accepted_parent_reevaluation_recorded", tree_actions)
+            self.assertIn("parent_integration_candidate_submitted", tree_actions)
             tree_snapshots = [
                 json.loads(record["data"]["tree_snapshot"])
                 for record in records
                 if record["event_type"] == "job_tree_snapshot_recorded"
             ]
+            final_root_nodes = [
+                node
+                for node in tree_snapshots[-1]["nodes"]
+                if node["job_id"] == tree_snapshots[-1]["root_job_id"]
+            ]
+            self.assertEqual(final_root_nodes[0]["state"], "reviewing")
             self.assertTrue(
                 any(
                     node["target"] == "quantify protagonist vividness checks"
@@ -755,6 +823,7 @@ class AiSandboxChatTest(unittest.TestCase):
             self.assertIn("子业果包已提交（child_result_package_submitted）", readable_text)
             self.assertIn("子业果包验收已接收（child_package_review_accepted）", readable_text)
             self.assertIn("已接收果包父业重评估已记录（accepted_parent_reevaluation_recorded）", readable_text)
+            self.assertIn("父业整合候选已提交（parent_integration_candidate_submitted）", readable_text)
             self.assertNotIn("????", readable_text)
 
     def test_runner_repairs_child_package_before_acceptance(self) -> None:
@@ -813,6 +882,8 @@ class AiSandboxChatTest(unittest.TestCase):
                         parent_consumption_summary="parent can consume the repaired package"
                     ),
                     split_proposals_json(),
+                    parent_integration_response("integrated root candidate after repaired package"),
+                    split_proposals_json(),
                     acceptance_continue_json(),
                 ]
             )
@@ -824,7 +895,7 @@ class AiSandboxChatTest(unittest.TestCase):
                 client=client,
             ).run("Create a child package and repair it if review finds evidence gaps.")
 
-            self.assertEqual(answer, "root candidate")
+            self.assertEqual(answer, "integrated root candidate after repaired package")
             records = [
                 json.loads(line)
                 for line in next(log_dir.glob("ai-run-*.jsonl")).read_text(encoding="utf-8").splitlines()
@@ -837,6 +908,7 @@ class AiSandboxChatTest(unittest.TestCase):
             self.assertEqual(event_types.count("child_package_repair_package_submitted"), 1)
             self.assertEqual(event_types.count("child_package_review_accepted"), 1)
             self.assertEqual(event_types.count("accepted_parent_reevaluation_recorded"), 1)
+            self.assertEqual(event_types.count("parent_integration_candidate_submitted"), 1)
             serialized = "\n".join(json.dumps(record, ensure_ascii=False) for record in records)
             self.assertIn("Add one measurable check and threshold.", serialized)
             self.assertIn("repaired package", serialized)
@@ -849,6 +921,65 @@ class AiSandboxChatTest(unittest.TestCase):
             self.assertIn("child_package_repair_child_created", tree_actions)
             self.assertIn("child_package_repair_package_submitted", tree_actions)
             self.assertIn("child_package_accepted", tree_actions)
+
+    def test_runner_rejects_invalid_parent_integration_without_mutating_parent_candidate(self) -> None:
+        with TemporaryDirectory() as tmp:
+            workspace = Path(tmp)
+            sandbox = workspace / "sandbox"
+            log_dir = workspace / "logs"
+            method_path = write_method_file(workspace)
+            child_method = workspace / ".agents" / "skills" / "child-method" / "SKILL.md"
+            child_method.parent.mkdir(parents=True)
+            child_method.write_text("# Child Method\nReturn packages.", encoding="utf-8")
+            root_split_payload = split_proposals_json(
+                [
+                    {
+                        "target": "accepted child with invalid parent integration",
+                        "blocking_reason": "parent needs child material",
+                        "output_contract": "valid package",
+                        "acceptance_criteria": "package is accepted before parent integration",
+                        "estimated_effort": 1,
+                        "depth_limit": 3,
+                        "required_context_gaps": [],
+                        "method_path": str(child_method),
+                        "method_binding_reason": "local child method",
+                        "method_return_point": "return package to parent",
+                    }
+                ]
+            )
+            client = FakeChatClient(
+                responses=[
+                    "root candidate before integration",
+                    method_review_json(),
+                    root_split_payload,
+                    child_result_package_json(conclusion="accepted child package"),
+                    child_package_review_accept_json(),
+                    split_proposals_json(),
+                    "not json",
+                    acceptance_continue_json(),
+                ]
+            )
+
+            answer = AiSandboxRunner(
+                sandbox_path=sandbox,
+                log_dir=log_dir,
+                method_path=method_path,
+                client=client,
+            ).run("Create child material but make parent integration invalid.")
+
+            self.assertEqual(answer, "root candidate before integration")
+            records = [
+                json.loads(line)
+                for line in next(log_dir.glob("ai-run-*.jsonl")).read_text(encoding="utf-8").splitlines()
+                if line.strip()
+            ]
+            event_types = [record["event_type"] for record in records]
+            self.assertEqual(event_types.count("parent_integration_requested"), 1)
+            self.assertEqual(event_types.count("parent_integration_rejected"), 1)
+            self.assertNotIn("parent_integration_candidate_submitted", event_types)
+            serialized = "\n".join(json.dumps(record, ensure_ascii=False) for record in records)
+            self.assertIn("parent integration response must be valid JSON", serialized)
+            self.assertIn("root candidate before integration", serialized)
 
     def test_runner_records_invalid_child_package_review_without_accepting(self) -> None:
         with TemporaryDirectory() as tmp:

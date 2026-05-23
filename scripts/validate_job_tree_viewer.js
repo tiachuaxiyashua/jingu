@@ -21,7 +21,13 @@ function parseArgs(argv) {
   const scenarios = [];
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index];
-    if (arg === "--expect-repair" || arg === "--expect-feedback" || arg === "--expect-closure") {
+    if (
+      arg === "--expect-repair" ||
+      arg === "--expect-feedback" ||
+      arg === "--expect-closure" ||
+      arg === "--expect-child-review" ||
+      arg === "--expect-parent-integration"
+    ) {
       const filePath = argv[index + 1];
       if (!filePath || filePath.startsWith("--")) {
         throw new Error(`${arg} requires a log path`);
@@ -46,6 +52,7 @@ function validateScenario(scenario) {
   const routeActions = projection.milestones.routeActions.map((route) => route.action);
   const nodeKinds = projection.nodes.map((node) => node.kind);
   const closure = viewer.closureText(projection);
+  const traces = events.map((event) => viewer.stepTraceFromEvent(event));
 
   if (scenario.expectation === "repair") {
     assert(routeActions.includes("repair"), "expected acceptance route action repair");
@@ -68,6 +75,36 @@ function validateScenario(scenario) {
     assert(projection.milestones.sandboxDestroyed, "expected sandbox destroyed milestone");
   }
 
+  if (scenario.expectation === "child-review") {
+    assert(
+      projection.milestones.childPackageReviews.length > 0,
+      "expected child package review milestones",
+    );
+    assert(
+      traces.some((trace) => trace && trace.inputs.some((item) => item.key === "child_package_review_prompt")),
+      "expected child package review input trace",
+    );
+    assert(
+      traces.some((trace) => trace && trace.outputs.some((item) => item.key === "child_package_review_judgment")),
+      "expected child package review output trace",
+    );
+  }
+
+  if (scenario.expectation === "parent-integration") {
+    assert(
+      projection.milestones.parentIntegrations.length > 0,
+      "expected parent integration milestones",
+    );
+    assert(
+      traces.some((trace) => trace && trace.inputs.some((item) => item.key === "parent_integration_prompt")),
+      "expected parent integration input trace",
+    );
+    assert(
+      traces.some((trace) => trace && trace.outputs.some((item) => item.key === "parent_integration_candidate")),
+      "expected parent integration candidate output trace",
+    );
+  }
+
   console.log(
     [
       `ok ${scenario.expectation}`,
@@ -75,6 +112,8 @@ function validateScenario(scenario) {
       `events=${events.length}`,
       `jobs=${projection.stats.jobs}`,
       `routes=${routeActions.join(",") || "none"}`,
+      `childReviews=${projection.stats.childReviews}`,
+      `parentIntegrations=${projection.stats.parentIntegrations}`,
       `closure=${closure}`,
     ].join(" | "),
   );
@@ -89,7 +128,9 @@ function assert(condition, message) {
 function printUsage() {
   console.error(
     "Usage: node scripts/validate_job_tree_viewer.js " +
-      "--expect-repair <log.jsonl> --expect-feedback <log.jsonl> --expect-closure <log.jsonl>",
+      "--expect-repair <log.jsonl> --expect-feedback <log.jsonl> " +
+      "--expect-child-review <log.jsonl> --expect-parent-integration <log.jsonl> " +
+      "--expect-closure <log.jsonl>",
   );
 }
 

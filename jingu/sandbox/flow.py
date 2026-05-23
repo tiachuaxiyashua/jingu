@@ -84,6 +84,14 @@ FLOW_CHILD_PACKAGE_REPAIR_REJECTED = "child_package_repair_rejected"
 FLOW_CHILD_PACKAGE_REPAIR_LIMIT_REACHED = "child_package_repair_limit_reached"
 FLOW_ACCEPTED_PARENT_REEVALUATION_RECORDED = "accepted_parent_reevaluation_recorded"
 FLOW_PARENT_REEVALUATION_RECORDED = "parent_reevaluation_recorded"
+FLOW_PARENT_INTEGRATION_REQUESTED = "parent_integration_requested"
+FLOW_PARENT_INTEGRATION_RECEIVED = "parent_integration_received"
+FLOW_PARENT_INTEGRATION_CANDIDATE_SUBMITTED = "parent_integration_candidate_submitted"
+FLOW_PARENT_INTEGRATION_REJECTED = "parent_integration_rejected"
+FLOW_PARENT_INTEGRATION_SKIPPED = "parent_integration_skipped"
+FLOW_PARENT_INTEGRATION_FOLLOWUP_REGISTRATION_FINISHED = (
+    "parent_integration_followup_registration_finished"
+)
 FLOW_RESULT_OUTPUT_RECORDED = "result_output_recorded"
 FLOW_CHAT_TURN_FINISHED = "chat_turn_finished"
 FLOW_CHAT_SESSION_FINISHED = "chat_session_finished"
@@ -166,6 +174,12 @@ EVENT_LABELS = {
     FLOW_CHILD_PACKAGE_REPAIR_LIMIT_REACHED: "子业果包修复上限已触达",
     FLOW_ACCEPTED_PARENT_REEVALUATION_RECORDED: "已接收果包父业重评估已记录",
     FLOW_PARENT_REEVALUATION_RECORDED: "父业重评估已记录",
+    FLOW_PARENT_INTEGRATION_REQUESTED: "父业整合已请求",
+    FLOW_PARENT_INTEGRATION_RECEIVED: "父业整合响应已收到",
+    FLOW_PARENT_INTEGRATION_CANDIDATE_SUBMITTED: "父业整合候选已提交",
+    FLOW_PARENT_INTEGRATION_REJECTED: "父业整合已拒收",
+    FLOW_PARENT_INTEGRATION_SKIPPED: "父业整合已跳过",
+    FLOW_PARENT_INTEGRATION_FOLLOWUP_REGISTRATION_FINISHED: "父业整合后续分业登记已结束",
     FLOW_RESULT_OUTPUT_RECORDED: "结果输出已记录",
     FLOW_CHAT_TURN_FINISHED: "对话轮次已完成",
     FLOW_CHAT_SESSION_FINISHED: "对话会话已结束",
@@ -250,6 +264,17 @@ FIELD_LABELS = {
     "parent_job_id": "父业编号",
     "parent_reevaluation": "父业重评估",
     "accepted_parent_reevaluation": "已接收果包父业重评估",
+    "accepted_child_packages": "已接收子业果包",
+    "consumed_child_jobs": "已消费子业编号",
+    "integration_open_gaps": "整合开放缺口",
+    "parent_integration_candidate": "父业整合候选",
+    "parent_integration_candidate_appearance_id": "父业整合候选相编号",
+    "parent_integration_evidence": "父业整合证据",
+    "parent_integration_evidence_appearance_id": "父业整合证据相编号",
+    "parent_integration_prompt": "父业整合请求内容",
+    "parent_integration_response": "父业整合响应",
+    "parent_integration_status": "父业整合状态",
+    "parent_integration_summary": "父业整合摘要",
     "parent_consumption_summary": "父业消费摘要",
     "process_action": "运行动作",
     "process_detail": "运行细节",
@@ -342,6 +367,11 @@ JOB_TREE_ACTION_LABELS = {
     "parent_verification_evidence_attached": "父业校验证据已挂载",
     "parent_reevaluation_recorded": "父业重评估已记录",
     "accepted_parent_reevaluation_recorded": "已接收果包父业重评估已记录",
+    "parent_integration_candidate_submitted": "父业整合候选已提交",
+    "parent_integration_rejected": "父业整合已拒收",
+    "parent_integration_requested": "父业整合已请求",
+    "parent_integration_skipped": "父业整合已跳过",
+    "parent_integration_followup_registered": "父业整合后续分业登记已记录",
     "root_created": "根业已创建",
     "repair_candidate_attached": "修复候选已挂载",
     "repair_child_created": "修复子业已创建",
@@ -555,8 +585,15 @@ def _should_render_as_block(key: str, value: str) -> bool:
         "child_package_review_prompt",
         "child_result_package",
         "accepted_parent_reevaluation",
+        "accepted_child_packages",
         "frontier_dispatch_summary",
+        "integration_open_gaps",
         "parent_reevaluation",
+        "parent_integration_candidate",
+        "parent_integration_evidence",
+        "parent_integration_prompt",
+        "parent_integration_response",
+        "parent_integration_summary",
         "parent_consumption_summary",
         "provider_delta_text",
         "repair_prompt",

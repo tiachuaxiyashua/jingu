@@ -46,6 +46,14 @@
       <section class="summary-grid" id="summaryGrid"></section>
 
       <section class="workspace">
+        <aside class="timeline-panel" aria-label="步骤时间线">
+          <div class="panel-heading">
+            <h2>步骤时间线</h2>
+            <span id="timelineHint">逐步重放全部事件，关键动作加重</span>
+          </div>
+          <ol id="timeline" class="timeline"></ol>
+        </aside>
+
         <section class="graph-panel" aria-label="业树图">
           <div class="panel-heading">
             <h2>业树投影</h2>
@@ -56,8 +64,9 @@
 
         <aside class="detail-panel" aria-label="检查详情">
           <section>
-            <h2>当前事件</h2>
-            <div id="currentEventDetail" class="detail-block"></div>
+            <h2>当前步骤</h2>
+            <div id="currentStepTitle" class="step-title muted">尚未重放事件。</div>
+            <div id="stepActionDetail" class="detail-block"></div>
           </section>
           <section>
             <h2>选中业</h2>
@@ -66,14 +75,26 @@
         </aside>
       </section>
 
-      <section class="lower-grid">
-        <section class="timeline-panel">
-          <div class="panel-heading">
-            <h2>事件时间线</h2>
-            <span id="timelineHint">显示当前附近事件，关键事件加重</span>
-          </div>
-          <ol id="timeline" class="timeline"></ol>
+      <section class="trace-grid" aria-label="当前步骤输入输出">
+        <section class="trace-pane">
+          <h2>输入</h2>
+          <div id="stepInput" class="trace-content"></div>
         </section>
+        <section class="trace-pane">
+          <h2>输出</h2>
+          <div id="stepOutput" class="trace-content"></div>
+        </section>
+        <section class="trace-pane">
+          <h2>证据 / 验收</h2>
+          <div id="stepEvidence" class="trace-content"></div>
+        </section>
+        <section class="trace-pane">
+          <h2>状态变化</h2>
+          <div id="stepState" class="trace-content"></div>
+        </section>
+      </section>
+
+      <section class="raw-band">
         <section class="raw-panel">
           <h2>原始证据</h2>
           <pre id="rawEvent" class="raw-json"></pre>

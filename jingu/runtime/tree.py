@@ -356,10 +356,10 @@ class TreeService:
                             "evidence_appearance_id": child.get("evidence_appearance_id"),
                         }
                     )
-                package = self._read_package_from_job(connection, child)
-                if package:
-                    for question in package.get("open_questions", []):
-                        open_questions.append({"job_id": child["job_id"], "question": question})
+                    package = self._read_package_from_job(connection, child)
+                    if package:
+                        for question in package.get("open_questions", []):
+                            open_questions.append({"job_id": child["job_id"], "question": question})
 
             return {
                 "parent_job_id": job_id,
