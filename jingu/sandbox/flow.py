@@ -73,6 +73,16 @@ FLOW_CHILD_JOB_DISPATCH_STARTED = "child_job_dispatch_started"
 FLOW_CHILD_JOB_RESPONSE_RECEIVED = "child_job_response_received"
 FLOW_CHILD_RESULT_PACKAGE_SUBMITTED = "child_result_package_submitted"
 FLOW_CHILD_RESULT_PACKAGE_REJECTED = "child_result_package_rejected"
+FLOW_CHILD_PACKAGE_REVIEW_REQUESTED = "child_package_review_requested"
+FLOW_CHILD_PACKAGE_REVIEW_RECEIVED = "child_package_review_received"
+FLOW_CHILD_PACKAGE_REVIEW_ACCEPTED = "child_package_review_accepted"
+FLOW_CHILD_PACKAGE_REVIEW_REJECTED = "child_package_review_rejected"
+FLOW_CHILD_PACKAGE_REPAIR_REQUESTED = "child_package_repair_requested"
+FLOW_CHILD_PACKAGE_REPAIR_RESPONSE_RECEIVED = "child_package_repair_response_received"
+FLOW_CHILD_PACKAGE_REPAIR_PACKAGE_SUBMITTED = "child_package_repair_package_submitted"
+FLOW_CHILD_PACKAGE_REPAIR_REJECTED = "child_package_repair_rejected"
+FLOW_CHILD_PACKAGE_REPAIR_LIMIT_REACHED = "child_package_repair_limit_reached"
+FLOW_ACCEPTED_PARENT_REEVALUATION_RECORDED = "accepted_parent_reevaluation_recorded"
 FLOW_PARENT_REEVALUATION_RECORDED = "parent_reevaluation_recorded"
 FLOW_RESULT_OUTPUT_RECORDED = "result_output_recorded"
 FLOW_CHAT_TURN_FINISHED = "chat_turn_finished"
@@ -145,6 +155,16 @@ EVENT_LABELS = {
     FLOW_CHILD_JOB_RESPONSE_RECEIVED: "子业响应已收到",
     FLOW_CHILD_RESULT_PACKAGE_SUBMITTED: "子业果包已提交",
     FLOW_CHILD_RESULT_PACKAGE_REJECTED: "子业果包已拒绝",
+    FLOW_CHILD_PACKAGE_REVIEW_REQUESTED: "子业果包验收已请求",
+    FLOW_CHILD_PACKAGE_REVIEW_RECEIVED: "子业果包验收已收到",
+    FLOW_CHILD_PACKAGE_REVIEW_ACCEPTED: "子业果包验收已接收",
+    FLOW_CHILD_PACKAGE_REVIEW_REJECTED: "子业果包验收已打回",
+    FLOW_CHILD_PACKAGE_REPAIR_REQUESTED: "子业果包修复已请求",
+    FLOW_CHILD_PACKAGE_REPAIR_RESPONSE_RECEIVED: "子业果包修复响应已收到",
+    FLOW_CHILD_PACKAGE_REPAIR_PACKAGE_SUBMITTED: "子业果包修复包已提交",
+    FLOW_CHILD_PACKAGE_REPAIR_REJECTED: "子业果包修复已拒绝",
+    FLOW_CHILD_PACKAGE_REPAIR_LIMIT_REACHED: "子业果包修复上限已触达",
+    FLOW_ACCEPTED_PARENT_REEVALUATION_RECORDED: "已接收果包父业重评估已记录",
     FLOW_PARENT_REEVALUATION_RECORDED: "父业重评估已记录",
     FLOW_RESULT_OUTPUT_RECORDED: "结果输出已记录",
     FLOW_CHAT_TURN_FINISHED: "对话轮次已完成",
@@ -173,6 +193,17 @@ FIELD_LABELS = {
     "child_job_id": "子业编号",
     "child_job_response": "子业响应",
     "child_method_path": "子业方法路径",
+    "child_package_repair_attempt": "子业果包修复轮次",
+    "child_package_repair_instruction": "子业果包修复指令",
+    "child_package_repair_job_id": "子业果包修复业编号",
+    "child_package_repair_limit": "子业果包修复上限",
+    "child_package_repair_response": "子业果包修复响应",
+    "child_package_review_action": "子业果包验收动作",
+    "child_package_review_checks": "子业果包验收检查",
+    "child_package_review_evidence": "子业果包验收证据",
+    "child_package_review_evidence_id": "子业果包验收证据相编号",
+    "child_package_review_judgment": "子业果包验收判断",
+    "child_package_review_prompt": "子业果包验收请求内容",
     "child_result_package": "子业果包",
     "child_result_package_candidate_id": "子业果包候选相编号",
     "child_result_package_evidence_id": "子业果包证据相编号",
@@ -218,6 +249,8 @@ FIELD_LABELS = {
     "method_catalog": "可用法目录",
     "parent_job_id": "父业编号",
     "parent_reevaluation": "父业重评估",
+    "accepted_parent_reevaluation": "已接收果包父业重评估",
+    "parent_consumption_summary": "父业消费摘要",
     "process_action": "运行动作",
     "process_detail": "运行细节",
     "process_phase": "运行阶段",
@@ -286,7 +319,15 @@ FIELD_LABELS = {
 JOB_TREE_ACTION_LABELS = {
     "candidate_attached": "候选结果已挂载",
     "child_dispatch_started": "子业调度已开始",
+    "child_package_accepted": "子业果包已接收",
+    "child_package_repair_child_created": "子业果包修复业已创建",
+    "child_package_repair_child_running": "子业果包修复业运行中",
+    "child_package_repair_package_submitted": "子业果包修复包已提交",
+    "child_package_repair_rejected": "子业果包修复已拒绝",
+    "child_package_repair_limit_reached": "子业果包修复上限已触达",
     "child_package_rejected": "子业果包已拒绝",
+    "child_package_review_rejected": "子业果包验收已打回",
+    "child_package_review_requested": "子业果包验收已请求",
     "child_package_submitted": "子业果包已提交",
     "evidence_attached": "证据已挂载",
     "feedback_child_created": "反馈子业已创建",
@@ -300,6 +341,7 @@ JOB_TREE_ACTION_LABELS = {
     "method_call_frame_opened": "法调用帧已打开",
     "parent_verification_evidence_attached": "父业校验证据已挂载",
     "parent_reevaluation_recorded": "父业重评估已记录",
+    "accepted_parent_reevaluation_recorded": "已接收果包父业重评估已记录",
     "root_created": "根业已创建",
     "repair_candidate_attached": "修复候选已挂载",
     "repair_child_created": "修复子业已创建",
@@ -505,9 +547,17 @@ def _should_render_as_block(key: str, value: str) -> bool:
         "method_budget",
         "method_catalog",
         "child_job_response",
+        "child_package_repair_instruction",
+        "child_package_repair_response",
+        "child_package_review_checks",
+        "child_package_review_evidence",
+        "child_package_review_judgment",
+        "child_package_review_prompt",
         "child_result_package",
+        "accepted_parent_reevaluation",
         "frontier_dispatch_summary",
         "parent_reevaluation",
+        "parent_consumption_summary",
         "provider_delta_text",
         "repair_prompt",
         "repair_response",

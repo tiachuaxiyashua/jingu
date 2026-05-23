@@ -19,6 +19,7 @@ from jingu.sandbox.paths import (
     resolve_sandbox_path,
 )
 from jingu.sandbox.runner import (
+    DEFAULT_MAX_CHILD_PACKAGE_REPAIR_ATTEMPTS,
     DEFAULT_MAX_FRONTIER_DISPATCHES,
     DEFAULT_MAX_REPAIR_ATTEMPTS,
     AiSandboxChatSession,
@@ -141,6 +142,11 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         default=DEFAULT_MAX_FRONTIER_DISPATCHES,
     )
+    ai_run.add_argument(
+        "--max-child-package-repair-attempts",
+        type=int,
+        default=DEFAULT_MAX_CHILD_PACKAGE_REPAIR_ATTEMPTS,
+    )
     ai_monitor = ai_subparsers.add_parser("monitor", help="Monitor the current AI sandbox flow.")
     ai_monitor.add_argument("--sandbox", type=Path)
     ai_monitor.add_argument("--log-dir", type=Path)
@@ -155,6 +161,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--max-frontier-dispatches",
         type=int,
         default=DEFAULT_MAX_FRONTIER_DISPATCHES,
+    )
+    ai_chat.add_argument(
+        "--max-child-package-repair-attempts",
+        type=int,
+        default=DEFAULT_MAX_CHILD_PACKAGE_REPAIR_ATTEMPTS,
     )
 
     return parser
@@ -266,6 +277,7 @@ def run_result_only(args: argparse.Namespace) -> str:
             method_path=args.method,
             max_repair_attempts=args.max_repair_attempts,
             max_frontier_dispatches=args.max_frontier_dispatches,
+            max_child_package_repair_attempts=args.max_child_package_repair_attempts,
         ).run(args.message)
     raise JinguRuntimeError("unknown result-only command")
 
@@ -295,6 +307,7 @@ def run_chat(args: argparse.Namespace) -> None:
         method_path=args.method,
         max_repair_attempts=args.max_repair_attempts,
         max_frontier_dispatches=args.max_frontier_dispatches,
+        max_child_package_repair_attempts=args.max_child_package_repair_attempts,
     )
     session.start()
     print("Jingu AI chat started. Type /exit to finish.", flush=True)

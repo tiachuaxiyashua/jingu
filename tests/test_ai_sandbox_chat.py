@@ -83,6 +83,54 @@ def child_result_package_json(
     )
 
 
+def child_package_review_accept_json(
+    *,
+    reason: str = "package satisfies the child contract",
+    parent_consumption_summary: str = "parent can consume the accepted child package",
+) -> str:
+    return json.dumps(
+        {
+            "review_action": "accept",
+            "checks": [
+                {
+                    "check_id": "contract",
+                    "criterion": "package satisfies child acceptance criteria",
+                    "status": "passed",
+                    "evidence": "package has conclusion, artifacts, and evidence summary",
+                }
+            ],
+            "evidence": ["independent review found the package consumable"],
+            "reason": reason,
+            "repair_instruction": "",
+            "parent_consumption_summary": parent_consumption_summary,
+        },
+        ensure_ascii=False,
+    )
+
+
+def child_package_review_repair_json(
+    instruction: str = "Add measurable evidence before the parent consumes this package.",
+) -> str:
+    return json.dumps(
+        {
+            "review_action": "repair",
+            "checks": [
+                {
+                    "check_id": "measurable_evidence",
+                    "criterion": "package includes measurable evidence",
+                    "status": "failed",
+                    "evidence": "package evidence is not measurable enough",
+                }
+            ],
+            "evidence": ["independent review found a repairable evidence gap"],
+            "reason": "the child package is repairable but not yet consumable",
+            "repair_instruction": instruction,
+            "parent_consumption_summary": "parent cannot consume the package before repair",
+        },
+        ensure_ascii=False,
+    )
+
+
 def acceptance_continue_json(reason: str = "no routing child job needed") -> str:
     return json.dumps(
         {
@@ -643,6 +691,9 @@ class AiSandboxChatTest(unittest.TestCase):
                         open_questions=["vividness checklist is not yet quantified"],
                         suggested_follow_up_jobs=["turn vividness into measurable checks"],
                     ),
+                    child_package_review_accept_json(
+                        parent_consumption_summary="parent can consume the protagonist card"
+                    ),
                     child_split_payload,
                     acceptance_continue_json(),
                 ]
@@ -666,7 +717,10 @@ class AiSandboxChatTest(unittest.TestCase):
             self.assertEqual(event_types.count("child_job_dispatch_started"), 1)
             self.assertEqual(event_types.count("child_job_response_received"), 1)
             self.assertEqual(event_types.count("child_result_package_submitted"), 1)
-            self.assertEqual(event_types.count("parent_reevaluation_recorded"), 1)
+            self.assertEqual(event_types.count("child_package_review_requested"), 1)
+            self.assertEqual(event_types.count("child_package_review_received"), 1)
+            self.assertEqual(event_types.count("child_package_review_accepted"), 1)
+            self.assertEqual(event_types.count("accepted_parent_reevaluation_recorded"), 1)
             self.assertEqual(event_types.count("frontier_dispatch_finished"), 1)
             self.assertEqual(event_types.count("split_proposal_accepted"), 2)
             self.assertNotIn("child_result_package_rejected", event_types)
@@ -674,7 +728,8 @@ class AiSandboxChatTest(unittest.TestCase):
             self.assertIn("protagonist card candidate", serialized)
             self.assertIn("vividness checklist is not yet quantified", serialized)
             self.assertIn("quantify protagonist vividness checks", serialized)
-            self.assertIn("parent_reevaluation", serialized)
+            self.assertIn("accepted_parent_reevaluation", serialized)
+            self.assertIn("parent can consume the protagonist card", serialized)
             tree_actions = [
                 record["data"]["job_tree_action"]
                 for record in records
@@ -682,7 +737,8 @@ class AiSandboxChatTest(unittest.TestCase):
             ]
             self.assertIn("child_dispatch_started", tree_actions)
             self.assertIn("child_package_submitted", tree_actions)
-            self.assertIn("parent_reevaluation_recorded", tree_actions)
+            self.assertIn("child_package_accepted", tree_actions)
+            self.assertIn("accepted_parent_reevaluation_recorded", tree_actions)
             tree_snapshots = [
                 json.loads(record["data"]["tree_snapshot"])
                 for record in records
@@ -697,8 +753,214 @@ class AiSandboxChatTest(unittest.TestCase):
             )
             readable_text = next(log_dir.glob("ai-run-*.md")).read_text(encoding="utf-8-sig")
             self.assertIn("子业果包已提交（child_result_package_submitted）", readable_text)
-            self.assertIn("父业重评估已记录（parent_reevaluation_recorded）", readable_text)
+            self.assertIn("子业果包验收已接收（child_package_review_accepted）", readable_text)
+            self.assertIn("已接收果包父业重评估已记录（accepted_parent_reevaluation_recorded）", readable_text)
             self.assertNotIn("????", readable_text)
+
+    def test_runner_repairs_child_package_before_acceptance(self) -> None:
+        with TemporaryDirectory() as tmp:
+            workspace = Path(tmp)
+            sandbox = workspace / "sandbox"
+            log_dir = workspace / "logs"
+            method_path = write_method_file(workspace)
+            child_method = workspace / ".agents" / "skills" / "child-method" / "SKILL.md"
+            child_method.parent.mkdir(parents=True)
+            child_method.write_text(
+                "\n".join(
+                    [
+                        "---",
+                        "name: child-method",
+                        "---",
+                        "# Child Method",
+                        "Repair child packages when review sends them back.",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            root_split_payload = split_proposals_json(
+                [
+                    {
+                        "target": "make evidence measurable",
+                        "blocking_reason": "parent needs measurable child evidence",
+                        "output_contract": "result package with measurable evidence",
+                        "acceptance_criteria": "evidence includes observable checks",
+                        "estimated_effort": 1,
+                        "depth_limit": 4,
+                        "required_context_gaps": [],
+                        "method_path": str(child_method),
+                        "method_binding_reason": "child method repairs evidence gaps",
+                        "method_return_point": "return measurable evidence to parent",
+                    }
+                ]
+            )
+            client = FakeChatClient(
+                responses=[
+                    "root candidate",
+                    method_review_json("checked root method use"),
+                    root_split_payload,
+                    child_result_package_json(
+                        conclusion="weak package",
+                        artifacts=["artifact without metric"],
+                        evidence_summary="evidence is vague",
+                    ),
+                    child_package_review_repair_json("Add one measurable check and threshold."),
+                    child_result_package_json(
+                        conclusion="repaired package",
+                        artifacts=["check: at least three observable details"],
+                        evidence_summary="threshold is explicit and parent-consumable",
+                    ),
+                    child_package_review_accept_json(
+                        parent_consumption_summary="parent can consume the repaired package"
+                    ),
+                    split_proposals_json(),
+                    acceptance_continue_json(),
+                ]
+            )
+
+            answer = AiSandboxRunner(
+                sandbox_path=sandbox,
+                log_dir=log_dir,
+                method_path=method_path,
+                client=client,
+            ).run("Create a child package and repair it if review finds evidence gaps.")
+
+            self.assertEqual(answer, "root candidate")
+            records = [
+                json.loads(line)
+                for line in next(log_dir.glob("ai-run-*.jsonl")).read_text(encoding="utf-8").splitlines()
+                if line.strip()
+            ]
+            event_types = [record["event_type"] for record in records]
+            self.assertEqual(event_types.count("child_package_review_rejected"), 1)
+            self.assertEqual(event_types.count("child_package_repair_requested"), 1)
+            self.assertEqual(event_types.count("child_package_repair_response_received"), 1)
+            self.assertEqual(event_types.count("child_package_repair_package_submitted"), 1)
+            self.assertEqual(event_types.count("child_package_review_accepted"), 1)
+            self.assertEqual(event_types.count("accepted_parent_reevaluation_recorded"), 1)
+            serialized = "\n".join(json.dumps(record, ensure_ascii=False) for record in records)
+            self.assertIn("Add one measurable check and threshold.", serialized)
+            self.assertIn("repaired package", serialized)
+            self.assertIn("parent can consume the repaired package", serialized)
+            tree_actions = [
+                record["data"]["job_tree_action"]
+                for record in records
+                if record["event_type"] == "job_tree_management_recorded"
+            ]
+            self.assertIn("child_package_repair_child_created", tree_actions)
+            self.assertIn("child_package_repair_package_submitted", tree_actions)
+            self.assertIn("child_package_accepted", tree_actions)
+
+    def test_runner_records_invalid_child_package_review_without_accepting(self) -> None:
+        with TemporaryDirectory() as tmp:
+            workspace = Path(tmp)
+            sandbox = workspace / "sandbox"
+            log_dir = workspace / "logs"
+            method_path = write_method_file(workspace)
+            child_method = workspace / ".agents" / "skills" / "child-method" / "SKILL.md"
+            child_method.parent.mkdir(parents=True)
+            child_method.write_text("# Child Method\nReturn packages.", encoding="utf-8")
+            root_split_payload = split_proposals_json(
+                [
+                    {
+                        "target": "review invalid response child",
+                        "blocking_reason": "parent needs to see invalid review handling",
+                        "output_contract": "valid package",
+                        "acceptance_criteria": "review must be valid before acceptance",
+                        "estimated_effort": 1,
+                        "depth_limit": 3,
+                        "required_context_gaps": [],
+                        "method_path": str(child_method),
+                        "method_binding_reason": "local child method",
+                        "method_return_point": "return package to parent",
+                    }
+                ]
+            )
+            client = FakeChatClient(
+                responses=[
+                    "root candidate",
+                    method_review_json(),
+                    root_split_payload,
+                    child_result_package_json(),
+                    "not json",
+                    acceptance_continue_json(),
+                ]
+            )
+
+            AiSandboxRunner(
+                sandbox_path=sandbox,
+                log_dir=log_dir,
+                method_path=method_path,
+                client=client,
+            ).run("Create a child package but make review invalid.")
+
+            records = [
+                json.loads(line)
+                for line in next(log_dir.glob("ai-run-*.jsonl")).read_text(encoding="utf-8").splitlines()
+                if line.strip()
+            ]
+            event_types = [record["event_type"] for record in records]
+            self.assertEqual(event_types.count("child_package_review_rejected"), 1)
+            self.assertEqual(event_types.count("parent_reevaluation_recorded"), 1)
+            self.assertNotIn("child_package_review_accepted", event_types)
+            self.assertNotIn("accepted_parent_reevaluation_recorded", event_types)
+            serialized = "\n".join(json.dumps(record, ensure_ascii=False) for record in records)
+            self.assertIn("child package review response must be valid JSON", serialized)
+
+    def test_runner_stops_child_package_repair_at_limit(self) -> None:
+        with TemporaryDirectory() as tmp:
+            workspace = Path(tmp)
+            sandbox = workspace / "sandbox"
+            log_dir = workspace / "logs"
+            method_path = write_method_file(workspace)
+            child_method = workspace / ".agents" / "skills" / "child-method" / "SKILL.md"
+            child_method.parent.mkdir(parents=True)
+            child_method.write_text("# Child Method\nReturn packages.", encoding="utf-8")
+            root_split_payload = split_proposals_json(
+                [
+                    {
+                        "target": "repair limit child",
+                        "blocking_reason": "parent needs repair limit visibility",
+                        "output_contract": "valid package",
+                        "acceptance_criteria": "repair is limited",
+                        "estimated_effort": 1,
+                        "depth_limit": 3,
+                        "required_context_gaps": [],
+                        "method_path": str(child_method),
+                        "method_binding_reason": "local child method",
+                        "method_return_point": "return package to parent",
+                    }
+                ]
+            )
+            client = FakeChatClient(
+                responses=[
+                    "root candidate",
+                    method_review_json(),
+                    root_split_payload,
+                    child_result_package_json(),
+                    child_package_review_repair_json("Repair would exceed configured budget."),
+                    acceptance_continue_json(),
+                ]
+            )
+
+            AiSandboxRunner(
+                sandbox_path=sandbox,
+                log_dir=log_dir,
+                method_path=method_path,
+                client=client,
+                max_child_package_repair_attempts=0,
+            ).run("Create a child package but stop repair at the configured limit.")
+
+            records = [
+                json.loads(line)
+                for line in next(log_dir.glob("ai-run-*.jsonl")).read_text(encoding="utf-8").splitlines()
+                if line.strip()
+            ]
+            event_types = [record["event_type"] for record in records]
+            self.assertEqual(event_types.count("child_package_repair_limit_reached"), 1)
+            self.assertNotIn("child_package_repair_requested", event_types)
+            self.assertNotIn("child_package_review_accepted", event_types)
+            serialized = "\n".join(json.dumps(record, ensure_ascii=False) for record in records)
+            self.assertIn("Repair would exceed configured budget.", serialized)
 
     def test_runner_repairs_failed_verification_candidate(self) -> None:
         with TemporaryDirectory() as tmp:

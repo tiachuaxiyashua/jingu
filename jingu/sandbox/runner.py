@@ -29,7 +29,17 @@ from jingu.sandbox.flow import (
     FLOW_ACCEPTANCE_ROUTING_RECEIVED,
     FLOW_ACCEPTANCE_ROUTING_REQUESTED,
     FLOW_ACCEPTANCE_ROUTING_SKIPPED,
+    FLOW_ACCEPTED_PARENT_REEVALUATION_RECORDED,
     FLOW_CANDIDATE_SUBMITTED,
+    FLOW_CHILD_PACKAGE_REPAIR_LIMIT_REACHED,
+    FLOW_CHILD_PACKAGE_REPAIR_PACKAGE_SUBMITTED,
+    FLOW_CHILD_PACKAGE_REPAIR_REJECTED,
+    FLOW_CHILD_PACKAGE_REPAIR_REQUESTED,
+    FLOW_CHILD_PACKAGE_REPAIR_RESPONSE_RECEIVED,
+    FLOW_CHILD_PACKAGE_REVIEW_ACCEPTED,
+    FLOW_CHILD_PACKAGE_REVIEW_RECEIVED,
+    FLOW_CHILD_PACKAGE_REVIEW_REJECTED,
+    FLOW_CHILD_PACKAGE_REVIEW_REQUESTED,
     FLOW_CHILD_JOB_DISPATCH_STARTED,
     FLOW_CHILD_JOB_RESPONSE_RECEIVED,
     FLOW_CHILD_RESULT_PACKAGE_REJECTED,
@@ -122,8 +132,10 @@ VERIFICATION_FEEDBACK_JOB_TARGET = "处理候选校验未解决问题"
 VERIFICATION_FEEDBACK_JOB_ACCEPTANCE_CRITERIA = "产出下一步修复方向、人工反馈问题或方法更新候选，并引用校验证据。"
 DEFAULT_MAX_REPAIR_ATTEMPTS = 1
 DEFAULT_MAX_FRONTIER_DISPATCHES = 2
+DEFAULT_MAX_CHILD_PACKAGE_REPAIR_ATTEMPTS = 1
 ACCEPTANCE_ROUTE_ACTIONS = frozenset({"continue", "repair", "feedback"})
 ACCEPTANCE_FEEDBACK_JOB_KINDS = frozenset({"high_value", "directional"})
+CHILD_PACKAGE_REVIEW_ACTIONS = frozenset({"accept", "repair"})
 FRONTIER_DISPATCH_STATES = frozenset({STATE_DRAFT, STATE_READY, STATE_RUNNING})
 CHILD_RESULT_PACKAGE_FIELDS = (
     "conclusion",
@@ -663,8 +675,12 @@ def run_frontier_child_dispatch(
     step_prefix: str,
     turn: str | None = None,
     max_child_dispatches: int = DEFAULT_MAX_FRONTIER_DISPATCHES,
+    max_child_package_repair_attempts: int = DEFAULT_MAX_CHILD_PACKAGE_REPAIR_ATTEMPTS,
 ) -> dict[str, Any]:
     max_child_dispatches = normalize_max_frontier_dispatches(max_child_dispatches)
+    max_child_package_repair_attempts = normalize_max_child_package_repair_attempts(
+        max_child_package_repair_attempts
+    )
     tree_service = TreeService(service.paths.workspace)
     frontier_payload = tree_service.get_frontier(root_job_id)
     active_child_frontier = [
@@ -927,58 +943,97 @@ def run_frontier_child_dispatch(
                 **package_data,
             )
 
-            try:
-                child_split_result = run_split_proposal_registration(
-                    flow=flow,
-                    service=service,
-                    client=client,
-                    method=child_method,
-                    parent_job_id=child_job_id,
-                    user_input=user_input,
-                    candidate_text=package_text,
-                    candidate_appearance_id=candidate_id,
-                    step_prefix=f"{step_prefix}.child_{index}.split_proposal",
-                    turn=turn,
-                )
-            except Exception as exc:
-                child_split_result = {"accepted": [], "rejected": [], "skipped_reason": str(exc)}
-            parent_reevaluation = tree_service.reevaluate_parent(parent_job_id)
-            reevaluation_data = {
-                **turn_field(turn),
-                "root_job_id": root_job_id,
-                "parent_job_id": parent_job_id,
-                "job_id": parent_job_id,
-                "child_job_id": child_job_id,
-                "parent_reevaluation": json.dumps(
-                    parent_reevaluation, ensure_ascii=False, sort_keys=True, indent=2
-                ),
-            }
-            flow.write(
-                FLOW_PARENT_REEVALUATION_RECORDED,
-                "parent re-evaluation recorded",
-                **reevaluation_data,
-            )
-            write_job_tree_mirror(
+            review_result = run_child_package_review_loop(
                 flow=flow,
                 service=service,
+                client=client,
+                child_method=child_method,
+                root_job_id=root_job_id,
+                parent_job_id=parent_job_id,
+                child_job=child,
+                user_input=user_input,
+                root_candidate_text=root_candidate_text,
+                root_candidate_appearance_id=root_candidate_appearance_id,
+                package=package,
+                package_text=package_text,
+                candidate_id=candidate_id,
+                evidence_id=evidence_id,
+                step_prefix=f"{step_prefix}.child_{index}.package_review",
                 turn=turn,
-                job_id=parent_job_id,
-                action="parent_reevaluation_recorded",
-                child_job_id=child_job_id,
+                max_repair_attempts=max_child_package_repair_attempts,
             )
-            write_process_step(
-                flow=flow,
-                step=f"{step_prefix}.child_{index}.parent_reevaluate",
-                phase="frontier_dispatch",
-                action="记录子业果包回流后的父业重评估",
-                **reevaluation_data,
-            )
+            child_split_result = {"accepted": [], "rejected": [], "skipped_reason": ""}
+            if review_result.get("status") == "accept_ready":
+                accepted_package_text = str(review_result["package_text"])
+                accepted_candidate_id = str(review_result["candidate_id"])
+                try:
+                    child_split_result = run_split_proposal_registration(
+                        flow=flow,
+                        service=service,
+                        client=client,
+                        method=child_method,
+                        parent_job_id=child_job_id,
+                        user_input=user_input,
+                        candidate_text=accepted_package_text,
+                        candidate_appearance_id=accepted_candidate_id,
+                        step_prefix=f"{step_prefix}.child_{index}.split_proposal",
+                        turn=turn,
+                    )
+                except Exception as exc:
+                    child_split_result = {"accepted": [], "rejected": [], "skipped_reason": str(exc)}
+                accept_reviewed_child_package(
+                    flow=flow,
+                    service=service,
+                    root_job_id=root_job_id,
+                    parent_job_id=parent_job_id,
+                    child_job_id=child_job_id,
+                    candidate_id=accepted_candidate_id,
+                    judgment=review_result["judgment"],
+                    review_text=str(review_result["review_text"]),
+                    step_prefix=f"{step_prefix}.child_{index}.package_review",
+                    turn=turn,
+                )
+            else:
+                parent_reevaluation = tree_service.reevaluate_parent(parent_job_id)
+                reevaluation_data = {
+                    **turn_field(turn),
+                    "root_job_id": root_job_id,
+                    "parent_job_id": parent_job_id,
+                    "job_id": parent_job_id,
+                    "child_job_id": child_job_id,
+                    "parent_reevaluation": json.dumps(
+                        parent_reevaluation, ensure_ascii=False, sort_keys=True, indent=2
+                    ),
+                    "reason": str(review_result.get("reason") or review_result.get("status") or ""),
+                }
+                flow.write(
+                    FLOW_PARENT_REEVALUATION_RECORDED,
+                    "parent re-evaluation recorded",
+                    **reevaluation_data,
+                )
+                write_job_tree_mirror(
+                    flow=flow,
+                    service=service,
+                    turn=turn,
+                    job_id=parent_job_id,
+                    action="parent_reevaluation_recorded",
+                    child_job_id=child_job_id,
+                    reason=reevaluation_data["reason"],
+                )
+                write_process_step(
+                    flow=flow,
+                    step=f"{step_prefix}.child_{index}.parent_reevaluate_unresolved",
+                    phase="frontier_dispatch",
+                    action="记录未接收子业果包后的父业重评估",
+                    status="rejected",
+                    **reevaluation_data,
+                )
             dispatch_results.append(
                 {
                     "child_job_id": child_job_id,
-                    "status": "submitted",
-                    "candidate_appearance_id": candidate_id,
-                    "evidence_appearance_id": evidence_id,
+                    "status": str(review_result.get("status") or "submitted"),
+                    "candidate_appearance_id": review_result.get("candidate_id", candidate_id),
+                    "evidence_appearance_id": review_result.get("evidence_id", evidence_id),
                     "child_split_result": child_split_result,
                 }
             )
@@ -1068,6 +1123,524 @@ def load_child_dispatch_method(
     return root_method, "root_method_fallback"
 
 
+def run_child_package_review_loop(
+    *,
+    flow: FlowWriter,
+    service: RuntimeService,
+    client: ChatClient,
+    child_method: MethodContext,
+    root_job_id: str,
+    parent_job_id: str,
+    child_job: dict[str, Any],
+    user_input: str,
+    root_candidate_text: str,
+    root_candidate_appearance_id: str,
+    package: dict[str, Any],
+    package_text: str,
+    candidate_id: str,
+    evidence_id: str,
+    step_prefix: str,
+    turn: str | None = None,
+    repair_attempt: int = 0,
+    max_repair_attempts: int = DEFAULT_MAX_CHILD_PACKAGE_REPAIR_ATTEMPTS,
+) -> dict[str, Any]:
+    child_job_id = str(child_job["job_id"])
+    messages = build_child_package_review_messages(
+        child_job=child_job,
+        package=package,
+        package_candidate_id=candidate_id,
+        package_evidence_id=evidence_id,
+        root_job_id=root_job_id,
+        parent_job_id=parent_job_id,
+        user_input=user_input,
+        root_candidate_text=root_candidate_text,
+        root_candidate_appearance_id=root_candidate_appearance_id,
+        repair_attempt=repair_attempt,
+        max_repair_attempts=max_repair_attempts,
+    )
+    request_data = {
+        **turn_field(turn),
+        "root_job_id": root_job_id,
+        "parent_job_id": parent_job_id,
+        "job_id": child_job_id,
+        "child_job_id": child_job_id,
+        "child_result_package_candidate_id": candidate_id,
+        "child_result_package_evidence_id": evidence_id,
+        "child_package_repair_attempt": str(repair_attempt),
+        "child_package_repair_limit": str(max_repair_attempts),
+        "child_package_review_prompt": messages[-1]["content"],
+        "provider_message_count": str(len(messages)),
+    }
+    flow.write(FLOW_CHILD_PACKAGE_REVIEW_REQUESTED, "child package review requested", **request_data)
+    write_job_tree_mirror(
+        flow=flow,
+        service=service,
+        turn=turn,
+        job_id=child_job_id,
+        action="child_package_review_requested",
+        appearance_id=candidate_id,
+        child_job_id=child_job_id,
+    )
+    write_provider_messages(
+        flow=flow,
+        call_kind="child_package_review",
+        messages=messages,
+        turn=turn,
+        job_id=child_job_id,
+    )
+    write_process_step(
+        flow=flow,
+        step=f"{step_prefix}.review_{repair_attempt}.request",
+        phase="child_package_review",
+        action="向独立验收位发送子业果包、子业契约和父业消费要求",
+        status="started",
+        **request_data,
+    )
+
+    response = complete_with_provider_logging(
+        flow=flow,
+        client=client,
+        messages=messages,
+        call_kind="child_package_review",
+        turn=turn,
+        job_id=child_job_id,
+    )
+    response_data = {
+        **turn_field(turn),
+        "root_job_id": root_job_id,
+        "parent_job_id": parent_job_id,
+        "job_id": child_job_id,
+        "child_job_id": child_job_id,
+        "child_package_repair_attempt": str(repair_attempt),
+        "child_package_review_judgment": response.content,
+    }
+    flow.write(FLOW_CHILD_PACKAGE_REVIEW_RECEIVED, "child package review received", **response_data)
+    write_process_step(
+        flow=flow,
+        step=f"{step_prefix}.review_{repair_attempt}.receive",
+        phase="child_package_review",
+        action="收到独立验收位对子业果包的判断",
+        **response_data,
+    )
+
+    try:
+        judgment = parse_child_package_review_judgment(response.content)
+    except RuntimeError as exc:
+        rejected_data = {
+            **response_data,
+            "reason": str(exc),
+        }
+        flow.write(
+            FLOW_CHILD_PACKAGE_REVIEW_REJECTED,
+            "child package review rejected",
+            **rejected_data,
+        )
+        write_job_tree_mirror(
+            flow=flow,
+            service=service,
+            turn=turn,
+            job_id=child_job_id,
+            action="child_package_review_rejected",
+            reason=str(exc),
+        )
+        write_process_step(
+            flow=flow,
+            step=f"{step_prefix}.review_{repair_attempt}.invalid",
+            phase="child_package_review",
+            action="子业果包验收响应不符合结构化契约，保持候选隔离",
+            status="rejected",
+            **rejected_data,
+        )
+        return {"status": "review_invalid", "reason": str(exc)}
+
+    review_text = json.dumps(judgment, ensure_ascii=False, sort_keys=True, indent=2)
+    if judgment["review_action"] == "accept":
+        return {
+            "status": "accept_ready",
+            "child_job_id": child_job_id,
+            "candidate_id": candidate_id,
+            "evidence_id": evidence_id,
+            "package": package,
+            "package_text": package_text,
+            "judgment": judgment,
+            "review_text": review_text,
+        }
+
+    if repair_attempt >= max_repair_attempts:
+        limit_data = {
+            **turn_field(turn),
+            "root_job_id": root_job_id,
+            "parent_job_id": parent_job_id,
+            "job_id": child_job_id,
+            "child_job_id": child_job_id,
+            "child_package_repair_attempt": str(repair_attempt),
+            "child_package_repair_limit": str(max_repair_attempts),
+            "child_package_review_action": judgment["review_action"],
+            "child_package_review_judgment": review_text,
+            "child_package_repair_instruction": judgment["repair_instruction"],
+        }
+        flow.write(
+            FLOW_CHILD_PACKAGE_REPAIR_LIMIT_REACHED,
+            "child package repair limit reached",
+            **limit_data,
+        )
+        write_job_tree_mirror(
+            flow=flow,
+            service=service,
+            turn=turn,
+            job_id=child_job_id,
+            action="child_package_repair_limit_reached",
+            reason=judgment["repair_instruction"],
+        )
+        write_process_step(
+            flow=flow,
+            step=f"{step_prefix}.review_{repair_attempt}.repair_limit",
+            phase="child_package_review",
+            action="验收位要求修复但修复次数已达上限，保持子业未接收",
+            status="rejected",
+            **limit_data,
+        )
+        return {"status": "repair_limit", "judgment": judgment, "reason": judgment["repair_instruction"]}
+
+    review_evidence = service.submit_evidence(
+        child_job_id,
+        text=review_text,
+        actor_id="ai_reviewer",
+    )["evidence"]
+    service.reject_candidate(
+        child_job_id,
+        candidate_appearance_id=candidate_id,
+        reason=judgment["repair_instruction"],
+        actor_id="ai_reviewer",
+    )
+    repair_request_data = {
+        **turn_field(turn),
+        "root_job_id": root_job_id,
+        "parent_job_id": parent_job_id,
+        "job_id": child_job_id,
+        "child_job_id": child_job_id,
+        "child_package_review_action": judgment["review_action"],
+        "child_package_review_judgment": review_text,
+        "child_package_review_evidence_id": review_evidence["appearance_id"],
+        "child_package_repair_instruction": judgment["repair_instruction"],
+        "child_package_repair_attempt": str(repair_attempt + 1),
+        "child_package_repair_limit": str(max_repair_attempts),
+    }
+    flow.write(
+        FLOW_CHILD_PACKAGE_REVIEW_REJECTED,
+        "child package review rejected",
+        **repair_request_data,
+    )
+    write_job_tree_mirror(
+        flow=flow,
+        service=service,
+        turn=turn,
+        job_id=child_job_id,
+        action="child_package_review_rejected",
+        appearance_id=candidate_id,
+        child_job_id=child_job_id,
+        reason=judgment["repair_instruction"],
+    )
+
+    repair_job = service.create_child_job(
+        parent_job_id=child_job_id,
+        target=f"修复子业果包：{child_job.get('target') or child_job_id}",
+        acceptance_criteria=judgment["repair_instruction"],
+        required_context_gaps=[],
+        actor_id="system",
+    )
+    repair_job_id = str(repair_job["job_id"])
+    write_job_tree_mirror(
+        flow=flow,
+        service=service,
+        turn=turn,
+        job_id=repair_job_id,
+        action="child_package_repair_child_created",
+        child_job_id=repair_job_id,
+        reason=judgment["repair_instruction"],
+    )
+    service.mark_ready(repair_job_id, actor_id="system")
+    service.start_job(repair_job_id, actor_id="system")
+    write_job_tree_mirror(
+        flow=flow,
+        service=service,
+        turn=turn,
+        job_id=repair_job_id,
+        action="child_package_repair_child_running",
+        child_job_id=repair_job_id,
+    )
+
+    repair_messages = build_child_package_repair_messages(
+        method=child_method,
+        repair_job_id=repair_job_id,
+        child_job=child_job,
+        package=package,
+        review_judgment=judgment,
+        repair_attempt=repair_attempt + 1,
+        max_repair_attempts=max_repair_attempts,
+    )
+    repair_prompt_data = {
+        **repair_request_data,
+        "job_id": repair_job_id,
+        "child_package_repair_job_id": repair_job_id,
+        "provider_message_count": str(len(repair_messages)),
+    }
+    flow.write(
+        FLOW_CHILD_PACKAGE_REPAIR_REQUESTED,
+        "child package repair requested",
+        **repair_prompt_data,
+    )
+    write_provider_messages(
+        flow=flow,
+        call_kind="child_package_repair",
+        messages=repair_messages,
+        turn=turn,
+        job_id=repair_job_id,
+    )
+    write_process_step(
+        flow=flow,
+        step=f"{step_prefix}.repair_{repair_attempt + 1}.request",
+        phase="child_package_repair",
+        action="创建修复业并向执行端发送子业果包修复指令",
+        status="started",
+        **repair_prompt_data,
+    )
+
+    repair_response = complete_with_provider_logging(
+        flow=flow,
+        client=client,
+        messages=repair_messages,
+        call_kind="child_package_repair",
+        turn=turn,
+        job_id=repair_job_id,
+    )
+    repair_response_data = {
+        **turn_field(turn),
+        "root_job_id": root_job_id,
+        "parent_job_id": parent_job_id,
+        "job_id": repair_job_id,
+        "child_job_id": child_job_id,
+        "child_package_repair_job_id": repair_job_id,
+        "child_package_repair_attempt": str(repair_attempt + 1),
+        "child_package_repair_response": repair_response.content,
+    }
+    flow.write(
+        FLOW_CHILD_PACKAGE_REPAIR_RESPONSE_RECEIVED,
+        "child package repair response received",
+        **repair_response_data,
+    )
+
+    try:
+        repaired_package = parse_child_result_package(repair_response.content)
+    except RuntimeError as exc:
+        repair_rejected_data = {**repair_response_data, "reason": str(exc)}
+        flow.write(
+            FLOW_CHILD_PACKAGE_REPAIR_REJECTED,
+            "child package repair rejected",
+            **repair_rejected_data,
+        )
+        write_job_tree_mirror(
+            flow=flow,
+            service=service,
+            turn=turn,
+            job_id=repair_job_id,
+            action="child_package_repair_rejected",
+            reason=str(exc),
+        )
+        return {"status": "repair_invalid", "reason": str(exc)}
+
+    repair_evidence_text = json.dumps(
+        {
+            "repair_instruction": judgment["repair_instruction"],
+            "repair_attempt": repair_attempt + 1,
+            "source_child_job_id": child_job_id,
+        },
+        ensure_ascii=False,
+        sort_keys=True,
+        indent=2,
+    )
+    repair_candidate = service.submit_candidate(
+        repair_job_id,
+        text=repair_response.content,
+        actor_id="ai",
+    )["candidate"]
+    repair_evidence = service.submit_evidence(
+        repair_job_id,
+        text=repair_evidence_text,
+        actor_id="system",
+    )["evidence"]
+    service.accept_candidate(
+        repair_job_id,
+        candidate_appearance_id=repair_candidate["appearance_id"],
+        evidence_appearance_id=repair_evidence["appearance_id"],
+        actor_id="ai_reviewer",
+    )
+
+    service.start_job(child_job_id, actor_id="system")
+    repaired_package_text = json.dumps(repaired_package, ensure_ascii=False, sort_keys=True, indent=2)
+    submitted = TreeService(service.paths.workspace).submit_result_package(
+        child_job_id,
+        package=repaired_package,
+        evidence_text=repaired_package_text,
+        actor_id="ai",
+    )
+    repaired_candidate_id = str(submitted["candidate"]["appearance_id"])
+    repaired_evidence_id = str(submitted["evidence"]["appearance_id"])
+    repaired_data = {
+        **turn_field(turn),
+        "root_job_id": root_job_id,
+        "parent_job_id": parent_job_id,
+        "job_id": child_job_id,
+        "child_job_id": child_job_id,
+        "child_package_repair_job_id": repair_job_id,
+        "child_package_repair_attempt": str(repair_attempt + 1),
+        "child_result_package": repaired_package_text,
+        "child_result_package_candidate_id": repaired_candidate_id,
+        "child_result_package_evidence_id": repaired_evidence_id,
+    }
+    flow.write(
+        FLOW_CHILD_PACKAGE_REPAIR_PACKAGE_SUBMITTED,
+        "child package repair package submitted",
+        **repaired_data,
+    )
+    write_job_tree_mirror(
+        flow=flow,
+        service=service,
+        turn=turn,
+        job_id=child_job_id,
+        action="child_package_repair_package_submitted",
+        appearance_id=repaired_candidate_id,
+        child_job_id=repair_job_id,
+    )
+    write_process_step(
+        flow=flow,
+        step=f"{step_prefix}.repair_{repair_attempt + 1}.package",
+        phase="child_package_repair",
+        action="修复业产出的果包已重新提交回原子业",
+        **repaired_data,
+    )
+
+    refreshed_child = service.get_status(child_job_id)
+    return run_child_package_review_loop(
+        flow=flow,
+        service=service,
+        client=client,
+        child_method=child_method,
+        root_job_id=root_job_id,
+        parent_job_id=parent_job_id,
+        child_job=refreshed_child,
+        user_input=user_input,
+        root_candidate_text=root_candidate_text,
+        root_candidate_appearance_id=root_candidate_appearance_id,
+        package=repaired_package,
+        package_text=repaired_package_text,
+        candidate_id=repaired_candidate_id,
+        evidence_id=repaired_evidence_id,
+        step_prefix=step_prefix,
+        turn=turn,
+        repair_attempt=repair_attempt + 1,
+        max_repair_attempts=max_repair_attempts,
+    )
+
+
+def accept_reviewed_child_package(
+    *,
+    flow: FlowWriter,
+    service: RuntimeService,
+    root_job_id: str,
+    parent_job_id: str,
+    child_job_id: str,
+    candidate_id: str,
+    judgment: dict[str, Any],
+    review_text: str,
+    step_prefix: str,
+    turn: str | None = None,
+) -> dict[str, Any]:
+    review_evidence = service.submit_evidence(
+        child_job_id,
+        text=review_text,
+        actor_id="ai_reviewer",
+    )["evidence"]
+    accepted_job = service.accept_candidate(
+        child_job_id,
+        candidate_appearance_id=candidate_id,
+        evidence_appearance_id=review_evidence["appearance_id"],
+        actor_id="ai_reviewer",
+    )
+    accepted_data = {
+        **turn_field(turn),
+        "root_job_id": root_job_id,
+        "parent_job_id": parent_job_id,
+        "job_id": child_job_id,
+        "child_job_id": child_job_id,
+        "child_result_package_candidate_id": candidate_id,
+        "child_package_review_action": judgment["review_action"],
+        "child_package_review_checks": json.dumps(
+            judgment["checks"], ensure_ascii=False, sort_keys=True, indent=2
+        ),
+        "child_package_review_evidence": json.dumps(
+            judgment["evidence"], ensure_ascii=False, sort_keys=True, indent=2
+        ),
+        "child_package_review_evidence_id": review_evidence["appearance_id"],
+        "parent_consumption_summary": judgment["parent_consumption_summary"],
+    }
+    flow.write(
+        FLOW_CHILD_PACKAGE_REVIEW_ACCEPTED,
+        "child package review accepted",
+        **accepted_data,
+    )
+    write_job_tree_mirror(
+        flow=flow,
+        service=service,
+        turn=turn,
+        job_id=child_job_id,
+        action="child_package_accepted",
+        appearance_id=candidate_id,
+        child_job_id=child_job_id,
+    )
+    write_process_step(
+        flow=flow,
+        step=f"{step_prefix}.accept",
+        phase="child_package_review",
+        action="通过运行时服务接收已验收的子业果包",
+        **accepted_data,
+    )
+
+    parent_reevaluation = TreeService(service.paths.workspace).reevaluate_parent(parent_job_id)
+    reevaluation_data = {
+        **turn_field(turn),
+        "root_job_id": root_job_id,
+        "parent_job_id": parent_job_id,
+        "job_id": parent_job_id,
+        "child_job_id": child_job_id,
+        "accepted_parent_reevaluation": json.dumps(
+            parent_reevaluation, ensure_ascii=False, sort_keys=True, indent=2
+        ),
+        "parent_consumption_summary": judgment["parent_consumption_summary"],
+    }
+    flow.write(
+        FLOW_ACCEPTED_PARENT_REEVALUATION_RECORDED,
+        "accepted parent re-evaluation recorded",
+        **reevaluation_data,
+    )
+    write_job_tree_mirror(
+        flow=flow,
+        service=service,
+        turn=turn,
+        job_id=parent_job_id,
+        action="accepted_parent_reevaluation_recorded",
+        child_job_id=child_job_id,
+    )
+    write_process_step(
+        flow=flow,
+        step=f"{step_prefix}.parent_reevaluate_accepted",
+        phase="child_package_review",
+        action="记录已接收子业果包后的父业重评估",
+        **reevaluation_data,
+    )
+    return {"job": accepted_job, "review_evidence": review_evidence, "parent_reevaluation": parent_reevaluation}
+
+
 def build_child_dispatch_messages(
     *,
     child_job: dict[str, Any],
@@ -1129,11 +1702,199 @@ def build_child_dispatch_messages(
     ]
 
 
+def build_child_package_review_messages(
+    *,
+    child_job: dict[str, Any],
+    package: dict[str, Any],
+    package_candidate_id: str,
+    package_evidence_id: str,
+    root_job_id: str,
+    parent_job_id: str,
+    user_input: str,
+    root_candidate_text: str,
+    root_candidate_appearance_id: str,
+    repair_attempt: int,
+    max_repair_attempts: int,
+) -> list[dict[str, str]]:
+    payload = {
+        "root_job_id": root_job_id,
+        "parent_job_id": parent_job_id,
+        "child_job": {
+            "job_id": child_job.get("job_id"),
+            "target": child_job.get("target"),
+            "acceptance_criteria": child_job.get("acceptance_criteria", ""),
+            "required_context_gaps": child_job.get("required_context_gaps", []),
+            "method_call_frames": child_job.get("method_call_frames", []),
+        },
+        "root_user_input": user_input,
+        "root_candidate": {
+            "candidate_appearance_id": root_candidate_appearance_id,
+            "text": root_candidate_text,
+        },
+        "child_result_package": {
+            "candidate_appearance_id": package_candidate_id,
+            "evidence_appearance_id": package_evidence_id,
+            "package": package,
+        },
+        "repair_budget": {
+            "current_repair_attempt": repair_attempt,
+            "max_repair_attempts": max_repair_attempts,
+        },
+        "review_contract": {
+            "top_level": "JSON object only",
+            "required_fields": [
+                "review_action",
+                "checks",
+                "evidence",
+                "reason",
+                "repair_instruction",
+                "parent_consumption_summary",
+            ],
+            "review_action_values": ["accept", "repair"],
+            "field_types": {
+                "review_action": "accept or repair",
+                "checks": "list of objects with check_id, criterion, status, evidence",
+                "evidence": "list of strings",
+                "reason": "non-empty string",
+                "repair_instruction": "non-empty string when review_action is repair; empty string when accept",
+                "parent_consumption_summary": "non-empty string explaining how the parent can consume the package or why it cannot yet consume it",
+            },
+            "accept_rule": "Use accept only when the package satisfies the child acceptance criteria and is safe for the parent job to consume as a child-scope result.",
+            "repair_rule": "Use repair when the package is incomplete, unverifiable, lacks measurable evidence, or leaves blocking open questions.",
+            "boundaries": [
+                "Do not accept or reject the parent or root job.",
+                "Do not claim final task completion.",
+                "If a high-value or human-only decision is needed, choose repair and put the decision need in repair_instruction.",
+            ],
+        },
+    }
+    return [
+        {
+            "role": "system",
+            "content": (
+                "你是金箍业树中的独立子业果包验收位。"
+                "你不执行子业，不接收父业或根业，只对当前子业候选果包给出结构化验收判断。"
+                "只返回 JSON，不要输出解释性正文。"
+            ),
+        },
+        {
+            "role": "user",
+            "content": json.dumps(payload, ensure_ascii=False, sort_keys=True, indent=2),
+        },
+    ]
+
+
+def build_child_package_repair_messages(
+    *,
+    method: MethodContext,
+    repair_job_id: str,
+    child_job: dict[str, Any],
+    package: dict[str, Any],
+    review_judgment: dict[str, Any],
+    repair_attempt: int,
+    max_repair_attempts: int,
+) -> list[dict[str, str]]:
+    payload = {
+        "repair_job_id": repair_job_id,
+        "source_child_job": {
+            "job_id": child_job.get("job_id"),
+            "target": child_job.get("target"),
+            "acceptance_criteria": child_job.get("acceptance_criteria", ""),
+            "required_context_gaps": child_job.get("required_context_gaps", []),
+        },
+        "previous_package": package,
+        "review_judgment": review_judgment,
+        "repair_instruction": review_judgment["repair_instruction"],
+        "repair_budget": {
+            "current_repair_attempt": repair_attempt,
+            "max_repair_attempts": max_repair_attempts,
+        },
+        "return_contract": {
+            "top_level": "JSON object only",
+            "required_fields": list(CHILD_RESULT_PACKAGE_FIELDS),
+            "boundaries": [
+                "Return the complete repaired child result package.",
+                "Do not accept, reject, or complete any job.",
+                "Do not return commentary outside JSON.",
+            ],
+        },
+    }
+    return [
+        *build_method_system_messages(method),
+        {
+            "role": "system",
+            "content": (
+                "你是金箍业树中的子业果包修复执行位。"
+                "你只根据验收位的打回理由修复当前子业果包，并返回完整结构化果包。"
+            ),
+        },
+        {
+            "role": "user",
+            "content": json.dumps(payload, ensure_ascii=False, sort_keys=True, indent=2),
+        },
+    ]
+
+
 def parse_child_result_package(content: str) -> dict[str, Any]:
     payload = load_json_object(content, error_prefix="child result package response")
     if not isinstance(payload, dict):
         raise RuntimeError("child result package response must be a JSON object")
     return payload
+
+
+def parse_child_package_review_judgment(content: str) -> dict[str, Any]:
+    payload = load_json_object(content, error_prefix="child package review response")
+    if not isinstance(payload, dict):
+        raise RuntimeError("child package review response must be a JSON object")
+    action = str(payload.get("review_action") or "").strip()
+    if action not in CHILD_PACKAGE_REVIEW_ACTIONS:
+        raise RuntimeError("child package review response review_action must be accept or repair")
+    checks = payload.get("checks")
+    if not isinstance(checks, list) or not checks:
+        raise RuntimeError("child package review response checks must be a non-empty list")
+    normalized_checks: list[dict[str, str]] = []
+    for index, item in enumerate(checks, start=1):
+        if not isinstance(item, dict):
+            raise RuntimeError("child package review response checks must contain objects")
+        criterion = str(item.get("criterion") or "").strip()
+        status = str(item.get("status") or "").strip()
+        evidence = str(item.get("evidence") or "").strip()
+        if not criterion or not status or not evidence:
+            raise RuntimeError("child package review response check requires criterion, status, and evidence")
+        normalized_checks.append(
+            {
+                "check_id": str(item.get("check_id") or f"check_{index}").strip(),
+                "criterion": criterion,
+                "status": status,
+                "evidence": evidence,
+            }
+        )
+    evidence_items = normalize_string_list(
+        payload.get("evidence") or [],
+        field_name="evidence",
+        error_prefix="child package review response",
+    )
+    if not evidence_items:
+        raise RuntimeError("child package review response evidence must be a non-empty list")
+    reason = str(payload.get("reason") or "").strip()
+    parent_consumption_summary = str(payload.get("parent_consumption_summary") or "").strip()
+    repair_instruction = str(payload.get("repair_instruction") or "").strip()
+    if not reason:
+        raise RuntimeError("child package review response reason is required")
+    if not parent_consumption_summary:
+        raise RuntimeError("child package review response parent_consumption_summary is required")
+    if action == "repair" and not repair_instruction:
+        raise RuntimeError("child package review response repair action requires repair_instruction")
+    if action == "accept":
+        repair_instruction = ""
+    return {
+        "review_action": action,
+        "checks": normalized_checks,
+        "evidence": evidence_items,
+        "reason": reason,
+        "repair_instruction": repair_instruction,
+        "parent_consumption_summary": parent_consumption_summary,
+    }
 
 
 def parse_split_proposals(content: str) -> list[dict[str, Any]]:
@@ -1488,6 +2249,12 @@ def normalize_max_repair_attempts(value: int) -> int:
 def normalize_max_frontier_dispatches(value: int) -> int:
     if value < 0:
         raise ValueError("max frontier dispatches must be zero or greater")
+    return value
+
+
+def normalize_max_child_package_repair_attempts(value: int) -> int:
+    if value < 0:
+        raise ValueError("max child package repair attempts must be zero or greater")
     return value
 
 
@@ -2797,6 +3564,7 @@ class AiSandboxRunner:
         client: ChatClient | None = None,
         max_repair_attempts: int = DEFAULT_MAX_REPAIR_ATTEMPTS,
         max_frontier_dispatches: int = DEFAULT_MAX_FRONTIER_DISPATCHES,
+        max_child_package_repair_attempts: int = DEFAULT_MAX_CHILD_PACKAGE_REPAIR_ATTEMPTS,
     ) -> None:
         self.sandbox_path = resolve_sandbox_path(sandbox_path)
         self.log_dir = resolve_log_dir(log_dir)
@@ -2807,6 +3575,9 @@ class AiSandboxRunner:
         self.client = client
         self.max_repair_attempts = normalize_max_repair_attempts(max_repair_attempts)
         self.max_frontier_dispatches = normalize_max_frontier_dispatches(max_frontier_dispatches)
+        self.max_child_package_repair_attempts = normalize_max_child_package_repair_attempts(
+            max_child_package_repair_attempts
+        )
         self.flow = FlowWriter(
             self.sandbox_path,
             self.diagnostic_log_path,
@@ -3062,6 +3833,7 @@ class AiSandboxRunner:
                 root_candidate_appearance_id=candidate["appearance_id"],
                 step_prefix="frontier_dispatch",
                 max_child_dispatches=self.max_frontier_dispatches,
+                max_child_package_repair_attempts=self.max_child_package_repair_attempts,
             )
             verification_result = run_candidate_verification(
                 flow=self.flow,
@@ -3244,6 +4016,7 @@ class AiSandboxChatSession:
         client: ChatClient | None = None,
         max_repair_attempts: int = DEFAULT_MAX_REPAIR_ATTEMPTS,
         max_frontier_dispatches: int = DEFAULT_MAX_FRONTIER_DISPATCHES,
+        max_child_package_repair_attempts: int = DEFAULT_MAX_CHILD_PACKAGE_REPAIR_ATTEMPTS,
     ) -> None:
         self.sandbox_path = resolve_sandbox_path(sandbox_path)
         self.log_dir = resolve_log_dir(log_dir)
@@ -3254,6 +4027,9 @@ class AiSandboxChatSession:
         self.client = client
         self.max_repair_attempts = normalize_max_repair_attempts(max_repair_attempts)
         self.max_frontier_dispatches = normalize_max_frontier_dispatches(max_frontier_dispatches)
+        self.max_child_package_repair_attempts = normalize_max_child_package_repair_attempts(
+            max_child_package_repair_attempts
+        )
         self.flow = FlowWriter(
             self.sandbox_path,
             self.diagnostic_log_path,
@@ -3563,6 +4339,7 @@ class AiSandboxChatSession:
             step_prefix="chat.frontier_dispatch",
             turn=turn,
             max_child_dispatches=self.max_frontier_dispatches,
+            max_child_package_repair_attempts=self.max_child_package_repair_attempts,
         )
         verification_result = run_candidate_verification(
             flow=self.flow,
