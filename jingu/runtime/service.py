@@ -20,6 +20,7 @@ from jingu.runtime.constants import (
     EVENT_CANDIDATE_SUBMITTED,
     EVENT_CHILD_JOB_CREATED,
     EVENT_EVIDENCE_SUBMITTED,
+    EVENT_JOB_BLOCKED,
     EVENT_METHOD_CALL_FRAME_OPENED,
     EVENT_JOB_MARKED_READY,
     EVENT_JOB_STARTED,
@@ -27,6 +28,7 @@ from jingu.runtime.constants import (
     EVENT_HUMAN_DECISION_RETURNED,
     EVENT_ROOT_JOB_CREATED,
     STATE_ACCEPTED,
+    STATE_BLOCKED,
     STATE_DRAFT,
     STATE_READY,
     STATE_REJECTED,
@@ -150,6 +152,21 @@ class RuntimeService:
             event_type=EVENT_JOB_STARTED,
             actor_id=actor_id,
             payload={},
+        )
+
+    def mark_blocked(
+        self,
+        job_id: str,
+        *,
+        reason: str = "",
+        actor_id: str = "system",
+    ) -> dict[str, Any]:
+        return self._transition_job(
+            job_id=job_id,
+            next_state=STATE_BLOCKED,
+            event_type=EVENT_JOB_BLOCKED,
+            actor_id=actor_id,
+            payload={"reason": reason},
         )
 
     def bind_method_law_fragments(

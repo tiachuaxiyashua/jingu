@@ -14,6 +14,7 @@ from jingu.runtime.constants import (
     EVENT_METHOD_CALL_FRAME_OPENED,
     STATE_ABANDONED,
     STATE_ACCEPTED,
+    STATE_BLOCKED,
     STATE_DRAFT,
     STATE_READY,
     STATE_REJECTED,
@@ -56,6 +57,7 @@ from jingu.sandbox.flow import (
     FLOW_FEEDBACK_JOB_CREATED,
     FLOW_HUMAN_DECISION_REQUESTED,
     FLOW_FRONTIER_DISPATCH_FINISHED,
+    FLOW_FRONTIER_JOB_BLOCKED,
     FLOW_FRONTIER_DISPATCH_SKIPPED,
     FLOW_FRONTIER_DISPATCH_STARTED,
     FLOW_INPUT_PROVENANCE_RECORDED,
@@ -170,6 +172,9 @@ PARENT_INTEGRATION_REQUIRED_FIELDS = (
     "parent_consumption_summary",
 )
 FRONTIER_DISPATCH_STATES = frozenset({STATE_DRAFT, STATE_READY, STATE_RUNNING})
+ADVANCEMENT_OUTCOME_COMPLETED = "completed"
+ADVANCEMENT_OUTCOME_PAUSED = "paused"
+ADVANCEMENT_OUTCOME_BLOCKED = "blocked"
 CHILD_RESULT_PACKAGE_FIELDS = (
     "conclusion",
     "artifacts",
@@ -993,6 +998,59 @@ def run_split_proposal_registration(
     return {"accepted": accepted, "rejected": rejected, "skipped_reason": ""}
 
 
+def frontier_job_summary(job: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "job_id": str(job.get("job_id") or ""),
+        "parent_job_id": str(job.get("parent_job_id") or ""),
+        "root_job_id": str(job.get("root_job_id") or ""),
+        "state": str(job.get("state") or ""),
+        "target": str(job.get("target") or ""),
+        "required_context_gaps": job.get("required_context_gaps") or [],
+    }
+
+
+def classify_child_frontier(
+    tree_service: TreeService,
+    root_job_id: str,
+) -> dict[str, list[dict[str, Any]]]:
+    frontier_payload = tree_service.get_frontier(root_job_id)
+    active = [
+        job
+        for job in frontier_payload["frontier"]
+        if job.get("parent_job_id") and str(job.get("state")) not in TERMINAL_JOB_STATES
+    ]
+    blocked = [
+        job
+        for job in active
+        if str(job.get("state")) == STATE_BLOCKED or bool(job.get("required_context_gaps"))
+    ]
+    runnable = [
+        job
+        for job in active
+        if job not in blocked and str(job.get("state")) in FRONTIER_DISPATCH_STATES
+    ]
+    return {"active": active, "runnable": runnable, "blocked": blocked}
+
+
+def advancement_outcome_from_frontier(
+    frontier_state: dict[str, list[dict[str, Any]]],
+    *,
+    budget_exhausted: bool,
+) -> tuple[str, str]:
+    active = frontier_state["active"]
+    runnable = frontier_state["runnable"]
+    blocked = frontier_state["blocked"]
+    if not active:
+        return ADVANCEMENT_OUTCOME_COMPLETED, "no active child frontier job"
+    if budget_exhausted and runnable:
+        return ADVANCEMENT_OUTCOME_PAUSED, "advancement budget exhausted with runnable frontier remaining"
+    if runnable:
+        return ADVANCEMENT_OUTCOME_PAUSED, "runnable frontier remains"
+    if blocked:
+        return ADVANCEMENT_OUTCOME_BLOCKED, "all active frontier jobs are blocked by unresolved context gaps"
+    return ADVANCEMENT_OUTCOME_PAUSED, "active frontier remains outside dispatchable states"
+
+
 def run_frontier_child_dispatch(
     *,
     flow: FlowWriter,
@@ -1017,17 +1075,21 @@ def run_frontier_child_dispatch(
         max_parent_integration_repair_attempts
     )
     tree_service = TreeService(service.paths.workspace)
-    frontier_payload = tree_service.get_frontier(root_job_id)
-    active_child_frontier = [
-        job
-        for job in frontier_payload["frontier"]
-        if job.get("parent_job_id") and str(job.get("state")) in FRONTIER_DISPATCH_STATES
-    ]
+    frontier_state = classify_child_frontier(tree_service, root_job_id)
+    active_child_frontier = frontier_state["active"]
+    runnable_child_frontier = frontier_state["runnable"]
+    blocked_child_frontier = frontier_state["blocked"]
     base_data = {
         **turn_field(turn),
         "root_job_id": root_job_id,
         "frontier_job_count": str(len(active_child_frontier)),
         "frontier_dispatch_limit": str(max_child_dispatches),
+        "blocked_frontier_jobs": json.dumps(
+            [frontier_job_summary(job) for job in blocked_child_frontier],
+            ensure_ascii=False,
+            sort_keys=True,
+            indent=2,
+        ),
     }
     flow.write(FLOW_FRONTIER_DISPATCH_STARTED, "frontier child dispatch started", **base_data)
     write_job_tree_mirror(
@@ -1046,20 +1108,72 @@ def run_frontier_child_dispatch(
         **base_data,
     )
 
-    if max_child_dispatches == 0 or not active_child_frontier:
-        reason = (
-            "frontier dispatch limit is zero"
-            if max_child_dispatches == 0
-            else "no active child frontier job"
-        )
+    if blocked_child_frontier:
+        for blocked_job in blocked_child_frontier:
+            blocked_job_id = str(blocked_job["job_id"])
+            if str(blocked_job.get("state")) != STATE_BLOCKED:
+                service.mark_blocked(
+                    blocked_job_id,
+                    reason="required context gaps are unresolved",
+                    actor_id="system",
+                )
+            blocked_data = {
+                **turn_field(turn),
+                "root_job_id": root_job_id,
+                "parent_job_id": str(blocked_job.get("parent_job_id") or root_job_id),
+                "job_id": blocked_job_id,
+                "child_job_id": blocked_job_id,
+                "required_context_gaps": json.dumps(
+                    blocked_job.get("required_context_gaps") or [],
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    indent=2,
+                ),
+                "reason": "required context gaps are unresolved",
+            }
+            flow.write(FLOW_FRONTIER_JOB_BLOCKED, "frontier job blocked", **blocked_data)
+            write_job_tree_mirror(
+                flow=flow,
+                service=service,
+                turn=turn,
+                job_id=blocked_job_id,
+                action="frontier_job_blocked",
+                child_job_id=blocked_job_id,
+                reason=blocked_data["reason"],
+            )
+
+    if max_child_dispatches == 0 or not runnable_child_frontier:
+        if max_child_dispatches == 0 and active_child_frontier:
+            outcome = ADVANCEMENT_OUTCOME_PAUSED
+            reason = "frontier dispatch limit is zero"
+        elif blocked_child_frontier and not runnable_child_frontier:
+            outcome = ADVANCEMENT_OUTCOME_BLOCKED
+            reason = "all active frontier jobs are blocked by unresolved context gaps"
+        else:
+            outcome = ADVANCEMENT_OUTCOME_COMPLETED
+            reason = "no active child frontier job"
         summary = {
             "selected_child_jobs": [],
             "skipped_reason": reason,
             "frontier_job_count": len(active_child_frontier),
+            "frontier_dispatch_outcome": outcome,
+            "blocked_frontier_jobs": [
+                frontier_job_summary(job) for job in blocked_child_frontier
+            ],
+            "remaining_frontier_jobs": [
+                frontier_job_summary(job) for job in active_child_frontier
+            ],
         }
         skipped_data = {
             **base_data,
             "reason": reason,
+            "frontier_dispatch_outcome": outcome,
+            "remaining_frontier_jobs": json.dumps(
+                summary["remaining_frontier_jobs"],
+                ensure_ascii=False,
+                sort_keys=True,
+                indent=2,
+            ),
             "frontier_dispatch_summary": json.dumps(
                 summary, ensure_ascii=False, sort_keys=True, indent=2
             ),
@@ -1083,7 +1197,7 @@ def run_frontier_child_dispatch(
         )
         return summary
 
-    selected_children = active_child_frontier[:max_child_dispatches]
+    selected_children = runnable_child_frontier[:max_child_dispatches]
     dispatch_results: list[dict[str, Any]] = []
     parent_integration_results: list[dict[str, Any]] = []
     latest_root_integration: dict[str, Any] | None = None
@@ -1517,6 +1631,20 @@ def run_frontier_child_dispatch(
         if parent_integration_result.get("status") == "integrated":
             latest_root_integration = parent_integration_result
 
+    post_frontier_state = classify_child_frontier(tree_service, root_job_id)
+    remaining_frontier_jobs = [
+        frontier_job_summary(job) for job in post_frontier_state["active"]
+    ]
+    blocked_frontier_jobs = [
+        frontier_job_summary(job) for job in post_frontier_state["blocked"]
+    ]
+    if post_frontier_state["runnable"]:
+        frontier_dispatch_outcome = ADVANCEMENT_OUTCOME_PAUSED
+    elif post_frontier_state["blocked"]:
+        frontier_dispatch_outcome = ADVANCEMENT_OUTCOME_BLOCKED
+    else:
+        frontier_dispatch_outcome = ADVANCEMENT_OUTCOME_COMPLETED
+
     summary = {
         "selected_child_jobs": [str(job["job_id"]) for job in selected_children],
         "dispatch_results": dispatch_results,
@@ -1529,10 +1657,26 @@ def run_frontier_child_dispatch(
         ),
         "frontier_job_count": len(active_child_frontier),
         "frontier_dispatch_limit": max_child_dispatches,
+        "frontier_dispatch_outcome": frontier_dispatch_outcome,
+        "blocked_frontier_jobs": blocked_frontier_jobs,
+        "remaining_frontier_jobs": remaining_frontier_jobs,
     }
     finish_data = {
         **turn_field(turn),
         "root_job_id": root_job_id,
+        "frontier_dispatch_outcome": frontier_dispatch_outcome,
+        "blocked_frontier_jobs": json.dumps(
+            blocked_frontier_jobs,
+            ensure_ascii=False,
+            sort_keys=True,
+            indent=2,
+        ),
+        "remaining_frontier_jobs": json.dumps(
+            remaining_frontier_jobs,
+            ensure_ascii=False,
+            sort_keys=True,
+            indent=2,
+        ),
         "frontier_dispatch_summary": json.dumps(
             summary, ensure_ascii=False, sort_keys=True, indent=2
         ),
@@ -1576,10 +1720,16 @@ def run_advancement_loop(
     latest_candidate_text = root_candidate_text
     latest_candidate_appearance_id = root_candidate_appearance_id
     wave_results: list[dict[str, Any]] = []
-    stop_reason = "wave limit reached"
+    tree_service = TreeService(service.paths.workspace)
+    loop_outcome = ADVANCEMENT_OUTCOME_COMPLETED
+    stop_reason = "no active child frontier job"
 
     if max_advancement_waves == 0:
-        stop_reason = "advancement wave limit is zero"
+        frontier_state = classify_child_frontier(tree_service, root_job_id)
+        loop_outcome, stop_reason = advancement_outcome_from_frontier(
+            frontier_state,
+            budget_exhausted=bool(frontier_state["active"]),
+        )
 
     for wave in range(1, max_advancement_waves + 1):
         wave_data = {
@@ -1631,14 +1781,49 @@ def run_advancement_loop(
             **wave_finish_data,
         )
         if not selected_child_jobs:
+            loop_outcome = str(
+                result.get("frontier_dispatch_outcome") or ADVANCEMENT_OUTCOME_COMPLETED
+            )
             stop_reason = str(result.get("skipped_reason") or "no active frontier after wave")
             break
+        if wave == max_advancement_waves:
+            frontier_state = classify_child_frontier(tree_service, root_job_id)
+            loop_outcome, stop_reason = advancement_outcome_from_frontier(
+                frontier_state,
+                budget_exhausted=bool(frontier_state["active"]),
+            )
+        else:
+            loop_outcome = str(
+                result.get("frontier_dispatch_outcome") or ADVANCEMENT_OUTCOME_COMPLETED
+            )
+            stop_reason = str(result.get("skipped_reason") or "frontier advanced")
+
+    final_frontier_state = classify_child_frontier(tree_service, root_job_id)
+    if max_advancement_waves > 0 and not wave_results:
+        loop_outcome, stop_reason = advancement_outcome_from_frontier(
+            final_frontier_state,
+            budget_exhausted=False,
+        )
+    elif loop_outcome == ADVANCEMENT_OUTCOME_COMPLETED and final_frontier_state["active"]:
+        loop_outcome, stop_reason = advancement_outcome_from_frontier(
+            final_frontier_state,
+            budget_exhausted=True,
+        )
+    remaining_frontier_jobs = [
+        frontier_job_summary(job) for job in final_frontier_state["active"]
+    ]
+    blocked_frontier_jobs = [
+        frontier_job_summary(job) for job in final_frontier_state["blocked"]
+    ]
 
     summary = {
         "wave_results": wave_results,
         "advancement_wave_count": len(wave_results),
         "advancement_wave_limit": max_advancement_waves,
+        "advancement_loop_outcome": loop_outcome,
         "advancement_stop_reason": stop_reason,
+        "remaining_frontier_jobs": remaining_frontier_jobs,
+        "blocked_frontier_jobs": blocked_frontier_jobs,
         "latest_parent_candidate_text": latest_candidate_text,
         "latest_parent_candidate_appearance_id": latest_candidate_appearance_id,
     }
@@ -1648,7 +1833,20 @@ def run_advancement_loop(
         "job_id": root_job_id,
         "advancement_wave_count": str(len(wave_results)),
         "advancement_wave_limit": str(max_advancement_waves),
+        "advancement_loop_outcome": loop_outcome,
         "advancement_stop_reason": stop_reason,
+        "remaining_frontier_jobs": json.dumps(
+            remaining_frontier_jobs,
+            ensure_ascii=False,
+            sort_keys=True,
+            indent=2,
+        ),
+        "blocked_frontier_jobs": json.dumps(
+            blocked_frontier_jobs,
+            ensure_ascii=False,
+            sort_keys=True,
+            indent=2,
+        ),
         "frontier_dispatch_summary": json.dumps(summary, ensure_ascii=False, sort_keys=True, indent=2),
     }
     flow.write(FLOW_ADVANCEMENT_LOOP_FINISHED, "advancement loop finished", **finish_data)
@@ -1660,6 +1858,48 @@ def run_advancement_loop(
         **finish_data,
     )
     return summary
+
+
+def build_nonterminal_advancement_output(frontier_result: dict[str, Any]) -> str:
+    outcome = str(frontier_result.get("advancement_loop_outcome") or "")
+    reason = str(frontier_result.get("advancement_stop_reason") or "")
+    remaining = frontier_result.get("remaining_frontier_jobs") or []
+    blocked = frontier_result.get("blocked_frontier_jobs") or []
+    latest_candidate = str(frontier_result.get("latest_parent_candidate_text") or "").strip()
+    title = "金箍运行已暂停" if outcome == ADVANCEMENT_OUTCOME_PAUSED else "金箍运行已阻塞"
+    sections = [
+        f"# {title}",
+        "",
+        f"- 推进结果：{outcome}",
+        f"- 原因：{reason}",
+        f"- 剩余前沿业数量：{len(remaining)}",
+        f"- 阻塞前沿业数量：{len(blocked)}",
+    ]
+    if remaining:
+        sections.extend(
+            [
+                "",
+                "## 剩余前沿业",
+                "",
+                "```json",
+                json.dumps(remaining, ensure_ascii=False, sort_keys=True, indent=2),
+                "```",
+            ]
+        )
+    if blocked:
+        sections.extend(
+            [
+                "",
+                "## 阻塞前沿业",
+                "",
+                "```json",
+                json.dumps(blocked, ensure_ascii=False, sort_keys=True, indent=2),
+                "```",
+            ]
+        )
+    if latest_candidate:
+        sections.extend(["", "## 最新父业候选", "", latest_candidate])
+    return "\n".join(sections).rstrip()
 
 
 def load_child_dispatch_method(
@@ -5698,6 +5938,37 @@ class AiSandboxRunner:
                 max_child_package_repair_attempts=self.max_child_package_repair_attempts,
                 max_parent_integration_repair_attempts=self.max_parent_integration_repair_attempts,
             )
+            advancement_outcome = str(
+                frontier_result.get("advancement_loop_outcome") or ADVANCEMENT_OUTCOME_COMPLETED
+            )
+            if advancement_outcome in {
+                ADVANCEMENT_OUTCOME_PAUSED,
+                ADVANCEMENT_OUTCOME_BLOCKED,
+            }:
+                output_text = build_nonterminal_advancement_output(frontier_result)
+                self.flow.write(
+                    FLOW_RESULT_OUTPUT_RECORDED,
+                    "result output recorded",
+                    result=output_text,
+                    advancement_loop_outcome=advancement_outcome,
+                    advancement_stop_reason=str(frontier_result.get("advancement_stop_reason") or ""),
+                )
+                write_process_step(
+                    flow=self.flow,
+                    step="output.record",
+                    phase="output",
+                    action="推进循环未完成，记录暂停或阻塞状态而不是宣告根业完成",
+                    job_id=job_id,
+                    advancement_loop_outcome=advancement_outcome,
+                    advancement_stop_reason=str(frontier_result.get("advancement_stop_reason") or ""),
+                )
+                self.flow.write(
+                    FLOW_RUN_FINISHED,
+                    "run finished",
+                    job_id=job_id,
+                    advancement_loop_outcome=advancement_outcome,
+                )
+                return output_text
             verification_candidate_text = str(
                 frontier_result.get("latest_parent_candidate_text") or response.content
             )
@@ -6260,6 +6531,51 @@ class AiSandboxChatSession:
             max_child_package_repair_attempts=self.max_child_package_repair_attempts,
             max_parent_integration_repair_attempts=self.max_parent_integration_repair_attempts,
         )
+        advancement_outcome = str(
+            frontier_result.get("advancement_loop_outcome") or ADVANCEMENT_OUTCOME_COMPLETED
+        )
+        if advancement_outcome in {
+            ADVANCEMENT_OUTCOME_PAUSED,
+            ADVANCEMENT_OUTCOME_BLOCKED,
+        }:
+            output_text = build_nonterminal_advancement_output(frontier_result)
+            if self.history and self.history[-1].get("role") == "assistant":
+                self.history[-1]["content"] = output_text
+            self.flow.write(
+                FLOW_RESULT_OUTPUT_RECORDED,
+                "result output recorded",
+                turn=turn,
+                result=output_text,
+                advancement_loop_outcome=advancement_outcome,
+                advancement_stop_reason=str(frontier_result.get("advancement_stop_reason") or ""),
+            )
+            write_process_step(
+                flow=self.flow,
+                step="chat.output.record",
+                phase="output",
+                action="推进循环未完成，记录暂停或阻塞状态而不是宣告根业完成",
+                turn=turn,
+                job_id=job_id,
+                advancement_loop_outcome=advancement_outcome,
+                advancement_stop_reason=str(frontier_result.get("advancement_stop_reason") or ""),
+            )
+            self.flow.write(
+                FLOW_CHAT_TURN_FINISHED,
+                "chat turn finished",
+                turn=turn,
+                job_id=job_id,
+                advancement_loop_outcome=advancement_outcome,
+            )
+            write_process_step(
+                flow=self.flow,
+                step="chat.turn.finish",
+                phase="chat",
+                action="finished chat turn with nonterminal job-loop outcome",
+                turn=turn,
+                job_id=job_id,
+                advancement_loop_outcome=advancement_outcome,
+            )
+            return output_text
         verification_candidate_text = str(
             frontier_result.get("latest_parent_candidate_text") or response.content
         )

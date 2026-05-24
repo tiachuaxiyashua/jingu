@@ -694,7 +694,9 @@ class AiSandboxChatTest(unittest.TestCase):
                 client=client,
             ).run("Use the method and split blocked story work into child jobs.")
 
-            self.assertEqual(answer, "candidate that needs a protagonist child job")
+            self.assertIn("# 金箍运行已暂停", answer)
+            self.assertIn("candidate that needs a protagonist child job", answer)
+            self.assertIn("make protagonist vivid", answer)
             records = [
                 json.loads(line)
                 for line in next(log_dir.glob("ai-run-*.jsonl")).read_text(encoding="utf-8").splitlines()
@@ -704,6 +706,11 @@ class AiSandboxChatTest(unittest.TestCase):
             self.assertEqual(event_types.count("split_proposal_accepted"), 1)
             self.assertEqual(event_types.count("split_proposal_rejected"), 2)
             self.assertEqual(event_types.count("child_result_package_rejected"), 1)
+            loop_finished = [
+                record for record in records if record["event_type"] == "advancement_loop_finished"
+            ][-1]
+            self.assertEqual(loop_finished["data"]["advancement_loop_outcome"], "paused")
+            self.assertIn("make protagonist vivid", loop_finished["data"]["remaining_frontier_jobs"])
             serialized = "\n".join(json.dumps(record, ensure_ascii=False) for record in records)
             self.assertIn("child-method", serialized)
             self.assertIn("make protagonist vivid", serialized)
@@ -803,7 +810,9 @@ class AiSandboxChatTest(unittest.TestCase):
                 client=client,
             ).run("Create a story candidate and split blocking character work.")
 
-            self.assertEqual(answer, "integrated root candidate with protagonist card")
+            self.assertIn("# 金箍运行已暂停", answer)
+            self.assertIn("integrated root candidate with protagonist card", answer)
+            self.assertIn("quantify protagonist vividness checks", answer)
             records = [
                 json.loads(line)
                 for line in next(log_dir.glob("ai-run-*.jsonl")).read_text(encoding="utf-8").splitlines()
@@ -824,6 +833,11 @@ class AiSandboxChatTest(unittest.TestCase):
             self.assertEqual(event_types.count("split_proposal_accepted"), 2)
             self.assertNotIn("child_result_package_rejected", event_types)
             serialized = "\n".join(json.dumps(record, ensure_ascii=False) for record in records)
+            loop_finished = [
+                record for record in records if record["event_type"] == "advancement_loop_finished"
+            ][-1]
+            self.assertEqual(loop_finished["data"]["advancement_loop_outcome"], "paused")
+            self.assertIn("quantify protagonist vividness checks", loop_finished["data"]["remaining_frontier_jobs"])
             self.assertIn("protagonist card candidate", serialized)
             self.assertIn("vividness checklist is not yet quantified", serialized)
             self.assertIn("quantify protagonist vividness checks", serialized)
@@ -863,7 +877,61 @@ class AiSandboxChatTest(unittest.TestCase):
             self.assertIn("子业果包验收已接收（child_package_review_accepted）", readable_text)
             self.assertIn("已接收果包父业重评估已记录（accepted_parent_reevaluation_recorded）", readable_text)
             self.assertIn("父业整合候选已提交（parent_integration_candidate_submitted）", readable_text)
+            self.assertIn("推进循环结果（advancement_loop_outcome）: paused", readable_text)
             self.assertNotIn("????", readable_text)
+
+    def test_context_gap_frontier_blocks_without_package_rejection(self) -> None:
+        with TemporaryDirectory() as tmp:
+            workspace = Path(tmp)
+            sandbox = workspace / "sandbox"
+            log_dir = workspace / "logs"
+            method_path = write_method_file(workspace)
+            root_split_payload = split_proposals_json(
+                [
+                    {
+                        "target": "collect missing source material",
+                        "blocking_reason": "parent cannot proceed without source material",
+                        "output_contract": "source material evidence package",
+                        "acceptance_criteria": "source material is available and cited",
+                        "estimated_effort": 1,
+                        "depth_limit": 3,
+                        "required_context_gaps": ["missing source material"],
+                        "method_path": "",
+                        "method_binding_reason": "",
+                        "method_return_point": "",
+                    }
+                ]
+            )
+            client = FakeChatClient(
+                responses=[
+                    "root candidate",
+                    method_review_json("checked root method use"),
+                    root_split_payload,
+                ]
+            )
+
+            answer = AiSandboxRunner(
+                sandbox_path=sandbox,
+                log_dir=log_dir,
+                method_path=method_path,
+                client=client,
+            ).run("Create a candidate but require source material first.")
+
+            self.assertIn("# 金箍运行已阻塞", answer)
+            self.assertIn("missing source material", answer)
+            records = [
+                json.loads(line)
+                for line in next(log_dir.glob("ai-run-*.jsonl")).read_text(encoding="utf-8").splitlines()
+                if line.strip()
+            ]
+            event_types = [record["event_type"] for record in records]
+            self.assertIn("frontier_job_blocked", event_types)
+            self.assertNotIn("child_result_package_rejected", event_types)
+            loop_finished = [
+                record for record in records if record["event_type"] == "advancement_loop_finished"
+            ][-1]
+            self.assertEqual(loop_finished["data"]["advancement_loop_outcome"], "blocked")
+            self.assertIn("missing source material", loop_finished["data"]["blocked_frontier_jobs"])
 
     def test_runner_repairs_child_package_before_acceptance(self) -> None:
         with TemporaryDirectory() as tmp:

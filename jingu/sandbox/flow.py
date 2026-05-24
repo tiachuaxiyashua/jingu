@@ -73,6 +73,7 @@ FLOW_SPLIT_PROPOSAL_SKIPPED = "split_proposal_skipped"
 FLOW_FRONTIER_DISPATCH_STARTED = "frontier_dispatch_started"
 FLOW_FRONTIER_DISPATCH_SKIPPED = "frontier_dispatch_skipped"
 FLOW_FRONTIER_DISPATCH_FINISHED = "frontier_dispatch_finished"
+FLOW_FRONTIER_JOB_BLOCKED = "frontier_job_blocked"
 FLOW_CHILD_JOB_DISPATCH_STARTED = "child_job_dispatch_started"
 FLOW_CHILD_JOB_RESPONSE_RECEIVED = "child_job_response_received"
 FLOW_CHILD_RESULT_PACKAGE_SUBMITTED = "child_result_package_submitted"
@@ -178,6 +179,7 @@ EVENT_LABELS = {
     FLOW_FRONTIER_DISPATCH_STARTED: "前沿子业调度已开始",
     FLOW_FRONTIER_DISPATCH_SKIPPED: "前沿子业调度已跳过",
     FLOW_FRONTIER_DISPATCH_FINISHED: "前沿子业调度已结束",
+    FLOW_FRONTIER_JOB_BLOCKED: "前沿业已阻塞",
     FLOW_CHILD_JOB_DISPATCH_STARTED: "子业调度已开始",
     FLOW_CHILD_JOB_RESPONSE_RECEIVED: "子业响应已收到",
     FLOW_CHILD_RESULT_PACKAGE_SUBMITTED: "子业果包已提交",
@@ -229,6 +231,7 @@ FIELD_LABELS = {
     "acceptance_routing_judgment": "验收路由判断",
     "acceptance_routing_prompt": "验收路由请求内容",
     "advancement_stop_reason": "推进停止原因",
+    "advancement_loop_outcome": "推进循环结果",
     "advancement_wave": "推进波次",
     "advancement_wave_count": "推进波次数量",
     "advancement_wave_limit": "推进波次上限",
@@ -259,8 +262,10 @@ FIELD_LABELS = {
     "child_result_package_candidate_id": "子业果包候选相编号",
     "child_result_package_evidence_id": "子业果包证据相编号",
     "frontier_dispatch_limit": "前沿调度上限",
+    "frontier_dispatch_outcome": "前沿调度结果",
     "frontier_dispatch_summary": "前沿调度摘要",
     "frontier_job_count": "前沿业数量",
+    "blocked_frontier_jobs": "阻塞前沿业",
     "human_decision_request_kind": "人类裁决请求类型",
     "input": "输入内容",
     "input_character_count": "输入字符数",
@@ -356,6 +361,7 @@ FIELD_LABELS = {
     "repair_reason": "修复原因",
     "repair_response": "修复响应",
     "repair_source": "修复来源",
+    "remaining_frontier_jobs": "剩余前沿业",
     "repairable_check_count": "可修复校验项数量",
     "repairable_checks": "可修复校验项",
     "readable_log_path": "可读日志路径",
@@ -416,6 +422,7 @@ JOB_TREE_ACTION_LABELS = {
     "frontier_dispatch_finished": "前沿子业调度已结束",
     "frontier_dispatch_skipped": "前沿子业调度已跳过",
     "frontier_dispatch_started": "前沿子业调度已开始",
+    "frontier_job_blocked": "前沿业已阻塞",
     "acceptance_route_continued": "验收路由继续运行",
     "job_ready": "业已就绪",
     "job_running": "业运行中",
@@ -654,6 +661,7 @@ def _should_render_as_block(key: str, value: str) -> bool:
         "accepted_parent_reevaluation",
         "accepted_child_packages",
         "frontier_dispatch_summary",
+        "blocked_frontier_jobs",
         "integration_open_gaps",
         "parent_reevaluation",
         "parent_integration_candidate",
@@ -669,6 +677,7 @@ def _should_render_as_block(key: str, value: str) -> bool:
         "repair_response",
         "repair_loop_summary",
         "repairable_checks",
+        "remaining_frontier_jobs",
         "judgment",
         "required_context_gaps",
         "split_law",

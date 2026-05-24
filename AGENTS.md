@@ -21,6 +21,17 @@ Jingu means the golden headband on Sun Wukong. In this project it represents the
 - Do not treat a document shape, callable API, status label, or demo shell as completion. Mature completion means truth alignment, clear ownership, executable or reviewable path, tests or evidence, and explicit remaining risks.
 - When producing artifacts that the user must judge, test, or use as evidence, output the complete artifact. Do not use excerpts, summaries, ellipses, "omitted for brevity", or partial samples in place of the actual deliverable. Never reduce artifact completeness to save tokens or effort; if the artifact is too large for one response or file, split it into explicit parts or additional files while preserving the full content.
 
+## Truth-Aligned Implementation Discipline
+
+- Before durable runtime, orchestration, AI harness, job-tree, law, verification, sandbox, viewer, or CLI implementation work, explicitly identify the `truth/` source section and the root law or Xiang-Ye invariant the change protects.
+- Do not let runnable demos, logs, tests, route names, or OpenSpec task completion substitute for truth alignment. A change is not mature until code behavior preserves the invariant it claims to implement.
+- The job tree and runtime laws must own task lifecycle and state change. CLI commands, sandbox runners, viewers, scripts, and logs are entry points or mirrors; they must not become hidden orchestration truth.
+- Treat every new service, engine, detector, router, manager, or similar component as suspect until proven necessary. Prefer expressing behavior as a `业`, `律`, `法`, `证`, `相`, or `镜` projection. If a new component is still necessary, document why existing Xiang-Ye primitives cannot own that behavior.
+- Do not fix architecture drift by increasing limits, adding local fallback branches, or appending one more post-processing stage. First check whether accepted results, evidence, gaps, repairs, feedback, and follow-up jobs re-enter the same durable job loop as new conditions.
+- Budgets, wave counts, dispatch limits, token limits, and timeouts are pause conditions, not completion semantics. Exhausting a budget must preserve active frontier, evidence, and resume information instead of implying that the root job is complete.
+- Context gaps must not be silently ignored or guessed away. If a gap cannot be resolved by evidence already present in the job tree, expose it as blocked work, create an appropriate job, or request human decision when the gap is high-value or directional.
+- After implementation, verify truth alignment directly: job-only state changes, candidate isolation, evidence-backed results, responsibility-scoped completion, gap visibility, pause/resume behavior when applicable, and hardcoding scan status.
+
 ## Anti-Hardcoding Discipline
 
 - Do not hardcode mutable truth in generic code. Hardcoding means writing changeable project, provider, path, model, template, workflow, business, policy, or environment truth into code that does not own it.
@@ -61,6 +72,7 @@ Jingu means the golden headband on Sun Wukong. In this project it represents the
 
 - The GitHub repository is the source-controlled handoff path for this project. Durable docs, code, tests, scripts, skills, and configuration changes must be committed through git and pushed to the GitHub remote.
 - Before starting any code or document modification, run `git status --short` and synchronize with the remote using `git fetch origin` plus the appropriate pull or rebase flow for the current branch.
+- GitHub synchronization must support local proxy drift without changing reusable runtime code. Prefer explicit command-level or environment configuration fallback for both `http://127.0.0.1:7897` and `http://127.0.0.1:7890` when direct fetch fails; do not hardcode a single mutable proxy port into generic Jingu runtime modules.
 - Before handing work back, commit the completed change with a clear message and push it to the remote branch unless the user explicitly asks not to commit or push.
 - Do not commit local runtime state, build output, test artifacts, recovered scratch material, `node_modules/`, packaged binaries, `.env*`, or secrets. Keep those excluded by `.gitignore`.
 - If the remote is unavailable or authentication fails, stop and report the exact blocker before making further durable changes.
