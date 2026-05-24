@@ -18,6 +18,7 @@ from jingu.sandbox.paths import flow_events_path
 FLOW_SANDBOX_CREATED = "sandbox_created"
 FLOW_RUNTIME_INITIALIZED = "runtime_initialized"
 FLOW_RUNTIME_OPTIONS_RECORDED = "runtime_options_recorded"
+FLOW_RUNTIME_CHECKPOINT_RECORDED = "runtime_checkpoint_recorded"
 FLOW_CHAT_SESSION_STARTED = "chat_session_started"
 FLOW_METHOD_SOURCE_RESOLVED = "method_source_resolved"
 FLOW_METHOD_CONTEXT_LOADED = "method_context_loaded"
@@ -124,6 +125,7 @@ EVENT_LABELS = {
     FLOW_SANDBOX_CREATED: "沙盒已创建",
     FLOW_RUNTIME_INITIALIZED: "运行库已初始化",
     FLOW_RUNTIME_OPTIONS_RECORDED: "运行选项已记录",
+    FLOW_RUNTIME_CHECKPOINT_RECORDED: "运行库检查点已记录",
     FLOW_CHAT_SESSION_STARTED: "对话会话已开始",
     FLOW_METHOD_SOURCE_RESOLVED: "方法来源已解析",
     FLOW_METHOD_CONTEXT_LOADED: "方法上下文已加载",
@@ -375,6 +377,7 @@ FIELD_LABELS = {
     "response": "AI 响应",
     "result": "结果输出",
     "runtime_options": "运行选项",
+    "runtime_checkpoint_path": "运行库检查点路径",
     "review": "方法自验",
     "root_job_id": "根业编号",
     "sandbox_path": "沙盒路径",

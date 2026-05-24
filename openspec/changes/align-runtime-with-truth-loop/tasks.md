@@ -9,11 +9,13 @@
 - [x] 2.2 Refactor frontier dispatch to classify blocked jobs separately from rejected result packages.
 - [x] 2.3 Refactor advancement to continue while new frontier work appears and to pause when budgets are exhausted with active work remaining.
 - [x] 2.4 Make sandbox runner record paused/blocked outcomes honestly in output and logs.
+- [x] 2.5 Persist runtime checkpoints for paused or blocked sandbox runs before destroying the sandbox.
 
 ## 3. Logging And Visibility
 
 - [x] 3.1 Add readable log labels for loop outcome, remaining frontier, and blocked frontier fields.
 - [x] 3.2 Ensure job-tree mirror snapshots expose active frontier after pause or block.
+- [x] 3.3 Record checkpoint paths in machine and readable logs for nonterminal runs.
 
 ## 4. Validation
 

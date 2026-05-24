@@ -711,6 +711,10 @@ class AiSandboxChatTest(unittest.TestCase):
             ][-1]
             self.assertEqual(loop_finished["data"]["advancement_loop_outcome"], "paused")
             self.assertIn("make protagonist vivid", loop_finished["data"]["remaining_frontier_jobs"])
+            checkpoint = [
+                record for record in records if record["event_type"] == "runtime_checkpoint_recorded"
+            ][-1]
+            self.assertTrue(Path(checkpoint["data"]["runtime_checkpoint_path"]).exists())
             serialized = "\n".join(json.dumps(record, ensure_ascii=False) for record in records)
             self.assertIn("child-method", serialized)
             self.assertIn("make protagonist vivid", serialized)
@@ -838,6 +842,10 @@ class AiSandboxChatTest(unittest.TestCase):
             ][-1]
             self.assertEqual(loop_finished["data"]["advancement_loop_outcome"], "paused")
             self.assertIn("quantify protagonist vividness checks", loop_finished["data"]["remaining_frontier_jobs"])
+            checkpoint = [
+                record for record in records if record["event_type"] == "runtime_checkpoint_recorded"
+            ][-1]
+            self.assertTrue(Path(checkpoint["data"]["runtime_checkpoint_path"]).exists())
             self.assertIn("protagonist card candidate", serialized)
             self.assertIn("vividness checklist is not yet quantified", serialized)
             self.assertIn("quantify protagonist vividness checks", serialized)
@@ -932,6 +940,10 @@ class AiSandboxChatTest(unittest.TestCase):
             ][-1]
             self.assertEqual(loop_finished["data"]["advancement_loop_outcome"], "blocked")
             self.assertIn("missing source material", loop_finished["data"]["blocked_frontier_jobs"])
+            checkpoint = [
+                record for record in records if record["event_type"] == "runtime_checkpoint_recorded"
+            ][-1]
+            self.assertTrue(Path(checkpoint["data"]["runtime_checkpoint_path"]).exists())
 
     def test_runner_repairs_child_package_before_acceptance(self) -> None:
         with TemporaryDirectory() as tmp:

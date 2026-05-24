@@ -109,6 +109,7 @@ from jingu.sandbox.flow import (
     FLOW_RUN_FAILED,
     FLOW_ROOT_JOB_CREATED,
     FLOW_RUN_FINISHED,
+    FLOW_RUNTIME_CHECKPOINT_RECORDED,
     FLOW_RUNTIME_INITIALIZED,
     FLOW_RUNTIME_OPTIONS_RECORDED,
     FLOW_SANDBOX_CREATED,
@@ -160,6 +161,7 @@ DEFAULT_MAX_CHILD_PACKAGE_REPAIR_ATTEMPTS = 1
 DEFAULT_MAX_ADVANCEMENT_WAVES = 1
 DEFAULT_MAX_PARENT_INTEGRATION_REPAIR_ATTEMPTS = 1
 DEFAULT_REGISTER_METHOD_STEP_CANDIDATES = False
+RUNTIME_CHECKPOINTS_DIRNAME = "runtime-checkpoints"
 ACCEPTANCE_ROUTE_ACTIONS = frozenset({"continue", "repair", "feedback"})
 ACCEPTANCE_FEEDBACK_JOB_KINDS = frozenset({"high_value", "directional"})
 CHILD_PACKAGE_REVIEW_ACTIONS = frozenset({"accept", "repair"})
@@ -1900,6 +1902,44 @@ def build_nonterminal_advancement_output(frontier_result: dict[str, Any]) -> str
     if latest_candidate:
         sections.extend(["", "## 最新父业候选", "", latest_candidate])
     return "\n".join(sections).rstrip()
+
+
+def record_runtime_checkpoint(
+    *,
+    flow: FlowWriter,
+    service: RuntimeService,
+    log_dir: Path,
+    diagnostic_log_path: Path,
+    job_id: str,
+    outcome: str,
+    reason: str,
+    turn: str | None = None,
+) -> Path:
+    checkpoint_path = log_dir / RUNTIME_CHECKPOINTS_DIRNAME / diagnostic_log_path.stem
+    if checkpoint_path.exists():
+        shutil.rmtree(checkpoint_path)
+    checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copytree(service.paths.runtime_root, checkpoint_path)
+    data = {
+        **turn_field(turn),
+        "job_id": job_id,
+        "runtime_checkpoint_path": str(checkpoint_path),
+        "advancement_loop_outcome": outcome,
+        "advancement_stop_reason": reason,
+    }
+    flow.write(
+        FLOW_RUNTIME_CHECKPOINT_RECORDED,
+        "runtime checkpoint recorded",
+        **data,
+    )
+    write_process_step(
+        flow=flow,
+        step="runtime.checkpoint",
+        phase="runtime",
+        action="推进循环未终结，销毁沙盒前保存运行库检查点",
+        **data,
+    )
+    return checkpoint_path
 
 
 def load_child_dispatch_method(
@@ -5945,13 +5985,26 @@ class AiSandboxRunner:
                 ADVANCEMENT_OUTCOME_PAUSED,
                 ADVANCEMENT_OUTCOME_BLOCKED,
             }:
+                checkpoint_path = record_runtime_checkpoint(
+                    flow=self.flow,
+                    service=service,
+                    log_dir=self.log_dir,
+                    diagnostic_log_path=self.diagnostic_log_path,
+                    job_id=job_id,
+                    outcome=advancement_outcome,
+                    reason=str(frontier_result.get("advancement_stop_reason") or ""),
+                )
                 output_text = build_nonterminal_advancement_output(frontier_result)
+                output_text = (
+                    f"{output_text}\n\n## 运行库检查点\n\n`{checkpoint_path}`"
+                )
                 self.flow.write(
                     FLOW_RESULT_OUTPUT_RECORDED,
                     "result output recorded",
                     result=output_text,
                     advancement_loop_outcome=advancement_outcome,
                     advancement_stop_reason=str(frontier_result.get("advancement_stop_reason") or ""),
+                    runtime_checkpoint_path=str(checkpoint_path),
                 )
                 write_process_step(
                     flow=self.flow,
@@ -5961,6 +6014,7 @@ class AiSandboxRunner:
                     job_id=job_id,
                     advancement_loop_outcome=advancement_outcome,
                     advancement_stop_reason=str(frontier_result.get("advancement_stop_reason") or ""),
+                    runtime_checkpoint_path=str(checkpoint_path),
                 )
                 self.flow.write(
                     FLOW_RUN_FINISHED,
@@ -6538,7 +6592,18 @@ class AiSandboxChatSession:
             ADVANCEMENT_OUTCOME_PAUSED,
             ADVANCEMENT_OUTCOME_BLOCKED,
         }:
+            checkpoint_path = record_runtime_checkpoint(
+                flow=self.flow,
+                service=self.service,
+                log_dir=self.log_dir,
+                diagnostic_log_path=self.diagnostic_log_path,
+                job_id=job_id,
+                outcome=advancement_outcome,
+                reason=str(frontier_result.get("advancement_stop_reason") or ""),
+                turn=turn,
+            )
             output_text = build_nonterminal_advancement_output(frontier_result)
+            output_text = f"{output_text}\n\n## 运行库检查点\n\n`{checkpoint_path}`"
             if self.history and self.history[-1].get("role") == "assistant":
                 self.history[-1]["content"] = output_text
             self.flow.write(
@@ -6548,6 +6613,7 @@ class AiSandboxChatSession:
                 result=output_text,
                 advancement_loop_outcome=advancement_outcome,
                 advancement_stop_reason=str(frontier_result.get("advancement_stop_reason") or ""),
+                runtime_checkpoint_path=str(checkpoint_path),
             )
             write_process_step(
                 flow=self.flow,
@@ -6558,6 +6624,7 @@ class AiSandboxChatSession:
                 job_id=job_id,
                 advancement_loop_outcome=advancement_outcome,
                 advancement_stop_reason=str(frontier_result.get("advancement_stop_reason") or ""),
+                runtime_checkpoint_path=str(checkpoint_path),
             )
             self.flow.write(
                 FLOW_CHAT_TURN_FINISHED,
