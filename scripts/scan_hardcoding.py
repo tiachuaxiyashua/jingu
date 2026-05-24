@@ -8,6 +8,7 @@ import re
 import sys
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Iterable
 
 
 SCAN_DIRS = ("jingu", "scripts", "tests", "tools")
@@ -22,6 +23,24 @@ PATTERNS = (
     ("secret-looking-value", re.compile(r"(?i)(api[_-]?key|secret|token|password)\s*[:=]\s*['\"][^'\"]+['\"]")),
     ("model-literal", re.compile(r"(?i)\b(gpt-\d|deepseek|claude-|gemini-|qwen)\b")),
 )
+
+MUTABLE_CONTRACT_CALLS = {
+    "create_child_job",
+    "create_running_child_job",
+    "propose_child_job",
+}
+
+MUTABLE_CONTRACT_KEYWORDS = {
+    "acceptance_criteria",
+    "blocking_reason",
+    "output_contract",
+    "target",
+}
+
+MUTABLE_CONTRACT_FILES = {
+    Path("jingu/sandbox/runner.py"),
+    Path("jingu/runtime/tree.py"),
+}
 
 OWNED_PROTOCOL_LITERALS = {
     ".金箍",
@@ -95,7 +114,70 @@ def scan_python(path: Path) -> list[Finding]:
             if value in OWNED_PROTOCOL_LITERALS:
                 continue
             findings.extend(match_value(path, node.lineno, value))
+        if is_mutable_contract_file(path) and isinstance(node, ast.Call):
+            findings.extend(scan_mutable_contract_call(path, node))
     return findings
+
+
+def is_mutable_contract_file(path: Path) -> bool:
+    normalized = Path(path.as_posix())
+    return any(normalized.as_posix().endswith(item.as_posix()) for item in MUTABLE_CONTRACT_FILES)
+
+
+def scan_mutable_contract_call(path: Path, node: ast.Call) -> list[Finding]:
+    call_name = call_func_name(node.func)
+    if call_name not in MUTABLE_CONTRACT_CALLS:
+        return []
+    findings: list[Finding] = []
+    for keyword in node.keywords:
+        if keyword.arg not in MUTABLE_CONTRACT_KEYWORDS:
+            continue
+        for literal in literal_segments(keyword.value):
+            if looks_like_mutable_business_literal(literal):
+                findings.append(
+                    Finding(
+                        path,
+                        getattr(keyword.value, "lineno", node.lineno),
+                        "mutable-contract-literal",
+                        f"{keyword.arg}={literal}",
+                    )
+                )
+    return findings
+
+
+def call_func_name(func: ast.AST) -> str:
+    if isinstance(func, ast.Name):
+        return func.id
+    if isinstance(func, ast.Attribute):
+        return func.attr
+    return ""
+
+
+def literal_segments(node: ast.AST) -> Iterable[str]:
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        yield node.value
+        return
+    if isinstance(node, ast.JoinedStr):
+        for value in node.values:
+            if isinstance(value, ast.Constant) and isinstance(value.value, str):
+                yield value.value
+
+
+def looks_like_mutable_business_literal(value: str) -> bool:
+    text = value.strip()
+    if not text:
+        return False
+    if text in OWNED_PROTOCOL_LITERALS:
+        return False
+    if len(text) < 12 and cjk_count(text) < 6:
+        return False
+    if text.isidentifier():
+        return False
+    return any("\u4e00" <= char <= "\u9fff" for char in text) or " " in text
+
+
+def cjk_count(value: str) -> int:
+    return sum(1 for char in value if "\u4e00" <= char <= "\u9fff")
 
 
 def scan_text(path: Path) -> list[Finding]:

@@ -1283,7 +1283,8 @@ class AiSandboxChatTest(unittest.TestCase):
                 max_repair_attempts=1,
             ).run("请输出4500到6000汉字。")
 
-            self.assertEqual(answer, still_short_candidate)
+            self.assertIn("# 金箍运行已阻塞", answer)
+            self.assertIn("校验", answer)
             records = [
                 json.loads(line)
                 for line in next(log_dir.glob("ai-run-*.jsonl")).read_text(encoding="utf-8").splitlines()
@@ -1328,7 +1329,8 @@ class AiSandboxChatTest(unittest.TestCase):
                 client=client,
             ).run("Produce a candidate and surface important unresolved direction choices.")
 
-            self.assertEqual(answer, "candidate with a visible direction question")
+            self.assertIn("# 金箍运行已阻塞", answer)
+            self.assertIn("direction choice", answer)
             records = [
                 json.loads(line)
                 for line in next(log_dir.glob("ai-run-*.jsonl")).read_text(encoding="utf-8").splitlines()
@@ -1345,8 +1347,98 @@ class AiSandboxChatTest(unittest.TestCase):
             self.assertIn("acceptance_routing_judgment", serialized)
             self.assertIn("acceptance_routing_evidence", serialized)
             self.assertIn("does_not_auto_accept_or_reject", serialized)
+            checkpoint = [
+                record for record in records if record["event_type"] == "runtime_checkpoint_recorded"
+            ][-1]
+            self.assertTrue(Path(checkpoint["data"]["runtime_checkpoint_path"]).exists())
             self.assertNotIn("job_accepted", event_types)
             self.assertNotIn("job_rejected", event_types)
+
+    def test_runner_resume_restores_checkpoint_and_reenters_feedback_job(self) -> None:
+        with TemporaryDirectory() as tmp:
+            sandbox = Path(tmp) / "sandbox"
+            resume_sandbox = Path(tmp) / "resume-sandbox"
+            log_dir = Path(tmp) / "logs"
+            method_path = write_method_file(Path(tmp))
+            initial_client = FakeChatClient(
+                responses=[
+                    "candidate with a visible direction question",
+                    method_review_json("checked method use"),
+                    split_proposals_json(),
+                    acceptance_feedback_json(
+                        kind="high_value",
+                        summary="Expose the unresolved direction before continuing.",
+                        gaps=["direction choice"],
+                        reason="the candidate changes the direction of the work",
+                    ),
+                ]
+            )
+
+            AiSandboxRunner(
+                sandbox_path=sandbox,
+                log_dir=log_dir,
+                method_path=method_path,
+                client=initial_client,
+            ).run("Produce a candidate and surface important unresolved direction choices.")
+            first_records = [
+                json.loads(line)
+                for line in sorted(log_dir.glob("ai-run-*.jsonl"))[0].read_text(encoding="utf-8").splitlines()
+                if line.strip()
+            ]
+            checkpoint_path = Path(
+                [
+                    record
+                    for record in first_records
+                    if record["event_type"] == "runtime_checkpoint_recorded"
+                ][-1]["data"]["runtime_checkpoint_path"]
+            )
+            feedback_job_id = [
+                record
+                for record in first_records
+                if record["event_type"] == "feedback_job_created"
+            ][-1]["data"]["feedback_job_id"]
+            resume_client = FakeChatClient(
+                responses=[
+                    child_result_package_json(
+                        conclusion="direction decision applied",
+                        artifacts=["human chose the concrete direction"],
+                        evidence_summary="human decision evidence is attached to the feedback job",
+                    ),
+                    child_package_review_accept_json(
+                        parent_consumption_summary="parent can consume the returned direction decision"
+                    ),
+                    split_proposals_json(),
+                    parent_integration_response("integrated answer after human decision"),
+                    split_proposals_json(),
+                    acceptance_continue_json(),
+                ]
+            )
+
+            answer = AiSandboxRunner(
+                sandbox_path=resume_sandbox,
+                log_dir=log_dir,
+                method_path=method_path,
+                client=resume_client,
+            ).resume(
+                checkpoint_path=checkpoint_path,
+                human_response="Use the concrete direction and continue.",
+                feedback_job_id=feedback_job_id,
+            )
+
+            self.assertEqual(answer, "integrated answer after human decision")
+            resume_log = max(log_dir.glob("ai-run-*.jsonl"), key=lambda path: path.stat().st_mtime)
+            resume_records = [
+                json.loads(line)
+                for line in resume_log.read_text(encoding="utf-8").splitlines()
+                if line.strip()
+            ]
+            resume_event_types = [record["event_type"] for record in resume_records]
+            self.assertIn("runtime_checkpoint_restored", resume_event_types)
+            self.assertIn("human_decision_returned", resume_event_types)
+            self.assertIn("context_gaps_resolved", resume_event_types)
+            self.assertIn("child_job_dispatch_started", resume_event_types)
+            self.assertIn("parent_integration_candidate_submitted", resume_event_types)
+            self.assertFalse(resume_sandbox.exists())
 
     def test_runner_acceptance_router_creates_executor_repair(self) -> None:
         with TemporaryDirectory() as tmp:
@@ -1464,6 +1556,72 @@ class AiSandboxChatTest(unittest.TestCase):
             self.assertIn("candidate_lineage", serialized)
             self.assertIn("parent_integration_job_id", serialized)
             self.assertIn("evidence_hardness", serialized)
+
+    def test_parent_integration_open_gaps_register_real_blocked_child_jobs(self) -> None:
+        with TemporaryDirectory() as tmp:
+            sandbox = Path(tmp) / "sandbox"
+            log_dir = Path(tmp) / "logs"
+            method_path = write_method_file(Path(tmp))
+            child_proposal = {
+                "target": "Produce parent support material",
+                "blocking_reason": "parent needs a consumable child package",
+                "output_contract": "structured child result package",
+                "acceptance_criteria": "package has conclusion, artifacts, evidence, gaps, and follow-up jobs",
+                "estimated_effort": 1,
+                "depth_limit": 3,
+                "required_context_gaps": [],
+                "method_path": "",
+                "method_binding_reason": "",
+                "method_return_point": "",
+            }
+            client = FakeChatClient(
+                responses=[
+                    "root draft",
+                    method_review_json(),
+                    split_proposals_json([child_proposal]),
+                    child_result_package_json(),
+                    child_package_review_accept_json(),
+                    split_proposals_json(),
+                    parent_integration_response(
+                        "integrated parent candidate with gap",
+                        open_gaps=["missing external source"],
+                        suggested_follow_up_jobs=["separate consistency review"],
+                    ),
+                    split_proposals_json(),
+                ]
+            )
+
+            answer = AiSandboxRunner(
+                sandbox_path=sandbox,
+                log_dir=log_dir,
+                method_path=method_path,
+                client=client,
+            ).run("integrate child material and surface gaps")
+
+            self.assertIn("missing external source", answer)
+            records = [
+                json.loads(line)
+                for line in next(log_dir.glob("ai-run-*.jsonl")).read_text(encoding="utf-8").splitlines()
+                if line.strip()
+            ]
+            event_types = [record["event_type"] for record in records]
+            self.assertIn("parent_integration_followup_registration_finished", event_types)
+            self.assertIn("frontier_job_blocked", event_types)
+            serialized = "\n".join(json.dumps(record, ensure_ascii=False) for record in records)
+            self.assertIn("补齐父业整合开放缺口", serialized)
+            self.assertIn("separate consistency review", serialized)
+            snapshots = [
+                json.loads(record["data"]["tree_snapshot"])
+                for record in records
+                if record["event_type"] == "job_tree_snapshot_recorded"
+            ]
+            self.assertTrue(
+                any(
+                    node["state"] == "blocked" and "missing external source" in json.dumps(node, ensure_ascii=False)
+                    for snapshot in snapshots
+                    for node in snapshot["nodes"]
+                )
+            )
 
     def test_invalid_parent_integration_repair_does_not_mutate_parent_candidate(self) -> None:
         with TemporaryDirectory() as tmp:
@@ -1764,8 +1922,16 @@ class AiSandboxChatTest(unittest.TestCase):
                         reason="the turn needs direction before more work",
                     )
                     + "\n```",
-                    "chat answer 2",
-                    method_review_json("used method again"),
+                    child_result_package_json(
+                        conclusion="direction decision applied",
+                        artifacts=["human returned the next direction"],
+                        evidence_summary="human decision evidence is attached",
+                    ),
+                    child_package_review_accept_json(
+                        parent_consumption_summary="parent can consume the returned direction decision"
+                    ),
+                    split_proposals_json(),
+                    parent_integration_response("chat answer 2 after decision"),
                     split_proposals_json(),
                     acceptance_continue_json("the answer can continue as a normal conversation"),
                 ]
@@ -1796,8 +1962,9 @@ class AiSandboxChatTest(unittest.TestCase):
             self.assertIsNone(session.last_feedback_job_id)
             session.finish()
 
-            self.assertEqual(first, "chat answer 1")
-            self.assertEqual(second, "chat answer 2")
+            self.assertIn("# 金箍运行已阻塞", first)
+            self.assertIn("next direction", first)
+            self.assertEqual(second, "chat answer 2 after decision")
             self.assertFalse(sandbox.exists())
             log_files = sorted(log_dir.glob("ai-run-*.jsonl"))
             records = [
@@ -1809,17 +1976,17 @@ class AiSandboxChatTest(unittest.TestCase):
             self.assertEqual(event_types.count("user_input_recorded"), 2)
             self.assertEqual(event_types.count("input_provenance_recorded"), 2)
             self.assertEqual(event_types.count("method_context_loaded"), 2)
-            self.assertEqual(event_types.count("method_context_injected"), 2)
-            self.assertEqual(event_types.count("method_law_fragment_bound"), 2)
-            self.assertEqual(event_types.count("method_self_review_requested"), 2)
-            self.assertEqual(event_types.count("method_self_review_received"), 2)
-            self.assertEqual(event_types.count("method_update_candidate_recorded"), 2)
-            self.assertEqual(event_types.count("split_proposal_requested"), 2)
-            self.assertEqual(event_types.count("split_proposal_received"), 2)
-            self.assertEqual(event_types.count("split_proposal_skipped"), 2)
+            self.assertEqual(event_types.count("method_context_injected"), 1)
+            self.assertEqual(event_types.count("method_law_fragment_bound"), 1)
+            self.assertEqual(event_types.count("method_self_review_requested"), 1)
+            self.assertEqual(event_types.count("method_self_review_received"), 1)
+            self.assertEqual(event_types.count("method_update_candidate_recorded"), 1)
+            self.assertGreaterEqual(event_types.count("split_proposal_requested"), 3)
+            self.assertGreaterEqual(event_types.count("split_proposal_received"), 3)
+            self.assertGreaterEqual(event_types.count("split_proposal_skipped"), 3)
             self.assertEqual(event_types.count("result_output_recorded"), 2)
-            self.assertEqual(event_types.count("candidate_submitted"), 2)
-            self.assertEqual(event_types.count("evidence_submitted"), 3)
+            self.assertGreaterEqual(event_types.count("candidate_submitted"), 1)
+            self.assertGreaterEqual(event_types.count("evidence_submitted"), 2)
             self.assertEqual(event_types.count("verification_job_created"), 2)
             self.assertEqual(event_types.count("verification_tool_started"), 2)
             self.assertEqual(event_types.count("verification_result_recorded"), 2)
@@ -1829,8 +1996,12 @@ class AiSandboxChatTest(unittest.TestCase):
             self.assertEqual(event_types.count("acceptance_routing_received"), 2)
             self.assertEqual(event_types.count("acceptance_routing_evidence_submitted"), 2)
             self.assertEqual(event_types.count("feedback_job_created"), 1)
+            self.assertEqual(event_types.count("human_decision_returned"), 1)
+            self.assertEqual(event_types.count("context_gaps_resolved"), 1)
+            self.assertEqual(event_types.count("child_job_dispatch_started"), 1)
+            self.assertEqual(event_types.count("parent_integration_candidate_submitted"), 1)
             self.assertEqual(event_types.count("acceptance_routing_skipped"), 1)
-            self.assertEqual(event_types.count("provider_messages_recorded"), 8)
+            self.assertGreaterEqual(event_types.count("provider_messages_recorded"), 10)
             self.assertGreaterEqual(event_types.count("process_step_recorded"), 20)
             self.assertGreaterEqual(event_types.count("job_tree_management_recorded"), 12)
             self.assertGreaterEqual(event_types.count("job_tree_snapshot_recorded"), 12)

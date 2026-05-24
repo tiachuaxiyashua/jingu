@@ -4,6 +4,8 @@ const EVENT_LABELS = {
   sandbox_created: "沙盒已创建",
   runtime_initialized: "运行库已初始化",
   runtime_options_recorded: "运行选项已记录",
+  runtime_checkpoint_recorded: "运行库检查点已记录",
+  runtime_checkpoint_restored: "运行库检查点已恢复",
   method_source_resolved: "方法来源已解析",
   method_context_loaded: "方法上下文已加载",
   method_law_fragment_loaded: "法片段已加载",
@@ -57,6 +59,7 @@ const EVENT_LABELS = {
   frontier_dispatch_started: "前沿子业调度已开始",
   frontier_dispatch_skipped: "前沿子业调度已跳过",
   frontier_dispatch_finished: "前沿子业调度已结束",
+  frontier_job_blocked: "前沿业已阻塞",
   child_job_dispatch_started: "子业调度已开始",
   child_job_response_received: "子业响应已收到",
   child_result_package_submitted: "子业果包已提交",
@@ -89,6 +92,7 @@ const EVENT_LABELS = {
   advancement_loop_finished: "推进循环已结束",
   human_decision_requested: "人类裁决已请求",
   human_decision_returned: "人类裁决已回流",
+  context_gaps_resolved: "上下文缺口已补齐",
   result_output_recorded: "结果输出已记录",
   chat_turn_finished: "对话轮次已完成",
   chat_session_finished: "对话会话已结束",
@@ -106,6 +110,7 @@ const ACTION_LABELS = {
   verification_child_created: "校验子业已创建",
   verification_child_ready: "校验子业已就绪",
   verification_child_running: "校验子业运行中",
+  verification_child_accepted: "校验子业自身已接收",
   verification_candidate_attached: "校验报告候选已挂载",
   verification_evidence_attached: "校验证据已挂载",
   parent_verification_evidence_attached: "父业校验证据已回流",
@@ -140,6 +145,8 @@ const ACTION_LABELS = {
   parent_reevaluation_recorded: "父业重评估已记录",
   accepted_parent_reevaluation_recorded: "已接收果包父业重评估已记录",
   human_decision_child_created: "人类裁决子业已创建",
+  human_decision_returned: "人类裁决已回流",
+  context_gaps_resolved: "上下文缺口已补齐",
   parent_integration_job_created: "父业整合业已创建",
   parent_integration_requested: "父业整合已请求",
   parent_integration_candidate_submitted: "父业整合候选已提交",
@@ -221,6 +228,9 @@ const FIELD_LABELS = {
   method_learning_candidate_appearance_id: "方法学习候选相编号",
   decision_evidence_appearance_id: "裁决证据相编号",
   decision_text: "裁决内容",
+  resolved_gaps: "已补齐缺口",
+  remaining_gaps: "剩余缺口",
+  resolution_evidence_appearance_id: "补缘证据相编号",
   appearance_id: "相编号",
   reason: "原因",
   parent_integration_status: "父业整合状态",
@@ -298,6 +308,9 @@ const STEP_FIELD_GROUPS = {
     "method_learning_candidate_appearance_id",
     "decision_evidence_appearance_id",
     "decision_text",
+    "resolved_gaps",
+    "remaining_gaps",
+    "resolution_evidence_appearance_id",
     "appearance_id",
     "advancement_wave",
     "advancement_wave_count",
@@ -322,6 +335,8 @@ const STEP_FIELD_GROUPS = {
 const IMPORTANT_EVENTS = new Set([
   "root_job_created",
   "runtime_options_recorded",
+  "runtime_checkpoint_recorded",
+  "runtime_checkpoint_restored",
   "job_ready",
   "job_running",
   "job_tree_management_recorded",
@@ -343,8 +358,10 @@ const IMPORTANT_EVENTS = new Set([
   "acceptance_routing_evidence_submitted",
   "acceptance_routing_skipped",
   "feedback_job_created",
+  "frontier_job_blocked",
   "human_decision_requested",
   "human_decision_returned",
+  "context_gaps_resolved",
   "method_learning_candidate_recorded",
   "method_step_candidate_recorded",
   "method_step_candidate_skipped",
@@ -599,7 +616,16 @@ function applyEvent(projection, event) {
     const node = ensureNode(projection, data.job_id);
     if (node) {
       node.evidence.add(stringValue(data.decision_evidence_appearance_id));
+      node.state = stringValue(data.job_state || node.state);
       addNodeAction(node, event, "人类裁决已回流");
+    }
+  }
+
+  if (event.event_type === "context_gaps_resolved") {
+    const node = ensureNode(projection, data.job_id);
+    if (node) {
+      node.evidence.add(stringValue(data.resolution_evidence_appearance_id));
+      addNodeAction(node, event, "上下文缺口已补齐");
     }
   }
 
@@ -838,8 +864,8 @@ function applySnapshotFallback(projection, event) {
     }
     node.parentJobId = node.parentJobId || stringValue(item.parent_job_id);
     node.rootJobId = node.rootJobId || stringValue(item.root_job_id);
-    node.state = node.state || stringValue(item.state);
-    node.target = node.target || stringValue(item.target);
+    node.state = stringValue(item.state) || node.state;
+    node.target = stringValue(item.target) || node.target;
     node.kind = classifyKind(node, "", { job_target: node.target });
     if (item.candidate_appearance_id) {
       node.candidates.add(stringValue(item.candidate_appearance_id));

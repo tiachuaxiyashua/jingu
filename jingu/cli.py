@@ -69,6 +69,12 @@ def build_parser() -> argparse.ArgumentParser:
     job_ready.add_argument("job_id")
     job_run = job_subparsers.add_parser("run", help="Start a ready job.")
     job_run.add_argument("job_id")
+    job_resolve_gaps = job_subparsers.add_parser(
+        "resolve-gaps", help="Record context that resolves one or more required gaps."
+    )
+    job_resolve_gaps.add_argument("job_id")
+    job_resolve_gaps.add_argument("--text", required=True)
+    job_resolve_gaps.add_argument("--gap", action="append", default=[])
 
     candidate_parser = subparsers.add_parser("candidate", help="Candidate result commands.")
     candidate_subparsers = candidate_parser.add_subparsers(dest="candidate_command", required=True)
@@ -167,6 +173,38 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         default=DEFAULT_REGISTER_METHOD_STEP_CANDIDATES,
     )
+    ai_resume = ai_subparsers.add_parser("resume", help="Resume an AI sandbox run from a runtime checkpoint.")
+    ai_resume.add_argument("--checkpoint", type=Path, required=True)
+    ai_resume.add_argument("--sandbox", type=Path)
+    ai_resume.add_argument("--log-dir", type=Path)
+    ai_resume.add_argument("--config", type=Path)
+    ai_resume.add_argument("--method", type=Path)
+    ai_resume.add_argument("--human-response")
+    ai_resume.add_argument("--feedback-job-id")
+    ai_resume.add_argument("--resolve-gap", action="append", default=[])
+    ai_resume.add_argument("--context-only", action="store_true")
+    ai_resume.add_argument("--max-repair-attempts", type=int, default=DEFAULT_MAX_REPAIR_ATTEMPTS)
+    ai_resume.add_argument(
+        "--max-frontier-dispatches",
+        type=int,
+        default=DEFAULT_MAX_FRONTIER_DISPATCHES,
+    )
+    ai_resume.add_argument(
+        "--max-child-package-repair-attempts",
+        type=int,
+        default=DEFAULT_MAX_CHILD_PACKAGE_REPAIR_ATTEMPTS,
+    )
+    ai_resume.add_argument("--max-advancement-waves", type=int, default=DEFAULT_MAX_ADVANCEMENT_WAVES)
+    ai_resume.add_argument(
+        "--max-parent-integration-repair-attempts",
+        type=int,
+        default=DEFAULT_MAX_PARENT_INTEGRATION_REPAIR_ATTEMPTS,
+    )
+    ai_resume.add_argument(
+        "--register-method-step-candidates",
+        action="store_true",
+        default=DEFAULT_REGISTER_METHOD_STEP_CANDIDATES,
+    )
     ai_monitor = ai_subparsers.add_parser("monitor", help="Monitor the current AI sandbox flow.")
     ai_monitor.add_argument("--sandbox", type=Path)
     ai_monitor.add_argument("--log-dir", type=Path)
@@ -228,6 +266,14 @@ def run(args: argparse.Namespace) -> Any:
 
     if args.command == "job" and args.job_command == "run":
         return service.start_job(args.job_id)
+
+    if args.command == "job" and args.job_command == "resolve-gaps":
+        return service.resolve_context_gaps(
+            args.job_id,
+            resolution_text=args.text,
+            resolved_gaps=args.gap or None,
+            actor_id="human",
+        )
 
     if args.command == "candidate" and args.candidate_command == "submit":
         return service.submit_candidate(args.job_id, file_path=args.file, text=args.text)
@@ -316,6 +362,25 @@ def run_result_only(args: argparse.Namespace) -> str:
             max_parent_integration_repair_attempts=args.max_parent_integration_repair_attempts,
             register_method_step_candidates=args.register_method_step_candidates,
         ).run(args.message)
+    if args.command == "ai" and args.ai_command == "resume":
+        return AiSandboxRunner(
+            sandbox_path=args.sandbox,
+            log_dir=args.log_dir,
+            config_path=args.config,
+            method_path=args.method,
+            max_repair_attempts=args.max_repair_attempts,
+            max_frontier_dispatches=args.max_frontier_dispatches,
+            max_child_package_repair_attempts=args.max_child_package_repair_attempts,
+            max_advancement_waves=args.max_advancement_waves,
+            max_parent_integration_repair_attempts=args.max_parent_integration_repair_attempts,
+            register_method_step_candidates=args.register_method_step_candidates,
+        ).resume(
+            checkpoint_path=args.checkpoint,
+            human_response=args.human_response,
+            feedback_job_id=args.feedback_job_id,
+            resolved_gaps=args.resolve_gap or None,
+            treat_as_decision=not args.context_only,
+        )
     raise JinguRuntimeError("unknown result-only command")
 
 
@@ -375,7 +440,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
     try:
-        if args.command == "ai" and args.ai_command == "run":
+        if args.command == "ai" and args.ai_command in {"run", "resume"}:
             print(run_result_only(args))
             return 0
         if args.command == "ai" and args.ai_command == "chat":

@@ -11,8 +11,11 @@ from jingu.runtime.constants import (
     APPEARANCE_STATE_ACCEPTED,
     APPEARANCE_STATE_CANDIDATE,
     STATE_ACCEPTED,
+    STATE_BLOCKED,
+    STATE_READY,
     STATE_REVIEWING,
     STATE_RUNNING,
+    STATE_WAITING_HUMAN,
 )
 from jingu.runtime.errors import GuardrailViolation, NotFoundError
 from jingu.runtime.service import RuntimeService
@@ -231,6 +234,51 @@ class RuntimeKernelTest(unittest.TestCase):
                 sort_keys=True,
             ),
         )
+
+    def test_context_gap_resolution_clears_gaps_and_marks_ready(self) -> None:
+        job = self.service.create_root_job(
+            wish="wish",
+            required_context_gaps=["missing source", "missing threshold"],
+        )
+        blocked = self.service.mark_blocked(job["job_id"], reason="missing context")
+        self.assertEqual(blocked["state"], STATE_BLOCKED)
+
+        partial = self.service.resolve_context_gaps(
+            job["job_id"],
+            resolution_text="source is now attached",
+            resolved_gaps=["missing source"],
+        )
+        self.assertEqual(partial["resolved_gaps"], ["missing source"])
+        self.assertEqual(partial["remaining_gaps"], ["missing threshold"])
+        self.assertEqual(partial["job"]["state"], STATE_BLOCKED)
+
+        full = self.service.resolve_context_gaps(
+            job["job_id"],
+            resolution_text="threshold is now defined",
+        )
+        self.assertEqual(full["remaining_gaps"], [])
+        self.assertEqual(full["job"]["state"], STATE_READY)
+        event_types = [event["event_type"] for event in self.service.list_events(job["job_id"])]
+        self.assertIn("context_gaps_resolved", event_types)
+        self.assertEqual(event_types[-1], "job_marked_ready")
+
+    def test_human_decision_return_moves_waiting_job_to_ready_when_no_gaps(self) -> None:
+        root = self.service.create_root_job(wish="wish")
+        decision_job = self.service.create_child_job(
+            parent_job_id=root["job_id"],
+            target="Clarify direction",
+        )
+        waiting = self.service.mark_waiting_human(decision_job["job_id"], reason="needs owner")
+        self.assertEqual(waiting["state"], STATE_WAITING_HUMAN)
+
+        result = self.service.record_human_decision(
+            decision_job["job_id"],
+            decision_text="Use branch A.",
+        )
+
+        self.assertEqual(result["job"]["state"], STATE_READY)
+        event_types = [event["event_type"] for event in self.service.list_events(decision_job["job_id"])]
+        self.assertEqual(event_types[-1], "job_marked_ready")
 
     def _running_job(self) -> str:
         job = self.service.create_root_job(wish="wish")

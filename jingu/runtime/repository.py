@@ -129,6 +129,12 @@ class RuntimeRepository:
         ).fetchall()
         return [dict(row) for row in rows]
 
+    def list_root_jobs(self, connection: sqlite3.Connection) -> list[dict[str, Any]]:
+        rows = connection.execute(
+            "SELECT * FROM jobs WHERE parent_job_id IS NULL ORDER BY created_at ASC, job_id ASC"
+        ).fetchall()
+        return [dict(row) for row in rows]
+
     def list_child_jobs(
         self, connection: sqlite3.Connection, parent_job_id: str
     ) -> list[dict[str, Any]]:

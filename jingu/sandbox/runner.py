@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import shutil
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -11,6 +12,7 @@ from typing import Any
 from jingu.ai.client import ChatClient
 from jingu.ai.config import load_ai_config
 from jingu.runtime.constants import (
+    DATABASE_FILENAME,
     EVENT_METHOD_CALL_FRAME_OPENED,
     STATE_ABANDONED,
     STATE_ACCEPTED,
@@ -20,6 +22,7 @@ from jingu.runtime.constants import (
     STATE_REJECTED,
     STATE_REVIEWING,
     STATE_RUNNING,
+    STATE_WAITING_HUMAN,
 )
 from jingu.runtime.object_store import checksum_text
 from jingu.runtime.repository import decode_json
@@ -53,9 +56,11 @@ from jingu.sandbox.flow import (
     FLOW_CHAT_SESSION_FINISHED,
     FLOW_CHAT_SESSION_STARTED,
     FLOW_CHAT_TURN_FINISHED,
+    FLOW_CONTEXT_GAPS_RESOLVED,
     FLOW_EVIDENCE_SUBMITTED,
     FLOW_FEEDBACK_JOB_CREATED,
     FLOW_HUMAN_DECISION_REQUESTED,
+    FLOW_HUMAN_DECISION_RETURNED,
     FLOW_FRONTIER_DISPATCH_FINISHED,
     FLOW_FRONTIER_JOB_BLOCKED,
     FLOW_FRONTIER_DISPATCH_SKIPPED,
@@ -110,6 +115,7 @@ from jingu.sandbox.flow import (
     FLOW_ROOT_JOB_CREATED,
     FLOW_RUN_FINISHED,
     FLOW_RUNTIME_CHECKPOINT_RECORDED,
+    FLOW_RUNTIME_CHECKPOINT_RESTORED,
     FLOW_RUNTIME_INITIALIZED,
     FLOW_RUNTIME_OPTIONS_RECORDED,
     FLOW_SANDBOX_CREATED,
@@ -125,6 +131,7 @@ from jingu.sandbox.flow import (
     new_diagnostic_log_path,
     readable_log_path_for,
 )
+from jingu.sandbox.job_contracts import load_sandbox_job_contracts
 from jingu.sandbox.method import (
     MethodContext,
     build_method_review_messages,
@@ -138,6 +145,7 @@ from jingu.sandbox.paths import (
     resolve_log_dir,
     resolve_sandbox_path,
 )
+from jingu.sandbox.safety import destroy_sandbox_directory, prepare_sandbox_directory
 from jingu.sandbox.verification import (
     build_parent_verification_evidence,
     verification_report_to_json,
@@ -146,21 +154,39 @@ from jingu.sandbox.verification import (
 
 
 TERMINAL_JOB_STATES = {STATE_ACCEPTED, STATE_REJECTED, STATE_ABANDONED}
-VERIFICATION_JOB_TARGET = "校验候选结果中的可判定文本约束"
-VERIFICATION_JOB_ACCEPTANCE_CRITERIA = "输出结构化校验报告，记录可执行检查、实际计数、证据和无法自动判定的缺口。"
-REPAIR_JOB_TARGET = "修复候选结果中的可判定校验失败"
-REPAIR_JOB_ACCEPTANCE_CRITERIA = "输出修订后的完整候选结果，并让修订点可以被再次校验。"
-ACCEPTANCE_REPAIR_JOB_TARGET = "修复验收路由打回的候选问题"
-ACCEPTANCE_REPAIR_JOB_ACCEPTANCE_CRITERIA = "输出完整修订候选结果，覆盖验收路由指出的可修复问题，并保留原始任务意图。"
-ACCEPTANCE_FEEDBACK_JOB_ACCEPTANCE_CRITERIA = "补齐验收路由显影的问题，形成可回流原业的反馈、裁决问题或下一步证据需求。"
-VERIFICATION_FEEDBACK_JOB_TARGET = "处理候选校验未解决问题"
-VERIFICATION_FEEDBACK_JOB_ACCEPTANCE_CRITERIA = "产出下一步修复方向、人工反馈问题或方法更新候选，并引用校验证据。"
+JOB_CONTRACTS = load_sandbox_job_contracts()
+VERIFICATION_JOB_TARGET = JOB_CONTRACTS.verification_target
+VERIFICATION_JOB_ACCEPTANCE_CRITERIA = JOB_CONTRACTS.verification_acceptance_criteria
+REPAIR_JOB_TARGET = JOB_CONTRACTS.repair_target
+REPAIR_JOB_ACCEPTANCE_CRITERIA = JOB_CONTRACTS.repair_acceptance_criteria
+ACCEPTANCE_REPAIR_JOB_TARGET = JOB_CONTRACTS.acceptance_repair_target
+ACCEPTANCE_REPAIR_JOB_ACCEPTANCE_CRITERIA = JOB_CONTRACTS.acceptance_repair_acceptance_criteria
+ACCEPTANCE_FEEDBACK_JOB_ACCEPTANCE_CRITERIA = JOB_CONTRACTS.acceptance_feedback_acceptance_criteria
+VERIFICATION_FEEDBACK_JOB_TARGET = JOB_CONTRACTS.verification_feedback_target
+VERIFICATION_FEEDBACK_JOB_ACCEPTANCE_CRITERIA = JOB_CONTRACTS.verification_feedback_acceptance_criteria
+PARENT_INTEGRATION_TARGET_PREFIX = JOB_CONTRACTS.parent_integration_target_prefix
+PARENT_INTEGRATION_ACCEPTANCE_CRITERIA = JOB_CONTRACTS.parent_integration_acceptance_criteria
+PARENT_INTEGRATION_REPAIR_TARGET_PREFIX = JOB_CONTRACTS.parent_integration_repair_target_prefix
+PARENT_INTEGRATION_REPAIR_ACCEPTANCE_CRITERIA = (
+    JOB_CONTRACTS.parent_integration_repair_acceptance_criteria
+)
+PARENT_OPEN_GAP_TARGET_PREFIX = JOB_CONTRACTS.parent_open_gap_target_prefix
+PARENT_OPEN_GAP_BLOCKING_REASON = JOB_CONTRACTS.parent_open_gap_blocking_reason
+PARENT_OPEN_GAP_OUTPUT_CONTRACT = JOB_CONTRACTS.parent_open_gap_output_contract
+PARENT_OPEN_GAP_ACCEPTANCE_CRITERIA = JOB_CONTRACTS.parent_open_gap_acceptance_criteria
+PARENT_FOLLOWUP_BLOCKING_REASON = JOB_CONTRACTS.parent_followup_blocking_reason
+PARENT_FOLLOWUP_OUTPUT_CONTRACT = JOB_CONTRACTS.parent_followup_output_contract
+PARENT_FOLLOWUP_ACCEPTANCE_CRITERIA = JOB_CONTRACTS.parent_followup_acceptance_criteria
+METHOD_STEP_TARGET_PREFIX = JOB_CONTRACTS.method_step_target_prefix
+METHOD_STEP_ACCEPTANCE_CRITERIA = JOB_CONTRACTS.method_step_acceptance_criteria
+CHILD_PACKAGE_REPAIR_TARGET_PREFIX = JOB_CONTRACTS.child_package_repair_target_prefix
 DEFAULT_MAX_REPAIR_ATTEMPTS = 1
 DEFAULT_MAX_FRONTIER_DISPATCHES = 2
 DEFAULT_MAX_CHILD_PACKAGE_REPAIR_ATTEMPTS = 1
 DEFAULT_MAX_ADVANCEMENT_WAVES = 1
 DEFAULT_MAX_PARENT_INTEGRATION_REPAIR_ATTEMPTS = 1
 DEFAULT_REGISTER_METHOD_STEP_CANDIDATES = False
+DEFAULT_PARENT_INTEGRATION_FOLLOWUP_DEPTH_LIMIT = 8
 RUNTIME_CHECKPOINTS_DIRNAME = "runtime-checkpoints"
 ACCEPTANCE_ROUTE_ACTIONS = frozenset({"continue", "repair", "feedback"})
 ACCEPTANCE_FEEDBACK_JOB_KINDS = frozenset({"high_value", "directional"})
@@ -453,12 +479,9 @@ def register_method_step_candidates(
             continue
         child = service.create_child_job(
             parent_job_id=parent_job_id,
-            target=f"执行法步骤候选：{fragment.title}",
+            target=f"{METHOD_STEP_TARGET_PREFIX}：{fragment.title}",
             actor_id="system",
-            acceptance_criteria=(
-                "产出当前法片段在本业中的可消费局部果、证据、开放缺口和回流点；"
-                "不得宣告父业或根业完成。"
-            ),
+            acceptance_criteria=METHOD_STEP_ACCEPTANCE_CRITERIA,
             required_context_gaps=[],
         )
         child_job_id = str(child["job_id"])
@@ -1904,6 +1927,36 @@ def build_nonterminal_advancement_output(frontier_result: dict[str, Any]) -> str
     return "\n".join(sections).rstrip()
 
 
+def build_current_frontier_result(
+    *,
+    service: RuntimeService,
+    root_job_id: str,
+    latest_candidate_text: str,
+    latest_candidate_appearance_id: str,
+    reason: str | None = None,
+) -> dict[str, Any]:
+    frontier_state = classify_child_frontier(TreeService(service.paths.workspace), root_job_id)
+    outcome, computed_reason = advancement_outcome_from_frontier(
+        frontier_state,
+        budget_exhausted=False,
+    )
+    return {
+        "wave_results": [],
+        "advancement_wave_count": 0,
+        "advancement_wave_limit": 0,
+        "advancement_loop_outcome": outcome,
+        "advancement_stop_reason": reason or computed_reason,
+        "remaining_frontier_jobs": [
+            frontier_job_summary(job) for job in frontier_state["active"]
+        ],
+        "blocked_frontier_jobs": [
+            frontier_job_summary(job) for job in frontier_state["blocked"]
+        ],
+        "latest_parent_candidate_text": latest_candidate_text,
+        "latest_parent_candidate_appearance_id": latest_candidate_appearance_id,
+    }
+
+
 def record_runtime_checkpoint(
     *,
     flow: FlowWriter,
@@ -1916,10 +1969,27 @@ def record_runtime_checkpoint(
     turn: str | None = None,
 ) -> Path:
     checkpoint_path = log_dir / RUNTIME_CHECKPOINTS_DIRNAME / diagnostic_log_path.stem
-    if checkpoint_path.exists():
-        shutil.rmtree(checkpoint_path)
     checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copytree(service.paths.runtime_root, checkpoint_path)
+    temp_path = checkpoint_path.with_name(f"{checkpoint_path.name}.tmp-{uuid.uuid4().hex}")
+    backup_path: Path | None = None
+    try:
+        shutil.copytree(service.paths.runtime_root, temp_path)
+        if checkpoint_path.exists():
+            backup_path = checkpoint_path.with_name(f"{checkpoint_path.name}.old-{uuid.uuid4().hex}")
+            checkpoint_path.rename(backup_path)
+            try:
+                temp_path.rename(checkpoint_path)
+            except Exception:
+                if backup_path.exists() and not checkpoint_path.exists():
+                    backup_path.rename(checkpoint_path)
+                raise
+        else:
+            temp_path.rename(checkpoint_path)
+    finally:
+        if temp_path.exists():
+            shutil.rmtree(temp_path, ignore_errors=True)
+        if backup_path is not None and backup_path.exists():
+            shutil.rmtree(backup_path, ignore_errors=True)
     data = {
         **turn_field(turn),
         "job_id": job_id,
@@ -1940,6 +2010,376 @@ def record_runtime_checkpoint(
         **data,
     )
     return checkpoint_path
+
+
+def restore_runtime_checkpoint(*, checkpoint_path: Path, service: RuntimeService) -> None:
+    source = checkpoint_path.resolve()
+    if not source.is_dir():
+        raise RuntimeError(f"runtime checkpoint is not a directory: {source}")
+    if not (source / DATABASE_FILENAME).is_file():
+        raise RuntimeError(f"runtime checkpoint is missing runtime database: {source}")
+    target = service.paths.runtime_root
+    target.parent.mkdir(parents=True, exist_ok=True)
+    temp_path = target.with_name(f"{target.name}.restore-{uuid.uuid4().hex}")
+    backup_path: Path | None = None
+    try:
+        shutil.copytree(source, temp_path)
+        if target.exists():
+            backup_path = target.with_name(f"{target.name}.old-{uuid.uuid4().hex}")
+            target.rename(backup_path)
+            try:
+                temp_path.rename(target)
+            except Exception:
+                if backup_path.exists() and not target.exists():
+                    backup_path.rename(target)
+                raise
+        else:
+            temp_path.rename(target)
+    finally:
+        if temp_path.exists():
+            shutil.rmtree(temp_path, ignore_errors=True)
+        if backup_path is not None and backup_path.exists():
+            shutil.rmtree(backup_path, ignore_errors=True)
+
+
+def root_resume_context(
+    service: RuntimeService,
+    *,
+    root_job_id: str | None = None,
+    user_context: str = "",
+) -> dict[str, str]:
+    if root_job_id:
+        root = service.get_status(root_job_id)
+    else:
+        roots = service.list_root_jobs()
+        if not roots:
+            raise RuntimeError("runtime checkpoint does not contain a root job")
+        root = roots[-1]
+    root_job_id = str(root["job_id"])
+    candidate_id = str(root.get("candidate_appearance_id") or root.get("result_appearance_id") or "")
+    candidate_text = service.read_appearance_text(candidate_id) if candidate_id else str(root.get("target") or "")
+    original_wish = root.get("original_wish") or {}
+    user_input = str(original_wish.get("summary") or root.get("target") or "")
+    if user_context.strip():
+        user_input = "\n\n".join(
+            part
+            for part in [user_input.strip(), f"最新补缘或裁决输入：{user_context.strip()}"]
+            if part
+        )
+    return {
+        "root_job_id": root_job_id,
+        "user_input": user_input,
+        "candidate_text": candidate_text,
+        "candidate_appearance_id": candidate_id,
+    }
+
+
+def apply_human_feedback_to_job(
+    *,
+    flow: FlowWriter,
+    service: RuntimeService,
+    job_id: str,
+    text: str,
+    step_prefix: str,
+    resolved_gaps: list[str] | None = None,
+    treat_as_decision: bool = True,
+    turn: str | None = None,
+) -> dict[str, Any]:
+    text = text.strip()
+    if not text:
+        raise RuntimeError("human feedback text is required")
+    status = service.get_status(job_id)
+    result: dict[str, Any] = {"job_id": job_id, "decision": None, "gap_resolution": None}
+    if treat_as_decision or str(status["state"]) == STATE_WAITING_HUMAN:
+        decision = service.record_human_decision(
+            job_id,
+            decision_text=text,
+            actor_id="human",
+        )
+        result["decision"] = decision
+        decision_data = {
+            **turn_field(turn),
+            "job_id": job_id,
+            "decision_text": text,
+            "decision_evidence_appearance_id": decision["decision_evidence"]["appearance_id"],
+        }
+        flow.write(FLOW_HUMAN_DECISION_RETURNED, "human decision returned", **decision_data)
+        write_job_tree_mirror(
+            flow=flow,
+            service=service,
+            turn=turn,
+            job_id=job_id,
+            action="human_decision_returned",
+            appearance_id=decision["decision_evidence"]["appearance_id"],
+        )
+        write_process_step(
+            flow=flow,
+            step=f"{step_prefix}.human_decision",
+            phase="feedback",
+            action="记录人类裁决并让裁决证据回到反馈业",
+            **decision_data,
+        )
+        status = decision["job"]
+
+    gaps = status.get("required_context_gaps") or []
+    if gaps:
+        gap_resolution = service.resolve_context_gaps(
+            job_id,
+            resolution_text=text,
+            resolved_gaps=resolved_gaps,
+            actor_id="human",
+        )
+        result["gap_resolution"] = gap_resolution
+        resolution_data = {
+            **turn_field(turn),
+            "job_id": job_id,
+            "resolved_gaps": json.dumps(
+                gap_resolution["resolved_gaps"],
+                ensure_ascii=False,
+                sort_keys=True,
+                indent=2,
+            ),
+            "remaining_gaps": json.dumps(
+                gap_resolution["remaining_gaps"],
+                ensure_ascii=False,
+                sort_keys=True,
+                indent=2,
+            ),
+            "resolution_evidence_appearance_id": gap_resolution["resolution_evidence"][
+                "appearance_id"
+            ],
+        }
+        flow.write(FLOW_CONTEXT_GAPS_RESOLVED, "context gaps resolved", **resolution_data)
+        write_job_tree_mirror(
+            flow=flow,
+            service=service,
+            turn=turn,
+            job_id=job_id,
+            action="context_gaps_resolved",
+            appearance_id=gap_resolution["resolution_evidence"]["appearance_id"],
+        )
+        write_process_step(
+            flow=flow,
+            step=f"{step_prefix}.context_gaps_resolved",
+            phase="feedback",
+            action="记录补缘证据并更新反馈业缺口状态",
+            **resolution_data,
+        )
+    return result
+
+
+def choose_feedback_target_job(service: RuntimeService, *, root_job_id: str) -> str:
+    frontier_state = classify_child_frontier(TreeService(service.paths.workspace), root_job_id)
+    candidates = [
+        job
+        for job in frontier_state["active"]
+        if str(job.get("state")) in {STATE_WAITING_HUMAN, STATE_BLOCKED}
+        or bool(job.get("required_context_gaps"))
+    ]
+    if len(candidates) != 1:
+        raise RuntimeError(
+            "human feedback target job is ambiguous; provide --feedback-job-id. "
+            f"candidate_count={len(candidates)}"
+        )
+    return str(candidates[0]["job_id"])
+
+
+def maybe_feedback_target_job(service: RuntimeService, *, root_job_id: str) -> str | None:
+    try:
+        return choose_feedback_target_job(service, root_job_id=root_job_id)
+    except RuntimeError:
+        return None
+
+
+def run_root_candidate_verification_and_routing(
+    *,
+    flow: FlowWriter,
+    service: RuntimeService,
+    client: ChatClient,
+    method: MethodContext,
+    root_job_id: str,
+    user_input: str,
+    candidate_text: str,
+    candidate_appearance_id: str,
+    max_repair_attempts: int,
+    step_prefix: str,
+    turn: str | None = None,
+) -> dict[str, Any]:
+    verification_result = run_candidate_verification(
+        flow=flow,
+        service=service,
+        parent_job_id=root_job_id,
+        user_input=user_input,
+        candidate_text=candidate_text,
+        parent_candidate_appearance_id=candidate_appearance_id,
+        step_prefix=step_prefix,
+        turn=turn,
+    )
+    repair_result = run_candidate_repair_loop(
+        flow=flow,
+        service=service,
+        client=client,
+        method=method,
+        parent_job_id=root_job_id,
+        user_input=user_input,
+        initial_candidate_text=candidate_text,
+        initial_candidate_appearance_id=candidate_appearance_id,
+        initial_verification_result=verification_result,
+        max_repair_attempts=max_repair_attempts,
+        step_prefix=step_prefix,
+        turn=turn,
+    )
+    return run_acceptance_routing(
+        flow=flow,
+        service=service,
+        client=client,
+        method=method,
+        parent_job_id=root_job_id,
+        user_input=user_input,
+        repair_result=repair_result,
+        step_prefix=step_prefix,
+        turn=turn,
+    )
+
+
+def run_existing_root_to_output(
+    *,
+    flow: FlowWriter,
+    service: RuntimeService,
+    client: ChatClient,
+    method: MethodContext,
+    log_dir: Path,
+    diagnostic_log_path: Path,
+    root_job_id: str,
+    user_input: str,
+    candidate_text: str,
+    candidate_appearance_id: str,
+    step_prefix: str,
+    max_repair_attempts: int,
+    max_advancement_waves: int,
+    max_child_dispatches: int,
+    max_child_package_repair_attempts: int,
+    max_parent_integration_repair_attempts: int,
+    turn: str | None = None,
+) -> str:
+    frontier_result = run_advancement_loop(
+        flow=flow,
+        service=service,
+        client=client,
+        root_job_id=root_job_id,
+        user_input=user_input,
+        root_method=method,
+        root_candidate_text=candidate_text,
+        root_candidate_appearance_id=candidate_appearance_id,
+        step_prefix=f"{step_prefix}.advancement",
+        turn=turn,
+        max_advancement_waves=max_advancement_waves,
+        max_child_dispatches=max_child_dispatches,
+        max_child_package_repair_attempts=max_child_package_repair_attempts,
+        max_parent_integration_repair_attempts=max_parent_integration_repair_attempts,
+    )
+    advancement_outcome = str(
+        frontier_result.get("advancement_loop_outcome") or ADVANCEMENT_OUTCOME_COMPLETED
+    )
+    if advancement_outcome in {
+        ADVANCEMENT_OUTCOME_PAUSED,
+        ADVANCEMENT_OUTCOME_BLOCKED,
+    }:
+        checkpoint_path = record_runtime_checkpoint(
+            flow=flow,
+            service=service,
+            log_dir=log_dir,
+            diagnostic_log_path=diagnostic_log_path,
+            job_id=root_job_id,
+            outcome=advancement_outcome,
+            reason=str(frontier_result.get("advancement_stop_reason") or ""),
+            turn=turn,
+        )
+        output_text = build_nonterminal_advancement_output(frontier_result)
+        output_text = f"{output_text}\n\n## 运行库检查点\n\n`{checkpoint_path}`"
+        flow.write(
+            FLOW_RESULT_OUTPUT_RECORDED,
+            "result output recorded",
+            **{
+                **turn_field(turn),
+                "job_id": root_job_id,
+                "result": output_text,
+                "advancement_loop_outcome": advancement_outcome,
+                "advancement_stop_reason": str(
+                    frontier_result.get("advancement_stop_reason") or ""
+                ),
+                "runtime_checkpoint_path": str(checkpoint_path),
+            },
+        )
+        write_process_step(
+            flow=flow,
+            step=f"{step_prefix}.output.nonterminal",
+            phase="output",
+            action="推进循环未完成，记录暂停或阻塞状态而不是宣告根业完成",
+            **turn_field(turn),
+            job_id=root_job_id,
+            advancement_loop_outcome=advancement_outcome,
+            advancement_stop_reason=str(frontier_result.get("advancement_stop_reason") or ""),
+            runtime_checkpoint_path=str(checkpoint_path),
+        )
+        return output_text
+
+    verification_candidate_text = str(
+        frontier_result.get("latest_parent_candidate_text") or candidate_text
+    )
+    verification_candidate_appearance_id = str(
+        frontier_result.get("latest_parent_candidate_appearance_id")
+        or candidate_appearance_id
+    )
+    routing_result = run_root_candidate_verification_and_routing(
+        flow=flow,
+        service=service,
+        client=client,
+        method=method,
+        root_job_id=root_job_id,
+        user_input=user_input,
+        candidate_text=verification_candidate_text,
+        candidate_appearance_id=verification_candidate_appearance_id,
+        max_repair_attempts=max_repair_attempts,
+        step_prefix=f"{step_prefix}.candidate.verify",
+        turn=turn,
+    )
+    output_text = str(routing_result["latest_candidate_text"])
+    if routing_result.get("feedback_job_id"):
+        frontier_result = build_current_frontier_result(
+            service=service,
+            root_job_id=root_job_id,
+            latest_candidate_text=output_text,
+            latest_candidate_appearance_id=str(routing_result["latest_candidate_appearance_id"]),
+            reason="feedback or human-decision job was created and must return through the job loop",
+        )
+        checkpoint_path = record_runtime_checkpoint(
+            flow=flow,
+            service=service,
+            log_dir=log_dir,
+            diagnostic_log_path=diagnostic_log_path,
+            job_id=root_job_id,
+            outcome=str(frontier_result["advancement_loop_outcome"]),
+            reason=str(frontier_result["advancement_stop_reason"]),
+            turn=turn,
+        )
+        output_text = build_nonterminal_advancement_output(frontier_result)
+        output_text = f"{output_text}\n\n## 运行库检查点\n\n`{checkpoint_path}`"
+
+    flow.write(
+        FLOW_RESULT_OUTPUT_RECORDED,
+        "result output recorded",
+        **{**turn_field(turn), "job_id": root_job_id, "result": output_text},
+    )
+    write_process_step(
+        flow=flow,
+        step=f"{step_prefix}.output.record",
+        phase="output",
+        action="记录恢复推进后的结果输出",
+        **turn_field(turn),
+        job_id=root_job_id,
+    )
+    return output_text
 
 
 def load_child_dispatch_method(
@@ -2189,7 +2629,7 @@ def run_child_package_review_loop(
 
     repair_job = service.create_child_job(
         parent_job_id=child_job_id,
-        target=f"修复子业果包：{child_job.get('target') or child_job_id}",
+        target=f"{CHILD_PACKAGE_REPAIR_TARGET_PREFIX}：{child_job.get('target') or child_job_id}",
         acceptance_criteria=judgment["repair_instruction"],
         required_context_gaps=[],
         actor_id="system",
@@ -3000,6 +3440,204 @@ def ensure_parent_running_for_integration(
     raise RuntimeError(f"parent job is not ready for integration candidate submission: {state}")
 
 
+def normalize_parent_followup_items(value: Any) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, str):
+        return [value.strip()] if value.strip() else []
+    if not isinstance(value, list):
+        text = str(value).strip()
+        return [text] if text else []
+    normalized: list[str] = []
+    for item in value:
+        if isinstance(item, dict):
+            text = str(
+                item.get("target")
+                or item.get("summary")
+                or item.get("question")
+                or item.get("gap")
+                or ""
+            ).strip()
+            if not text:
+                text = json.dumps(item, ensure_ascii=False, sort_keys=True)
+        else:
+            text = str(item).strip()
+        if text:
+            normalized.append(text)
+    return normalized
+
+
+def parent_integration_split_law(*, reason: str, needs_distinct_capability: bool) -> dict[str, Any]:
+    return {
+        "law_name": SPLIT_DECISION_LAW_NAME,
+        "blocks_parent_execution": False,
+        "blocks_parent_acceptance": True,
+        "needs_distinct_capability": needs_distinct_capability,
+        "has_independent_result_package": True,
+        "has_high_value_or_risk": False,
+        "reason": reason,
+    }
+
+
+def register_parent_integration_followups(
+    *,
+    flow: FlowWriter,
+    service: RuntimeService,
+    parent_job_id: str,
+    integration: dict[str, Any],
+    step_prefix: str,
+    turn: str | None = None,
+) -> dict[str, Any]:
+    tree_service = TreeService(service.paths.workspace)
+    accepted: list[dict[str, Any]] = []
+    rejected: list[dict[str, Any]] = []
+    entries: list[dict[str, Any]] = []
+    for gap in normalize_parent_followup_items(integration.get("open_gaps")):
+        entries.append(
+            {
+                "source": "open_gaps",
+                "target": f"{PARENT_OPEN_GAP_TARGET_PREFIX}：{gap}",
+                "blocking_reason": PARENT_OPEN_GAP_BLOCKING_REASON,
+                "output_contract": PARENT_OPEN_GAP_OUTPUT_CONTRACT,
+                "acceptance_criteria": PARENT_OPEN_GAP_ACCEPTANCE_CRITERIA,
+                "required_context_gaps": [gap],
+                "split_law": parent_integration_split_law(
+                    reason=PARENT_OPEN_GAP_BLOCKING_REASON,
+                    needs_distinct_capability=True,
+                ),
+            }
+        )
+    for followup in normalize_parent_followup_items(integration.get("suggested_follow_up_jobs")):
+        entries.append(
+            {
+                "source": "suggested_follow_up_jobs",
+                "target": followup,
+                "blocking_reason": PARENT_FOLLOWUP_BLOCKING_REASON,
+                "output_contract": PARENT_FOLLOWUP_OUTPUT_CONTRACT,
+                "acceptance_criteria": PARENT_FOLLOWUP_ACCEPTANCE_CRITERIA,
+                "required_context_gaps": [],
+                "split_law": parent_integration_split_law(
+                    reason=PARENT_FOLLOWUP_BLOCKING_REASON,
+                    needs_distinct_capability=False,
+                ),
+            }
+        )
+    for index, entry in enumerate(entries, start=1):
+        try:
+            result = tree_service.propose_child_job(
+                parent_job_id=parent_job_id,
+                target=entry["target"],
+                blocking_reason=entry["blocking_reason"],
+                output_contract=entry["output_contract"],
+                acceptance_criteria=entry["acceptance_criteria"],
+                estimated_effort=1,
+                depth_limit=DEFAULT_PARENT_INTEGRATION_FOLLOWUP_DEPTH_LIMIT,
+                required_context_gaps=entry["required_context_gaps"],
+                split_law=entry["split_law"],
+                actor_id="system",
+            )
+            child = result["child"]
+            if child["required_context_gaps"]:
+                child = service.mark_blocked(
+                    child["job_id"],
+                    reason=entry["blocking_reason"],
+                    actor_id="system",
+                )
+            accepted_item = {
+                "source": entry["source"],
+                "child_job_id": child["job_id"],
+                "target": child["target"],
+                "required_context_gaps": child["required_context_gaps"],
+                "split_law": entry["split_law"],
+            }
+            accepted.append(accepted_item)
+            data = {
+                **turn_field(turn),
+                "job_id": parent_job_id,
+                "child_job_id": child["job_id"],
+                "split_proposal_index": str(index),
+                "split_proposal_decision": "accepted",
+                "split_proposal": json.dumps(entry, ensure_ascii=False, sort_keys=True, indent=2),
+                "split_law": json.dumps(entry["split_law"], ensure_ascii=False, sort_keys=True, indent=2),
+                "split_registration_summary": json.dumps(
+                    accepted_item, ensure_ascii=False, sort_keys=True, indent=2
+                ),
+            }
+            flow.write(FLOW_SPLIT_PROPOSAL_ACCEPTED, "split proposal accepted", **data)
+            write_job_tree_mirror(
+                flow=flow,
+                service=service,
+                turn=turn,
+                job_id=child["job_id"],
+                action="split_proposal_child_created",
+                child_job_id=child["job_id"],
+            )
+            if child["required_context_gaps"]:
+                blocked_data = {
+                    **turn_field(turn),
+                    "job_id": child["job_id"],
+                    "parent_job_id": parent_job_id,
+                    "child_job_id": child["job_id"],
+                    "required_context_gaps": json.dumps(
+                        child["required_context_gaps"],
+                        ensure_ascii=False,
+                        sort_keys=True,
+                        indent=2,
+                    ),
+                    "reason": entry["blocking_reason"],
+                }
+                flow.write(FLOW_FRONTIER_JOB_BLOCKED, "frontier job blocked", **blocked_data)
+                write_job_tree_mirror(
+                    flow=flow,
+                    service=service,
+                    turn=turn,
+                    job_id=child["job_id"],
+                    action="frontier_job_blocked",
+                    child_job_id=child["job_id"],
+                    reason=entry["blocking_reason"],
+                )
+            write_process_step(
+                flow=flow,
+                step=f"{step_prefix}.followup_{index}.accepted",
+                phase="parent_integration",
+                action="父业整合开放缺口或后续建议已登记为真实子业",
+                **data,
+            )
+        except Exception as exc:
+            rejected_item = {
+                "source": entry["source"],
+                "target": entry["target"],
+                "reason": str(exc),
+            }
+            rejected.append(rejected_item)
+            data = {
+                **turn_field(turn),
+                "job_id": parent_job_id,
+                "split_proposal_index": str(index),
+                "split_proposal_decision": "rejected",
+                "split_proposal_rejection_reason": str(exc),
+                "split_proposal": json.dumps(entry, ensure_ascii=False, sort_keys=True, indent=2),
+            }
+            flow.write(FLOW_SPLIT_PROPOSAL_REJECTED, "split proposal rejected", **data)
+            write_job_tree_mirror(
+                flow=flow,
+                service=service,
+                turn=turn,
+                job_id=parent_job_id,
+                action="split_proposal_rejected",
+                reason=str(exc),
+            )
+            write_process_step(
+                flow=flow,
+                step=f"{step_prefix}.followup_{index}.rejected",
+                phase="parent_integration",
+                action="父业整合开放缺口或后续建议被分业判定律拒绝",
+                status="rejected",
+                **data,
+            )
+    return {"accepted": accepted, "rejected": rejected, "count": len(entries)}
+
+
 def run_parent_integration(
     *,
     flow: FlowWriter,
@@ -3072,11 +3710,8 @@ def run_parent_integration(
         flow=flow,
         service=service,
         parent_job_id=parent_job_id,
-        target=f"整合已接收子业果包：{parent_target}",
-        acceptance_criteria=(
-            "把已接收子业果包整合为父业候选、证据、开放缺口和后续分业建议；"
-            "不得接收、拒收或宣告父业/根业完成。"
-        ),
+        target=f"{PARENT_INTEGRATION_TARGET_PREFIX}：{parent_target}",
+        acceptance_criteria=PARENT_INTEGRATION_ACCEPTANCE_CRITERIA,
         created_event_type=FLOW_PARENT_INTEGRATION_JOB_CREATED,
         created_message="parent integration job created",
         tree_action="parent_integration_job_created",
@@ -3086,7 +3721,7 @@ def run_parent_integration(
         extra_data={
             "root_job_id": root_job_id,
             "parent_integration_job_id": "__child_job_id__",
-            "job_target": f"整合已接收子业果包：{parent_target}",
+            "job_target": f"{PARENT_INTEGRATION_TARGET_PREFIX}：{parent_target}",
         },
     )
     parent_integration_job_id = str(integration_job["job_id"])
@@ -3242,11 +3877,8 @@ def run_parent_integration(
             flow=flow,
             service=service,
             parent_job_id=parent_job_id,
-            target=f"修复父业整合响应：{parent_target}",
-            acceptance_criteria=(
-                "修复父业整合响应，使其满足整合 JSON 契约；"
-                "不得改变父业完成状态，不得消费未接收子业。"
-            ),
+            target=f"{PARENT_INTEGRATION_REPAIR_TARGET_PREFIX}：{parent_target}",
+            acceptance_criteria=PARENT_INTEGRATION_REPAIR_ACCEPTANCE_CRITERIA,
             created_event_type=FLOW_PARENT_INTEGRATION_REPAIR_JOB_CREATED,
             created_message="parent integration repair job created",
             tree_action="parent_integration_repair_child_created",
@@ -3578,6 +4210,14 @@ def run_parent_integration(
         **submitted_data,
     )
 
+    direct_followup_result = register_parent_integration_followups(
+        flow=flow,
+        service=service,
+        parent_job_id=parent_job_id,
+        integration=integration,
+        step_prefix=step_prefix,
+        turn=turn,
+    )
     try:
         split_result = run_split_proposal_registration(
             flow=flow,
@@ -3593,12 +4233,16 @@ def run_parent_integration(
         )
     except Exception as exc:
         split_result = {"accepted": [], "rejected": [], "skipped_reason": str(exc)}
+    split_result["parent_integration_followups"] = direct_followup_result
     followup_data = {
         **turn_field(turn),
         "root_job_id": root_job_id,
         "parent_job_id": parent_job_id,
         "job_id": parent_job_id,
         "parent_integration_status": "followup_registered",
+        "integration_open_gaps": json.dumps(
+            integration["open_gaps"], ensure_ascii=False, sort_keys=True
+        ),
         "split_registration_summary": json.dumps(
             split_result, ensure_ascii=False, sort_keys=True, indent=2
         ),
@@ -4218,6 +4862,29 @@ def run_candidate_verification(
         action="提交校验报告为校验子业证据",
         **child_evidence_data,
     )
+    service.accept_candidate(
+        verification_job_id,
+        candidate_appearance_id=verification_candidate["appearance_id"],
+        evidence_appearance_id=verification_evidence["appearance_id"],
+        completion_scope="self",
+        actor_id="system",
+    )
+    write_job_tree_mirror(
+        flow=flow,
+        service=service,
+        turn=turn,
+        job_id=verification_job_id,
+        action="verification_child_accepted",
+        appearance_id=verification_candidate["appearance_id"],
+        child_job_id=verification_job_id,
+    )
+    write_process_step(
+        flow=flow,
+        step=f"{step_prefix}.accept",
+        phase="verification",
+        action="校验子业只接收自身校验报告，不接收父业或根业",
+        **child_evidence_data,
+    )
 
     parent_evidence_text = build_parent_verification_evidence(
         report=report,
@@ -4795,6 +5462,12 @@ def create_verification_feedback_job(
         ),
     )
     feedback_job_id = feedback_job["job_id"]
+    if feedback_job["required_context_gaps"]:
+        service.mark_blocked(
+            feedback_job_id,
+            reason="verification feedback requires additional context before execution",
+            actor_id="system",
+        )
     data = {
         **turn_field(turn),
         "job_id": parent_job_id,
@@ -5204,7 +5877,7 @@ def run_acceptance_routing(
             "latest_candidate_appearance_id": latest_candidate_appearance_id,
             "latest_verification_result": latest_verification_result,
             "acceptance_repair_result": None,
-            "feedback_job_id": None,
+            "feedback_job_id": repair_result.get("feedback_job_id"),
             "evidence_appearance_id": evidence["appearance_id"],
         }
 
@@ -5385,6 +6058,12 @@ def create_acceptance_feedback_job(
         required_context_gaps=judgment["required_context_gaps"],
     )
     feedback_job_id = feedback_job["job_id"]
+    if judgment["feedback_job_kind"] in ACCEPTANCE_FEEDBACK_JOB_KINDS:
+        service.mark_waiting_human(
+            feedback_job_id,
+            reason=judgment["reason"],
+            actor_id="system",
+        )
     data = {
         **turn_field(turn),
         "job_id": parent_job_id,
@@ -5697,7 +6376,6 @@ class AiSandboxRunner:
     def run(self, message: str) -> str:
         self._reset_sandbox()
         try:
-            self.sandbox_path.mkdir(parents=True, exist_ok=True)
             self._write_latest_log_pointer()
             self.flow.write(
                 FLOW_SANDBOX_CREATED,
@@ -6030,39 +6708,38 @@ class AiSandboxRunner:
                 frontier_result.get("latest_parent_candidate_appearance_id")
                 or candidate["appearance_id"]
             )
-            verification_result = run_candidate_verification(
-                flow=self.flow,
-                service=service,
-                parent_job_id=job_id,
-                user_input=message,
-                candidate_text=verification_candidate_text,
-                parent_candidate_appearance_id=verification_candidate_appearance_id,
-                step_prefix="candidate.verify",
-            )
-            repair_result = run_candidate_repair_loop(
+            routing_result = run_root_candidate_verification_and_routing(
                 flow=self.flow,
                 service=service,
                 client=client,
                 method=method,
-                parent_job_id=job_id,
+                root_job_id=job_id,
                 user_input=message,
-                initial_candidate_text=verification_candidate_text,
-                initial_candidate_appearance_id=verification_candidate_appearance_id,
-                initial_verification_result=verification_result,
+                candidate_text=verification_candidate_text,
+                candidate_appearance_id=verification_candidate_appearance_id,
                 max_repair_attempts=self.max_repair_attempts,
                 step_prefix="candidate.verify",
             )
-            routing_result = run_acceptance_routing(
-                flow=self.flow,
-                service=service,
-                client=client,
-                method=method,
-                parent_job_id=job_id,
-                user_input=message,
-                repair_result=repair_result,
-                step_prefix="candidate.verify",
-            )
             output_text = str(routing_result["latest_candidate_text"])
+            if routing_result.get("feedback_job_id"):
+                frontier_result = build_current_frontier_result(
+                    service=service,
+                    root_job_id=job_id,
+                    latest_candidate_text=output_text,
+                    latest_candidate_appearance_id=str(routing_result["latest_candidate_appearance_id"]),
+                    reason="feedback or human-decision job was created and must return through the job loop",
+                )
+                checkpoint_path = record_runtime_checkpoint(
+                    flow=self.flow,
+                    service=service,
+                    log_dir=self.log_dir,
+                    diagnostic_log_path=self.diagnostic_log_path,
+                    job_id=job_id,
+                    outcome=str(frontier_result["advancement_loop_outcome"]),
+                    reason=str(frontier_result["advancement_stop_reason"]),
+                )
+                output_text = build_nonterminal_advancement_output(frontier_result)
+                output_text = f"{output_text}\n\n## 运行库检查点\n\n`{checkpoint_path}`"
 
             self.flow.write(FLOW_RESULT_OUTPUT_RECORDED, "result output recorded", result=output_text)
             write_process_step(
@@ -6102,11 +6779,130 @@ class AiSandboxRunner:
                 log_path=str(self.diagnostic_log_path),
                 readable_log_path=str(self.readable_log_path),
             )
-            shutil.rmtree(self.sandbox_path, ignore_errors=True)
+            destroy_sandbox_directory(self.sandbox_path)
+
+    def resume(
+        self,
+        *,
+        checkpoint_path: Path | str,
+        human_response: str | None = None,
+        feedback_job_id: str | None = None,
+        resolved_gaps: list[str] | None = None,
+        treat_as_decision: bool = True,
+    ) -> str:
+        self._reset_sandbox()
+        try:
+            self._write_latest_log_pointer()
+            self.flow.write(
+                FLOW_SANDBOX_CREATED,
+                "sandbox created",
+                sandbox_path=str(self.sandbox_path),
+                log_path=str(self.diagnostic_log_path),
+                readable_log_path=str(self.readable_log_path),
+            )
+            write_process_step(
+                flow=self.flow,
+                step="resume.sandbox.create",
+                phase="sandbox",
+                action="created ephemeral sandbox for checkpoint resume",
+                sandbox_path=str(self.sandbox_path),
+                log_path=str(self.diagnostic_log_path),
+                readable_log_path=str(self.readable_log_path),
+            )
+
+            service = RuntimeService(self.sandbox_path)
+            service.initialize()
+            restore_runtime_checkpoint(checkpoint_path=Path(checkpoint_path), service=service)
+            self.flow.write(
+                FLOW_RUNTIME_CHECKPOINT_RESTORED,
+                "runtime checkpoint restored",
+                runtime_checkpoint_path=str(Path(checkpoint_path)),
+            )
+            write_process_step(
+                flow=self.flow,
+                step="resume.runtime.restore",
+                phase="runtime",
+                action="从检查点恢复运行库后继续推进",
+                runtime_checkpoint_path=str(Path(checkpoint_path)),
+            )
+            write_runtime_options_event(
+                flow=self.flow,
+                options=self.runtime_options,
+                step="resume.runtime.options",
+            )
+            method = self._load_method_for_turn()
+            context = root_resume_context(service)
+            root_job_id = context["root_job_id"]
+            if human_response and human_response.strip():
+                target_job_id = feedback_job_id or choose_feedback_target_job(
+                    service, root_job_id=root_job_id
+                )
+                apply_human_feedback_to_job(
+                    flow=self.flow,
+                    service=service,
+                    job_id=target_job_id,
+                    text=human_response,
+                    step_prefix="resume.feedback",
+                    resolved_gaps=resolved_gaps,
+                    treat_as_decision=treat_as_decision,
+                )
+                context = root_resume_context(
+                    service,
+                    root_job_id=root_job_id,
+                    user_context=human_response,
+                )
+            output_text = run_existing_root_to_output(
+                flow=self.flow,
+                service=service,
+                client=self.client or ChatClient(load_ai_config(self.config_path)),
+                method=method,
+                log_dir=self.log_dir,
+                diagnostic_log_path=self.diagnostic_log_path,
+                root_job_id=root_job_id,
+                user_input=context["user_input"],
+                candidate_text=context["candidate_text"],
+                candidate_appearance_id=context["candidate_appearance_id"],
+                step_prefix="resume",
+                max_repair_attempts=self.max_repair_attempts,
+                max_advancement_waves=self.max_advancement_waves,
+                max_child_dispatches=self.max_frontier_dispatches,
+                max_child_package_repair_attempts=self.max_child_package_repair_attempts,
+                max_parent_integration_repair_attempts=self.max_parent_integration_repair_attempts,
+            )
+            self.flow.write(FLOW_RUN_FINISHED, "run finished", job_id=root_job_id)
+            return output_text
+        except Exception as exc:
+            write_process_step(
+                flow=self.flow,
+                step="resume.fail",
+                phase="error",
+                action="resume failed before normal completion",
+                status="failed",
+                process_detail=str(exc),
+            )
+            self.flow.write(FLOW_RUN_FAILED, "resume failed", error=str(exc))
+            raise
+        finally:
+            write_process_step(
+                flow=self.flow,
+                step="resume.sandbox.destroy",
+                phase="cleanup",
+                action="destroyed ephemeral sandbox",
+                sandbox_path=str(self.sandbox_path),
+                log_path=str(self.diagnostic_log_path),
+                readable_log_path=str(self.readable_log_path),
+            )
+            self.flow.write(
+                FLOW_SANDBOX_DESTROYED,
+                "sandbox destroyed",
+                sandbox_path=str(self.sandbox_path),
+                log_path=str(self.diagnostic_log_path),
+                readable_log_path=str(self.readable_log_path),
+            )
+            destroy_sandbox_directory(self.sandbox_path)
 
     def _reset_sandbox(self) -> None:
-        if self.sandbox_path.exists():
-            shutil.rmtree(self.sandbox_path)
+        prepare_sandbox_directory(self.sandbox_path, log_dir=self.log_dir)
 
     def _load_method_for_turn(self, *, turn: str | None = None) -> MethodContext:
         method = load_method_context(method_path=self.method_path)
@@ -6259,7 +7055,6 @@ class AiSandboxChatSession:
         self.last_job_id = None
         self.last_feedback_job_id = None
         self.last_feedback_judgment = None
-        self.sandbox_path.mkdir(parents=True, exist_ok=True)
         self._write_latest_log_pointer()
         self.flow.write(
             FLOW_SANDBOX_CREATED,
@@ -6299,6 +7094,8 @@ class AiSandboxChatSession:
 
         self.turn_count += 1
         turn = str(self.turn_count)
+        pending_feedback_job_id = self.last_feedback_job_id
+        pending_root_job_id = self.last_job_id
         self.last_feedback_job_id = None
         self.last_feedback_judgment = None
         self.flow.write(FLOW_USER_INPUT_RECORDED, "user input recorded", turn=turn, input=user_input)
@@ -6316,6 +7113,62 @@ class AiSandboxChatSession:
             turn=turn,
         )
         method = self._load_method_for_turn(turn=turn)
+        if pending_feedback_job_id and pending_root_job_id:
+            self.history.append({"role": "user", "content": user_input})
+            apply_human_feedback_to_job(
+                flow=self.flow,
+                service=self.service,
+                job_id=pending_feedback_job_id,
+                text=user_input,
+                step_prefix="chat.feedback",
+                treat_as_decision=True,
+                turn=turn,
+            )
+            context = root_resume_context(
+                self.service,
+                root_job_id=pending_root_job_id,
+                user_context=user_input,
+            )
+            output_text = run_existing_root_to_output(
+                flow=self.flow,
+                service=self.service,
+                client=self.client or ChatClient(load_ai_config(self.config_path)),
+                method=method,
+                log_dir=self.log_dir,
+                diagnostic_log_path=self.diagnostic_log_path,
+                root_job_id=pending_root_job_id,
+                user_input=context["user_input"],
+                candidate_text=context["candidate_text"],
+                candidate_appearance_id=context["candidate_appearance_id"],
+                step_prefix="chat.resume",
+                max_repair_attempts=self.max_repair_attempts,
+                max_advancement_waves=self.max_advancement_waves,
+                max_child_dispatches=self.max_frontier_dispatches,
+                max_child_package_repair_attempts=self.max_child_package_repair_attempts,
+                max_parent_integration_repair_attempts=self.max_parent_integration_repair_attempts,
+                turn=turn,
+            )
+            self.history.append({"role": "assistant", "content": output_text})
+            self.last_job_id = pending_root_job_id
+            self.last_feedback_job_id = maybe_feedback_target_job(
+                self.service,
+                root_job_id=pending_root_job_id,
+            )
+            self.flow.write(
+                FLOW_CHAT_TURN_FINISHED,
+                "chat turn finished",
+                turn=turn,
+                job_id=pending_root_job_id,
+            )
+            write_process_step(
+                flow=self.flow,
+                step="chat.turn.finish",
+                phase="chat",
+                action="finished chat turn after feedback re-entry",
+                turn=turn,
+                job_id=pending_root_job_id,
+            )
+            return output_text
 
         root = self.service.create_root_job(wish=user_input, target=user_input, actor_id="human")
         job_id = root["job_id"]
@@ -6650,44 +7503,42 @@ class AiSandboxChatSession:
             frontier_result.get("latest_parent_candidate_appearance_id")
             or candidate["appearance_id"]
         )
-        verification_result = run_candidate_verification(
+        routing_result = run_root_candidate_verification_and_routing(
             flow=self.flow,
             service=self.service,
-            parent_job_id=job_id,
+            client=client,
+            method=method,
+            root_job_id=job_id,
             user_input=user_input,
             candidate_text=verification_candidate_text,
-            parent_candidate_appearance_id=verification_candidate_appearance_id,
-            step_prefix="chat.candidate.verify",
-            turn=turn,
-        )
-        repair_result = run_candidate_repair_loop(
-            flow=self.flow,
-            service=self.service,
-            client=client,
-            method=method,
-            parent_job_id=job_id,
-            user_input=user_input,
-            initial_candidate_text=verification_candidate_text,
-            initial_candidate_appearance_id=verification_candidate_appearance_id,
-            initial_verification_result=verification_result,
+            candidate_appearance_id=verification_candidate_appearance_id,
             max_repair_attempts=self.max_repair_attempts,
-            step_prefix="chat.candidate.verify",
-            turn=turn,
-        )
-        routing_result = run_acceptance_routing(
-            flow=self.flow,
-            service=self.service,
-            client=client,
-            method=method,
-            parent_job_id=job_id,
-            user_input=user_input,
-            repair_result=repair_result,
             step_prefix="chat.candidate.verify",
             turn=turn,
         )
         self.last_feedback_judgment = routing_result["judgment"]
         self.last_feedback_job_id = routing_result["feedback_job_id"]
         output_text = str(routing_result["latest_candidate_text"])
+        if routing_result.get("feedback_job_id"):
+            frontier_result = build_current_frontier_result(
+                service=self.service,
+                root_job_id=job_id,
+                latest_candidate_text=output_text,
+                latest_candidate_appearance_id=str(routing_result["latest_candidate_appearance_id"]),
+                reason="feedback or human-decision job was created and must return through the job loop",
+            )
+            checkpoint_path = record_runtime_checkpoint(
+                flow=self.flow,
+                service=self.service,
+                log_dir=self.log_dir,
+                diagnostic_log_path=self.diagnostic_log_path,
+                job_id=job_id,
+                outcome=str(frontier_result["advancement_loop_outcome"]),
+                reason=str(frontier_result["advancement_stop_reason"]),
+                turn=turn,
+            )
+            output_text = build_nonterminal_advancement_output(frontier_result)
+            output_text = f"{output_text}\n\n## 运行库检查点\n\n`{checkpoint_path}`"
         if self.history and self.history[-1].get("role") == "assistant":
             self.history[-1]["content"] = output_text
 
@@ -6741,7 +7592,7 @@ class AiSandboxChatSession:
             log_path=str(self.diagnostic_log_path),
             readable_log_path=str(self.readable_log_path),
         )
-        shutil.rmtree(self.sandbox_path, ignore_errors=True)
+        destroy_sandbox_directory(self.sandbox_path)
         self.service = None
 
     def fail(self, exc: Exception) -> None:
@@ -6757,8 +7608,7 @@ class AiSandboxChatSession:
         self.finish()
 
     def _reset_sandbox(self) -> None:
-        if self.sandbox_path.exists():
-            shutil.rmtree(self.sandbox_path)
+        prepare_sandbox_directory(self.sandbox_path, log_dir=self.log_dir)
 
     def _write_latest_log_pointer(self) -> None:
         self.log_dir.mkdir(parents=True, exist_ok=True)

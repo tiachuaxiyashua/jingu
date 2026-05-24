@@ -29,6 +29,8 @@ function parseArgs(argv) {
       arg === "--expect-parent-integration" ||
       arg === "--expect-integration-repair" ||
       arg === "--expect-human-decision" ||
+      arg === "--expect-context-resolution" ||
+      arg === "--expect-blocked-state" ||
       arg === "--expect-evidence-hardness" ||
       arg === "--expect-method-learning" ||
       arg === "--expect-filter"
@@ -125,6 +127,20 @@ function validateScenario(scenario) {
     );
   }
 
+  if (scenario.expectation === "context-resolution") {
+    assert(
+      traces.some((trace) => trace && trace.state.some((item) => item.key === "resolution_evidence_appearance_id")),
+      "expected context gap resolution trace item",
+    );
+  }
+
+  if (scenario.expectation === "blocked-state") {
+    assert(
+      projection.nodes.some((node) => node.state === "blocked"),
+      "expected at least one projected blocked node",
+    );
+  }
+
   if (scenario.expectation === "evidence-hardness") {
     assert(projection.milestones.weakEvidenceEvents > 0, "expected weak evidence hardness milestone");
     assert(
@@ -178,6 +194,7 @@ function printUsage() {
       "--expect-repair <log.jsonl> --expect-feedback <log.jsonl> " +
       "--expect-child-review <log.jsonl> --expect-parent-integration <log.jsonl> " +
       "--expect-integration-repair <log.jsonl> --expect-human-decision <log.jsonl> " +
+      "--expect-context-resolution <log.jsonl> --expect-blocked-state <log.jsonl> " +
       "--expect-evidence-hardness <log.jsonl> --expect-method-learning <log.jsonl> " +
       "--expect-filter <log.jsonl> --expect-closure <log.jsonl>",
   );

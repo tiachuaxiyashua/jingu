@@ -19,6 +19,7 @@ FLOW_SANDBOX_CREATED = "sandbox_created"
 FLOW_RUNTIME_INITIALIZED = "runtime_initialized"
 FLOW_RUNTIME_OPTIONS_RECORDED = "runtime_options_recorded"
 FLOW_RUNTIME_CHECKPOINT_RECORDED = "runtime_checkpoint_recorded"
+FLOW_RUNTIME_CHECKPOINT_RESTORED = "runtime_checkpoint_restored"
 FLOW_CHAT_SESSION_STARTED = "chat_session_started"
 FLOW_METHOD_SOURCE_RESOLVED = "method_source_resolved"
 FLOW_METHOD_CONTEXT_LOADED = "method_context_loaded"
@@ -109,6 +110,7 @@ FLOW_ADVANCEMENT_WAVE_FINISHED = "advancement_wave_finished"
 FLOW_ADVANCEMENT_LOOP_FINISHED = "advancement_loop_finished"
 FLOW_HUMAN_DECISION_REQUESTED = "human_decision_requested"
 FLOW_HUMAN_DECISION_RETURNED = "human_decision_returned"
+FLOW_CONTEXT_GAPS_RESOLVED = "context_gaps_resolved"
 FLOW_RESULT_OUTPUT_RECORDED = "result_output_recorded"
 FLOW_CHAT_TURN_FINISHED = "chat_turn_finished"
 FLOW_CHAT_SESSION_FINISHED = "chat_session_finished"
@@ -126,6 +128,7 @@ EVENT_LABELS = {
     FLOW_RUNTIME_INITIALIZED: "运行库已初始化",
     FLOW_RUNTIME_OPTIONS_RECORDED: "运行选项已记录",
     FLOW_RUNTIME_CHECKPOINT_RECORDED: "运行库检查点已记录",
+    FLOW_RUNTIME_CHECKPOINT_RESTORED: "运行库检查点已恢复",
     FLOW_CHAT_SESSION_STARTED: "对话会话已开始",
     FLOW_METHOD_SOURCE_RESOLVED: "方法来源已解析",
     FLOW_METHOD_CONTEXT_LOADED: "方法上下文已加载",
@@ -214,6 +217,7 @@ EVENT_LABELS = {
     FLOW_ADVANCEMENT_LOOP_FINISHED: "推进循环已结束",
     FLOW_HUMAN_DECISION_REQUESTED: "人类裁决已请求",
     FLOW_HUMAN_DECISION_RETURNED: "人类裁决已回流",
+    FLOW_CONTEXT_GAPS_RESOLVED: "上下文缺口已补齐",
     FLOW_RESULT_OUTPUT_RECORDED: "结果输出已记录",
     FLOW_CHAT_TURN_FINISHED: "对话轮次已完成",
     FLOW_CHAT_SESSION_FINISHED: "对话会话已结束",
@@ -364,6 +368,8 @@ FIELD_LABELS = {
     "repair_response": "修复响应",
     "repair_source": "修复来源",
     "remaining_frontier_jobs": "剩余前沿业",
+    "remaining_gaps": "剩余缺口",
+    "resolved_gaps": "已补齐缺口",
     "repairable_check_count": "可修复校验项数量",
     "repairable_checks": "可修复校验项",
     "readable_log_path": "可读日志路径",
@@ -374,6 +380,7 @@ FIELD_LABELS = {
     "evidence_id": "证据相编号",
     "evidence_kind": "证据类型",
     "required_context_gaps": "缺失上下文",
+    "resolution_evidence_appearance_id": "补缘证据相编号",
     "response": "AI 响应",
     "result": "结果输出",
     "runtime_options": "运行选项",
@@ -436,6 +443,8 @@ JOB_TREE_ACTION_LABELS = {
     "parent_reevaluation_recorded": "父业重评估已记录",
     "accepted_parent_reevaluation_recorded": "已接收果包父业重评估已记录",
     "human_decision_child_created": "人类裁决子业已创建",
+    "human_decision_returned": "人类裁决已回流",
+    "context_gaps_resolved": "上下文缺口已补齐",
     "parent_integration_job_created": "父业整合业已创建",
     "parent_integration_candidate_submitted": "父业整合候选已提交",
     "parent_integration_rejected": "父业整合已拒收",
@@ -458,6 +467,7 @@ JOB_TREE_ACTION_LABELS = {
     "verification_child_created": "校验子业已创建",
     "verification_child_ready": "校验子业已就绪",
     "verification_child_running": "校验子业运行中",
+    "verification_child_accepted": "校验子业自身已接收",
     "verification_evidence_attached": "校验证据已挂载",
     "verification_feedback_child_created": "校验反馈裁决子业已创建",
 }

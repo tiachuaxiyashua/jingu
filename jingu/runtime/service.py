@@ -19,8 +19,10 @@ from jingu.runtime.constants import (
     EVENT_CANDIDATE_OBSERVATION_RECORDED,
     EVENT_CANDIDATE_SUBMITTED,
     EVENT_CHILD_JOB_CREATED,
+    EVENT_CONTEXT_GAPS_RESOLVED,
     EVENT_EVIDENCE_SUBMITTED,
     EVENT_JOB_BLOCKED,
+    EVENT_JOB_WAITING_HUMAN,
     EVENT_METHOD_CALL_FRAME_OPENED,
     EVENT_JOB_MARKED_READY,
     EVENT_JOB_STARTED,
@@ -34,6 +36,7 @@ from jingu.runtime.constants import (
     STATE_REJECTED,
     STATE_REVIEWING,
     STATE_RUNNING,
+    STATE_WAITING_HUMAN,
 )
 from jingu.runtime.gatekeeper import Guardkeeper
 from jingu.runtime.object_store import ObjectStore, checksum_text
@@ -168,6 +171,88 @@ class RuntimeService:
             actor_id=actor_id,
             payload={"reason": reason},
         )
+
+    def mark_waiting_human(
+        self,
+        job_id: str,
+        *,
+        reason: str = "",
+        actor_id: str = "system",
+    ) -> dict[str, Any]:
+        return self._transition_job(
+            job_id=job_id,
+            next_state=STATE_WAITING_HUMAN,
+            event_type=EVENT_JOB_WAITING_HUMAN,
+            actor_id=actor_id,
+            payload={"reason": reason},
+        )
+
+    def resolve_context_gaps(
+        self,
+        job_id: str,
+        *,
+        resolution_text: str,
+        resolved_gaps: list[str] | None = None,
+        actor_id: str = "human",
+        metadata: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        resolution_text = resolution_text.strip()
+        if not resolution_text:
+            raise ValueError("resolution text is required")
+        evidence_result = self.submit_evidence(
+            job_id,
+            text=resolution_text,
+            actor_id=actor_id,
+            metadata={
+                "evidence_kind": "context_gap_resolution",
+                "evidence_hardness": "human_or_external_context",
+                **(metadata or {}),
+            },
+        )
+        evidence = evidence_result["evidence"]
+        with self.repository.transaction() as connection:
+            job = self.repository.require_job(connection, job_id)
+            current_gaps = decode_json(job.get("required_context_gaps"), [])
+            if resolved_gaps is None:
+                removed = list(current_gaps)
+                remaining: list[str] = []
+            else:
+                requested = {str(item).strip() for item in resolved_gaps if str(item).strip()}
+                removed = [gap for gap in current_gaps if str(gap).strip() in requested]
+                remaining = [gap for gap in current_gaps if str(gap).strip() not in requested]
+            updated = self.repository.update_job(
+                connection,
+                job_id,
+                required_context_gaps=encode_json(remaining),
+                evidence_appearance_id=evidence["appearance_id"],
+            )
+            self.repository.append_event(
+                connection,
+                job_id=job_id,
+                event_type=EVENT_CONTEXT_GAPS_RESOLVED,
+                actor_id=actor_id,
+                payload={
+                    "resolved_gaps": removed,
+                    "remaining_gaps": remaining,
+                    "resolution_evidence_appearance_id": evidence["appearance_id"],
+                },
+            )
+            if not remaining and updated["state"] in {STATE_DRAFT, STATE_BLOCKED, STATE_WAITING_HUMAN}:
+                self.guardkeeper.ensure_transition(updated, STATE_READY)
+                updated = self.repository.update_job(connection, job_id, state=STATE_READY)
+                self.repository.append_event(
+                    connection,
+                    job_id=job_id,
+                    event_type=EVENT_JOB_MARKED_READY,
+                    actor_id="system",
+                    payload={"reason": "context gaps resolved"},
+                )
+            return {
+                "job": self._hydrate_job(connection, updated),
+                "resolution_evidence": evidence,
+                "resolved_gaps": removed,
+                "remaining_gaps": remaining,
+            }
 
     def bind_method_law_fragments(
         self,
@@ -375,6 +460,7 @@ class RuntimeService:
         )
         evidence = evidence_result["evidence"]
         with self.repository.transaction() as connection:
+            job = self.repository.require_job(connection, job_id)
             self.repository.append_event(
                 connection,
                 job_id=job_id,
@@ -387,8 +473,30 @@ class RuntimeService:
                     "evidence_kind": "human_decision_return",
                 },
             )
+            gaps = decode_json(job.get("required_context_gaps"), [])
+            updated = job
+            if job["state"] == STATE_WAITING_HUMAN and not gaps:
+                self.guardkeeper.ensure_transition(job, STATE_READY)
+                updated = self.repository.update_job(connection, job_id, state=STATE_READY)
+                self.repository.append_event(
+                    connection,
+                    job_id=job_id,
+                    event_type=EVENT_JOB_MARKED_READY,
+                    actor_id="system",
+                    payload={"reason": "human decision returned"},
+                )
+            elif job["state"] == STATE_WAITING_HUMAN and gaps:
+                self.guardkeeper.ensure_transition(job, STATE_BLOCKED)
+                updated = self.repository.update_job(connection, job_id, state=STATE_BLOCKED)
+                self.repository.append_event(
+                    connection,
+                    job_id=job_id,
+                    event_type=EVENT_JOB_BLOCKED,
+                    actor_id="system",
+                    payload={"reason": "human decision returned but context gaps remain"},
+                )
         return {
-            "job": self.get_status(job_id),
+            "job": self.get_status(str(updated["job_id"])),
             "decision_evidence": evidence,
         }
 
@@ -477,6 +585,20 @@ class RuntimeService:
     def list_events(self, job_id: str) -> list[dict[str, Any]]:
         with self.repository.transaction() as connection:
             return self.repository.list_events(connection, job_id)
+
+    def list_root_jobs(self) -> list[dict[str, Any]]:
+        with self.repository.transaction() as connection:
+            return [self._hydrate_job(connection, job) for job in self.repository.list_root_jobs(connection)]
+
+    def read_appearance_text(self, appearance_id: str) -> str:
+        with self.repository.transaction() as connection:
+            appearance = self.repository.require_appearance(connection, appearance_id)
+            self.guardkeeper.ensure_valid_appearance(appearance)
+            location = appearance.get("location")
+            if not location:
+                return str(appearance.get("summary") or "")
+            path = self.paths.resolve_runtime_location(str(location))
+            return path.read_text(encoding="utf-8-sig")
 
     def _transition_job(
         self,

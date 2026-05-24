@@ -122,6 +122,54 @@ class JobTreeViewerProjectionTest(unittest.TestCase):
                     },
                 },
                 {
+                    "event_type": "context_gaps_resolved",
+                    "message": "context gaps resolved",
+                    "timestamp": "2026-05-23T00:00:04.400000Z",
+                    "data": {
+                        "job_id": "job_feedback",
+                        "resolved_gaps": "[\"方向缺口\"]",
+                        "remaining_gaps": "[]",
+                        "resolution_evidence_appearance_id": "appearance_gap_resolution",
+                    },
+                },
+                {
+                    "event_type": "job_tree_snapshot_recorded",
+                    "message": "job tree snapshot recorded",
+                    "timestamp": "2026-05-23T00:00:04.500000Z",
+                    "data": {
+                        "job_id": "job_feedback",
+                        "root_job_id": "job_root",
+                        "tree_snapshot": json.dumps(
+                            {
+                                "root_job_id": "job_root",
+                                "nodes": [
+                                    {
+                                        "job_id": "job_root",
+                                        "parent_job_id": None,
+                                        "root_job_id": "job_root",
+                                        "state": "reviewing",
+                                        "target": "root",
+                                    },
+                                    {
+                                        "job_id": "job_feedback",
+                                        "parent_job_id": "job_root",
+                                        "root_job_id": "job_root",
+                                        "state": "blocked",
+                                        "target": "方向裁决",
+                                    },
+                                ],
+                                "links": [
+                                    {
+                                        "parent_job_id": "job_root",
+                                        "child_job_id": "job_feedback",
+                                    }
+                                ],
+                            },
+                            ensure_ascii=False,
+                        ),
+                    },
+                },
+                {
                     "event_type": "run_finished",
                     "message": "run finished",
                     "timestamp": "2026-05-23T00:00:05Z",
@@ -150,6 +198,10 @@ class JobTreeViewerProjectionTest(unittest.TestCase):
                     "--expect-integration-repair",
                     str(log_path),
                     "--expect-human-decision",
+                    str(log_path),
+                    "--expect-context-resolution",
+                    str(log_path),
+                    "--expect-blocked-state",
                     str(log_path),
                     "--expect-evidence-hardness",
                     str(log_path),
