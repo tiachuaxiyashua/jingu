@@ -24,6 +24,7 @@ from jingu.sandbox.paths import latest_readable_log_pointer_path
 from jingu.sandbox.runner import (
     AiSandboxChatSession,
     AiSandboxRunner,
+    normalize_split_proposal,
     parse_acceptance_routing_judgment,
 )
 
@@ -59,8 +60,26 @@ def method_review_json(summary: str = "used method") -> str:
     )
 
 
+def default_split_law(**overrides: object) -> dict:
+    law = {
+        "blocks_parent_execution": True,
+        "blocks_parent_acceptance": False,
+        "needs_distinct_capability": False,
+        "has_independent_result_package": True,
+        "has_high_value_or_risk": False,
+        "reason": "parent cannot continue without the child result package",
+    }
+    law.update(overrides)
+    return law
+
+
 def split_proposals_json(proposals: list[dict] | None = None) -> str:
-    return json.dumps({"proposals": proposals or []}, ensure_ascii=False)
+    enriched = []
+    for proposal in proposals or []:
+        item = {**proposal}
+        item.setdefault("split_law", default_split_law())
+        enriched.append(item)
+    return json.dumps({"proposals": enriched}, ensure_ascii=False)
 
 
 def child_result_package_json(
@@ -280,6 +299,26 @@ class FakeChatClient:
 
 
 class AiSandboxChatTest(unittest.TestCase):
+    def test_ai_split_proposal_requires_split_law(self) -> None:
+        with self.assertRaises(RuntimeError) as context:
+            normalize_split_proposal(
+                {
+                    "target": "decorative concept list",
+                    "blocking_reason": "parent may want a glossary",
+                    "output_contract": "glossary",
+                    "acceptance_criteria": "glossary exists",
+                    "estimated_effort": 1,
+                    "depth_limit": 2,
+                    "required_context_gaps": [],
+                    "method_path": "",
+                    "method_binding_reason": "",
+                    "method_return_point": "",
+                },
+                catalog_by_path={},
+            )
+
+        self.assertIn("split_law", str(context.exception))
+
     def test_load_ai_config_from_local_file(self) -> None:
         with TemporaryDirectory() as tmp:
             path = Path(tmp) / ".env.deepseek.local"

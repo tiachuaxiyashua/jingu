@@ -52,6 +52,9 @@ class JobTreeEngineTest(unittest.TestCase):
         self.assertEqual(child["parent_job_id"], root["job_id"])
         self.assertEqual(child["root_job_id"], root["job_id"])
         self.assertEqual(child["acceptance_criteria"], "inventory names every required input")
+        self.assertEqual(result["proposal"]["split_law"]["law_name"], "分业判定律")
+        self.assertTrue(result["proposal"]["split_law"]["blocks_parent_execution"])
+        self.assertTrue(result["proposal"]["split_law"]["has_independent_result_package"])
         self.assertEqual(
             [event["event_type"] for event in self.runtime.list_events(root["job_id"])],
             ["root_job_created", "split_proposal_accepted"],
@@ -77,6 +80,56 @@ class JobTreeEngineTest(unittest.TestCase):
 
         tree = self.tree.get_tree(root["job_id"])
         self.assertEqual(len(tree["jobs"]), 1)
+
+    def test_split_decision_law_rejects_decorative_child(self) -> None:
+        root = self.runtime.create_root_job(wish="validate a method")
+
+        with self.assertRaises(GuardrailViolation) as context:
+            self.tree.propose_child_job(
+                parent_job_id=root["job_id"],
+                target="name related concepts",
+                blocking_reason="these concepts are interesting but not blocking",
+                output_contract="concept list",
+                acceptance_criteria="list exists",
+                estimated_effort=1,
+                depth_limit=2,
+                split_law={
+                    "blocks_parent_execution": False,
+                    "blocks_parent_acceptance": False,
+                    "needs_distinct_capability": False,
+                    "has_independent_result_package": True,
+                    "has_high_value_or_risk": False,
+                    "reason": "all split triggers are false",
+                },
+            )
+
+        self.assertIn("split decision law requires", str(context.exception))
+        self.assertEqual(len(self.tree.get_tree(root["job_id"])["jobs"]), 1)
+
+    def test_split_decision_law_rejects_child_without_independent_package(self) -> None:
+        root = self.runtime.create_root_job(wish="validate a method")
+
+        with self.assertRaises(GuardrailViolation) as context:
+            self.tree.propose_child_job(
+                parent_job_id=root["job_id"],
+                target="mention a risk inline",
+                blocking_reason="parent needs the risk noted",
+                output_contract="inline note only",
+                acceptance_criteria="note is present",
+                estimated_effort=1,
+                depth_limit=2,
+                split_law={
+                    "blocks_parent_execution": True,
+                    "blocks_parent_acceptance": False,
+                    "needs_distinct_capability": False,
+                    "has_independent_result_package": False,
+                    "has_high_value_or_risk": False,
+                    "reason": "the result cannot be consumed as an independent package",
+                },
+            )
+
+        self.assertIn("independent result package", str(context.exception))
+        self.assertEqual(len(self.tree.get_tree(root["job_id"])["jobs"]), 1)
 
     def test_duplicate_sibling_target_is_rejected(self) -> None:
         root = self.runtime.create_root_job(wish="validate a method")

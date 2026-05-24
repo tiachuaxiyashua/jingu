@@ -205,6 +205,7 @@ const FIELD_LABELS = {
   evidence_hardness: "证据硬度",
   evidence_kind: "证据类型",
   candidate_lineage: "候选血缘",
+  split_law: "分业判定律",
   job_tree_action: "业树动作",
   job_state: "业状态",
   process_step: "运行步骤",
@@ -279,6 +280,7 @@ const STEP_FIELD_GROUPS = {
     "evidence_hardness",
     "evidence_kind",
     "candidate_lineage",
+    "split_law",
   ],
   state: [
     "job_tree_action",

@@ -34,6 +34,20 @@ PACKAGE_REQUIRED_FIELDS = {
     "suggested_follow_up_jobs",
 }
 PACKAGE_METADATA_KIND = "result_package"
+SPLIT_DECISION_LAW_FIELDS = (
+    "blocks_parent_execution",
+    "blocks_parent_acceptance",
+    "needs_distinct_capability",
+    "has_independent_result_package",
+    "has_high_value_or_risk",
+)
+SPLIT_DECISION_TRIGGER_FIELDS = (
+    "blocks_parent_execution",
+    "blocks_parent_acceptance",
+    "needs_distinct_capability",
+    "has_high_value_or_risk",
+)
+SPLIT_DECISION_LAW_NAME = "分业判定律"
 
 
 class TreeService:
@@ -54,6 +68,7 @@ class TreeService:
         method_path: Path | str | None = None,
         method_binding_reason: str | None = None,
         method_return_point: str | None = None,
+        split_law: dict[str, Any] | None = None,
         actor_id: str = "ai",
     ) -> dict[str, Any]:
         target = self._require_text("target", target)
@@ -69,6 +84,12 @@ class TreeService:
             raise GuardrailViolation("estimated effort must be positive")
         if depth_limit < 1:
             raise GuardrailViolation("depth limit must be positive")
+        split_law = self._normalize_split_decision_law(
+            split_law=split_law,
+            blocking_reason=blocking_reason,
+            method_path=method_path,
+            required_context_gaps=required_context_gaps or [],
+        )
 
         with self.runtime.repository.transaction() as connection:
             parent = self.runtime.repository.require_job(connection, parent_job_id)
@@ -95,6 +116,7 @@ class TreeService:
                 "depth_limit": depth_limit,
                 "child_depth": child_depth,
                 "required_context_gaps": required_context_gaps or [],
+                "split_law": split_law,
             }
             self.runtime.repository.append_event(
                 connection,
@@ -126,6 +148,7 @@ class TreeService:
                     "target": target,
                     "blocking_reason": blocking_reason,
                     "output_contract": output_contract,
+                    "split_law": split_law,
                 },
             )
             result = {
@@ -148,6 +171,7 @@ class TreeService:
                     "target": target,
                     "blocking_reason": blocking_reason,
                     "required_context_gaps": required_context_gaps or [],
+                    "split_law": split_law,
                 },
                 output_contract=output_contract,
                 acceptance_criteria=acceptance_criteria,
@@ -161,6 +185,50 @@ class TreeService:
             )
             result["method_binding"] = binding
         return result
+
+    def _normalize_split_decision_law(
+        self,
+        *,
+        split_law: dict[str, Any] | None,
+        blocking_reason: str,
+        method_path: Path | str | None,
+        required_context_gaps: list[str],
+    ) -> dict[str, Any]:
+        if split_law is None:
+            normalized = {
+                "law_name": SPLIT_DECISION_LAW_NAME,
+                "blocks_parent_execution": True,
+                "blocks_parent_acceptance": False,
+                "needs_distinct_capability": bool(method_path) or bool(required_context_gaps),
+                "has_independent_result_package": True,
+                "has_high_value_or_risk": False,
+                "reason": blocking_reason,
+            }
+        else:
+            if not isinstance(split_law, dict):
+                raise GuardrailViolation("split law must be a JSON object")
+            normalized = {"law_name": str(split_law.get("law_name") or SPLIT_DECISION_LAW_NAME)}
+            for field in SPLIT_DECISION_LAW_FIELDS:
+                if field not in split_law:
+                    raise GuardrailViolation(f"split law is missing field: {field}")
+                value = split_law[field]
+                if not isinstance(value, bool):
+                    raise GuardrailViolation(f"split law field must be boolean: {field}")
+                normalized[field] = value
+            normalized["reason"] = self._require_text(
+                "split_law.reason",
+                str(split_law.get("reason") or blocking_reason),
+            )
+
+        if not normalized["has_independent_result_package"]:
+            raise GuardrailViolation(
+                "split decision law requires an independent result package consumable by the parent"
+            )
+        if not any(bool(normalized[field]) for field in SPLIT_DECISION_TRIGGER_FIELDS):
+            raise GuardrailViolation(
+                "split decision law requires execution, acceptance, capability, or high-value/risk grounds"
+            )
+        return normalized
 
     def _load_optional_method_binding(
         self,

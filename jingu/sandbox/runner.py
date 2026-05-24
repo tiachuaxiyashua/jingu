@@ -23,7 +23,7 @@ from jingu.runtime.constants import (
 from jingu.runtime.object_store import checksum_text
 from jingu.runtime.repository import decode_json
 from jingu.runtime.service import RuntimeService
-from jingu.runtime.tree import TreeService
+from jingu.runtime.tree import SPLIT_DECISION_LAW_FIELDS, SPLIT_DECISION_LAW_NAME, TreeService
 from jingu.sandbox.flow import (
     FLOW_AI_REQUEST_STARTED,
     FLOW_AI_RESPONSE_RECEIVED,
@@ -695,7 +695,9 @@ def build_split_proposal_messages(
         },
         "available_method_catalog": method_catalog,
         "split_rules": [
-            "只有当不拆分会阻塞父业执行、验收、证据生成或上下文控制时，才提出子业。",
+            "分业只服从分业判定律，不新增概念显影器、阻塞判断器、补缘器等组件。",
+            "一个概念是否变成子业，只看 split_law 的五项布尔判断。",
+            "五项全否时必须留在父业内部作为检查项，不得提出子业。",
             "禁止为了概念完整性、装饰性分类或复述父业目标而提出子业。",
             "子业必须有独立局部果、可验收输出契约和父业可消费的回流点。",
             "如果子业需要调用法，method_path 必须从 available_method_catalog 中选择并原样返回。",
@@ -715,6 +717,12 @@ def build_split_proposal_messages(
                 "method_path": "empty string or one exact method_path from available_method_catalog",
                 "method_binding_reason": "empty string unless method_path is set",
                 "method_return_point": "empty string unless method_path is set",
+                "split_law": (
+                    "object with boolean fields: blocks_parent_execution, "
+                    "blocks_parent_acceptance, needs_distinct_capability, "
+                    "has_independent_result_package, has_high_value_or_risk; "
+                    "also include reason as a non-empty string"
+                ),
             },
             "proposal_fields": [
                 "target",
@@ -727,7 +735,13 @@ def build_split_proposal_messages(
                 "method_path",
                 "method_binding_reason",
                 "method_return_point",
+                "split_law",
             ],
+            "split_law_rule": (
+                "has_independent_result_package must be true, and at least one of "
+                "blocks_parent_execution, blocks_parent_acceptance, "
+                "needs_distinct_capability, has_high_value_or_risk must be true."
+            ),
             "method_fields_rule": (
                 "method_path may be empty; if method_path is not empty, "
                 "method_binding_reason and method_return_point are required."
@@ -904,6 +918,7 @@ def run_split_proposal_registration(
                 method_path=normalized.get("method_path") or None,
                 method_binding_reason=normalized.get("method_binding_reason") or None,
                 method_return_point=normalized.get("method_return_point") or None,
+                split_law=normalized["split_law"],
                 actor_id="ai",
             )
             child = result["child"]
@@ -912,6 +927,7 @@ def run_split_proposal_registration(
                 "child_job_id": child["job_id"],
                 "target": child["target"],
                 "method_path": normalized.get("method_path", ""),
+                "split_law": normalized["split_law"],
             }
             accepted.append(accepted_item)
             accepted_data = {
@@ -920,6 +936,7 @@ def run_split_proposal_registration(
                 "child_job_id": child["job_id"],
                 "split_proposal_index": str(index),
                 "split_proposal_decision": "accepted",
+                "split_law": json.dumps(normalized["split_law"], ensure_ascii=False, sort_keys=True, indent=2),
                 "split_proposal": json.dumps(normalized, ensure_ascii=False, sort_keys=True, indent=2),
                 "split_registration_summary": json.dumps(
                     accepted_item, ensure_ascii=False, sort_keys=True, indent=2
@@ -3624,6 +3641,7 @@ def normalize_split_proposal(
         "acceptance_criteria",
         "estimated_effort",
         "depth_limit",
+        "split_law",
     ]
     missing = [
         field
@@ -3653,6 +3671,7 @@ def normalize_split_proposal(
             field_name="required_context_gaps",
             error_prefix="split proposal",
         ),
+        "split_law": normalize_split_law_field(proposal["split_law"]),
     }
     method_path = str(proposal.get("method_path") or "").strip()
     method_binding_reason = str(proposal.get("method_binding_reason") or "").strip()
@@ -3672,6 +3691,27 @@ def normalize_split_proposal(
         normalized["method_path"] = ""
         normalized["method_binding_reason"] = ""
         normalized["method_return_point"] = ""
+    return normalized
+
+
+def normalize_split_law_field(value: Any) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        raise RuntimeError("split proposal split_law must be a JSON object")
+    normalized: dict[str, Any] = {
+        "law_name": str(value.get("law_name") or SPLIT_DECISION_LAW_NAME)
+    }
+    missing = [field for field in SPLIT_DECISION_LAW_FIELDS if field not in value]
+    if missing:
+        raise RuntimeError(f"split proposal split_law is missing fields: {', '.join(missing)}")
+    for field in SPLIT_DECISION_LAW_FIELDS:
+        field_value = value[field]
+        if not isinstance(field_value, bool):
+            raise RuntimeError(f"split proposal split_law field must be boolean: {field}")
+        normalized[field] = field_value
+    reason = str(value.get("reason") or "").strip()
+    if not reason:
+        raise RuntimeError("split proposal split_law must include reason")
+    normalized["reason"] = reason
     return normalized
 
 
