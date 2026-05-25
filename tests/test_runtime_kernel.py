@@ -21,6 +21,13 @@ from jingu.runtime.errors import GuardrailViolation, NotFoundError
 from jingu.runtime.service import RuntimeService
 
 
+ACCEPTANCE = "candidate has evidence and stays within this job scope"
+EVIDENCE_METADATA = {
+    "evidence_kind": "manual_test",
+    "evidence_hardness": "manual",
+}
+
+
 class RuntimeKernelTest(unittest.TestCase):
     def setUp(self) -> None:
         self.tmp = TemporaryDirectory()
@@ -47,7 +54,7 @@ class RuntimeKernelTest(unittest.TestCase):
         self.assertNotEqual(job["original_wish"]["summary"], job["target"])
 
     def test_events_are_append_only_and_ordered(self) -> None:
-        job = self.service.create_root_job(wish="wish")
+        job = self.service.create_root_job(wish="wish", acceptance_criteria=ACCEPTANCE)
         job_id = job["job_id"]
         self.service.mark_ready(job_id)
         self.service.start_job(job_id)
@@ -63,19 +70,31 @@ class RuntimeKernelTest(unittest.TestCase):
         self.assertEqual(events[2]["previous_checksum"], events[1]["checksum"])
 
     def test_ready_job_can_enter_running_when_context_is_complete(self) -> None:
-        job = self.service.create_root_job(wish="wish")
+        job = self.service.create_root_job(wish="wish", acceptance_criteria=ACCEPTANCE)
         self.service.mark_ready(job["job_id"])
         running = self.service.start_job(job["job_id"])
 
         self.assertEqual(running["state"], STATE_RUNNING)
 
-    def test_running_is_blocked_when_required_context_has_gaps(self) -> None:
-        job = self.service.create_root_job(wish="wish", required_context_gaps=["missing source"])
-        self.service.mark_ready(job["job_id"])
+    def test_readiness_requires_acceptance_criteria(self) -> None:
+        job = self.service.create_root_job(wish="wish")
         before = len(self.service.list_events(job["job_id"]))
 
         with self.assertRaises(GuardrailViolation):
-            self.service.start_job(job["job_id"])
+            self.service.mark_ready(job["job_id"])
+
+        self.assertEqual(len(self.service.list_events(job["job_id"])), before)
+
+    def test_readiness_is_blocked_when_required_context_has_gaps(self) -> None:
+        job = self.service.create_root_job(
+            wish="wish",
+            acceptance_criteria=ACCEPTANCE,
+            required_context_gaps=["missing source"],
+        )
+        before = len(self.service.list_events(job["job_id"]))
+
+        with self.assertRaises(GuardrailViolation):
+            self.service.mark_ready(job["job_id"])
 
         self.assertEqual(len(self.service.list_events(job["job_id"])), before)
 
@@ -99,10 +118,23 @@ class RuntimeKernelTest(unittest.TestCase):
         self.assertEqual(len(self.service.list_events(job_id)), before)
         self.assertNotEqual(self.service.get_status(job_id)["state"], STATE_ACCEPTED)
 
+    def test_evidence_requires_kind_and_hardness(self) -> None:
+        job_id = self._running_job()
+        before = len(self.service.list_events(job_id))
+
+        with self.assertRaises(GuardrailViolation):
+            self.service.submit_evidence(job_id, text="unclassified evidence")
+
+        self.assertEqual(len(self.service.list_events(job_id)), before)
+
     def test_acceptance_marks_job_and_candidate_accepted(self) -> None:
         job_id = self._running_job()
         candidate = self.service.submit_candidate(job_id, text="candidate body")["candidate"]
-        evidence = self.service.submit_evidence(job_id, text="evidence body")["evidence"]
+        evidence = self.service.submit_evidence(
+            job_id,
+            text="evidence body",
+            metadata=EVIDENCE_METADATA,
+        )["evidence"]
 
         accepted = self.service.accept_candidate(
             job_id,
@@ -113,6 +145,32 @@ class RuntimeKernelTest(unittest.TestCase):
         self.assertEqual(accepted["state"], STATE_ACCEPTED)
         self.assertEqual(accepted["result_appearance_id"], candidate["appearance_id"])
         self.assertEqual(accepted["result"]["state"], APPEARANCE_STATE_ACCEPTED)
+
+    def test_terminal_job_rejects_late_evidence_rewrite(self) -> None:
+        job_id = self._running_job()
+        candidate = self.service.submit_candidate(job_id, text="candidate body")["candidate"]
+        evidence = self.service.submit_evidence(
+            job_id,
+            text="evidence body",
+            metadata=EVIDENCE_METADATA,
+        )["evidence"]
+        self.service.accept_candidate(
+            job_id,
+            candidate_appearance_id=candidate["appearance_id"],
+            evidence_appearance_id=evidence["appearance_id"],
+        )
+        before = len(self.service.list_events(job_id))
+
+        with self.assertRaises(GuardrailViolation):
+            self.service.submit_evidence(
+                job_id,
+                text="late evidence",
+                metadata=EVIDENCE_METADATA,
+            )
+
+        status = self.service.get_status(job_id)
+        self.assertEqual(len(self.service.list_events(job_id)), before)
+        self.assertEqual(status["evidence_appearance_id"], evidence["appearance_id"])
 
     def test_missing_job_operation_does_not_append_event(self) -> None:
         self.service.initialize()
@@ -139,11 +197,19 @@ class RuntimeKernelTest(unittest.TestCase):
 
     def test_child_job_cannot_complete_root_scope(self) -> None:
         root = self.service.create_root_job(wish="root wish")
-        child = self.service.create_child_job(parent_job_id=root["job_id"], target="child target")
+        child = self.service.create_child_job(
+            parent_job_id=root["job_id"],
+            target="child target",
+            acceptance_criteria=ACCEPTANCE,
+        )
         self.service.mark_ready(child["job_id"])
         self.service.start_job(child["job_id"])
         candidate = self.service.submit_candidate(child["job_id"], text="candidate")["candidate"]
-        evidence = self.service.submit_evidence(child["job_id"], text="evidence")["evidence"]
+        evidence = self.service.submit_evidence(
+            child["job_id"],
+            text="evidence",
+            metadata=EVIDENCE_METADATA,
+        )["evidence"]
         before = len(self.service.list_events(child["job_id"]))
 
         with self.assertRaises(GuardrailViolation):
@@ -160,7 +226,11 @@ class RuntimeKernelTest(unittest.TestCase):
     def test_broken_appearance_reference_is_rejected(self) -> None:
         job_id = self._running_job()
         candidate = self.service.submit_candidate(job_id, text="candidate")["candidate"]
-        evidence = self.service.submit_evidence(job_id, text="evidence")["evidence"]
+        evidence = self.service.submit_evidence(
+            job_id,
+            text="evidence",
+            metadata=EVIDENCE_METADATA,
+        )["evidence"]
         candidate_path = self.service.paths.resolve_runtime_location(candidate["location"])
         candidate_path.write_text("tampered", encoding="utf-8")
         before = len(self.service.list_events(job_id))
@@ -187,12 +257,31 @@ class RuntimeKernelTest(unittest.TestCase):
             return json.loads(completed.stdout)
 
         run("init")
-        root = run("root", "create", "--wish", "wish", "--target", "target")
+        root = run(
+            "root",
+            "create",
+            "--wish",
+            "wish",
+            "--target",
+            "target",
+            "--acceptance-criteria",
+            ACCEPTANCE,
+        )
         job_id = root["job_id"]
         run("job", "ready", job_id)
         run("job", "run", job_id)
         candidate = run("candidate", "submit", job_id, "--text", "candidate")["candidate"]
-        evidence = run("evidence", "submit", job_id, "--text", "evidence")["evidence"]
+        evidence = run(
+            "evidence",
+            "submit",
+            job_id,
+            "--text",
+            "evidence",
+            "--evidence-kind",
+            "manual_test",
+            "--evidence-hardness",
+            "manual",
+        )["evidence"]
         accepted = run(
             "accept",
             job_id,
@@ -238,6 +327,7 @@ class RuntimeKernelTest(unittest.TestCase):
     def test_context_gap_resolution_clears_gaps_and_marks_ready(self) -> None:
         job = self.service.create_root_job(
             wish="wish",
+            acceptance_criteria=ACCEPTANCE,
             required_context_gaps=["missing source", "missing threshold"],
         )
         blocked = self.service.mark_blocked(job["job_id"], reason="missing context")
@@ -267,6 +357,7 @@ class RuntimeKernelTest(unittest.TestCase):
         decision_job = self.service.create_child_job(
             parent_job_id=root["job_id"],
             target="Clarify direction",
+            acceptance_criteria=ACCEPTANCE,
         )
         waiting = self.service.mark_waiting_human(decision_job["job_id"], reason="needs owner")
         self.assertEqual(waiting["state"], STATE_WAITING_HUMAN)
@@ -281,7 +372,7 @@ class RuntimeKernelTest(unittest.TestCase):
         self.assertEqual(event_types[-1], "job_marked_ready")
 
     def _running_job(self) -> str:
-        job = self.service.create_root_job(wish="wish")
+        job = self.service.create_root_job(wish="wish", acceptance_criteria=ACCEPTANCE)
         self.service.mark_ready(job["job_id"])
         self.service.start_job(job["job_id"])
         return job["job_id"]

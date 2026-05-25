@@ -90,6 +90,8 @@ def build_parser() -> argparse.ArgumentParser:
     evidence_subparsers = evidence_parser.add_subparsers(dest="evidence_command", required=True)
     evidence_submit = evidence_subparsers.add_parser("submit", help="Submit evidence.")
     evidence_submit.add_argument("job_id")
+    evidence_submit.add_argument("--evidence-kind", required=True)
+    evidence_submit.add_argument("--evidence-hardness", required=True)
     add_content_arguments(evidence_submit)
 
     decision_parser = subparsers.add_parser("decision", help="Human decision return commands.")
@@ -312,7 +314,15 @@ def run(args: argparse.Namespace) -> Any:
         return service.submit_candidate(args.job_id, file_path=args.file, text=args.text)
 
     if args.command == "evidence" and args.evidence_command == "submit":
-        return service.submit_evidence(args.job_id, file_path=args.file, text=args.text)
+        return service.submit_evidence(
+            args.job_id,
+            file_path=args.file,
+            text=args.text,
+            metadata={
+                "evidence_kind": args.evidence_kind,
+                "evidence_hardness": args.evidence_hardness,
+            },
+        )
 
     if args.command == "decision" and args.decision_command == "return":
         return service.record_human_decision(args.job_id, decision_text=args.text, actor_id="human")

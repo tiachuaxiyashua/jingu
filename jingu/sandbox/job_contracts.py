@@ -14,6 +14,7 @@ CONTRACTS_FILENAME = "job_contracts.json"
 
 @dataclass(frozen=True)
 class SandboxJobContracts:
+    root_acceptance_criteria: str
     verification_target: str
     verification_acceptance_criteria: str
     repair_target: str

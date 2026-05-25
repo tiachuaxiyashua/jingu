@@ -377,7 +377,9 @@ class RuntimeService:
     ) -> dict[str, Any]:
         appearance_id = new_id("appearance")
         with self.repository.transaction() as connection:
-            self.repository.require_job(connection, job_id)
+            job = self.repository.require_job(connection, job_id)
+            self.guardkeeper.ensure_evidence_submission(job)
+            self.guardkeeper.ensure_evidence_metadata(metadata)
             stored = self._store_content(appearance_id, file_path=file_path, text=text)
             appearance = self.repository.create_appearance(
                 connection,

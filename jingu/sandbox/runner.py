@@ -155,6 +155,7 @@ from jingu.sandbox.verification import (
 
 TERMINAL_JOB_STATES = {STATE_ACCEPTED, STATE_REJECTED, STATE_ABANDONED}
 JOB_CONTRACTS = load_sandbox_job_contracts()
+ROOT_ACCEPTANCE_CRITERIA = JOB_CONTRACTS.root_acceptance_criteria
 VERIFICATION_JOB_TARGET = JOB_CONTRACTS.verification_target
 VERIFICATION_JOB_ACCEPTANCE_CRITERIA = JOB_CONTRACTS.verification_acceptance_criteria
 REPAIR_JOB_TARGET = JOB_CONTRACTS.repair_target
@@ -6426,7 +6427,12 @@ class AiSandboxRunner:
             )
             method = self._load_method_for_turn()
 
-            root = service.create_root_job(wish=message, target=message, actor_id="human")
+            root = service.create_root_job(
+                wish=message,
+                target=message,
+                actor_id="human",
+                acceptance_criteria=ROOT_ACCEPTANCE_CRITERIA,
+            )
             job_id = root["job_id"]
             self.flow.write(FLOW_ROOT_JOB_CREATED, "root job created", job_id=job_id)
             write_job_tree_mirror(
@@ -7174,7 +7180,12 @@ class AiSandboxChatSession:
             )
             return output_text
 
-        root = self.service.create_root_job(wish=user_input, target=user_input, actor_id="human")
+        root = self.service.create_root_job(
+            wish=user_input,
+            target=user_input,
+            actor_id="human",
+            acceptance_criteria=ROOT_ACCEPTANCE_CRITERIA,
+        )
         job_id = root["job_id"]
         self.last_job_id = job_id
         self.flow.write(FLOW_ROOT_JOB_CREATED, "root job created", turn=turn, job_id=job_id)

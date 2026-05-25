@@ -1,4 +1,5 @@
 {
+  "root_acceptance_criteria": "根业候选必须保留原始愿望，提交候选果、证据、校验结果和验收路由证据；不得由行者自行接收、拒收或宣告根业完成。",
   "acceptance_feedback_acceptance_criteria": "补齐验收路由显影的问题，形成可回流原业的反馈、裁决问题或下一步证据需求。",
   "acceptance_repair_acceptance_criteria": "输出完整修订候选结果，覆盖验收路由指出的可修复问题，并保留原始任务意图。",
   "acceptance_repair_target": "修复验收路由打回的候选问题",

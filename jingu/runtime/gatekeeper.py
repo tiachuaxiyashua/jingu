@@ -9,6 +9,10 @@ from jingu.runtime.constants import (
     APPEARANCE_EVIDENCE,
     APPEARANCE_STATE_CANDIDATE,
     STRUCTURE_VERSION,
+    STATE_ABANDONED,
+    STATE_ACCEPTED,
+    STATE_REJECTED,
+    STATE_READY,
     STATE_RUNNING,
 )
 from jingu.runtime.errors import GuardrailViolation
@@ -17,20 +21,38 @@ from jingu.runtime.repository import decode_json
 from jingu.runtime.state_machine import validate_transition
 
 
+TERMINAL_JOB_STATES = {STATE_ACCEPTED, STATE_REJECTED, STATE_ABANDONED}
+
+
 class Guardkeeper:
     def __init__(self, object_store: ObjectStore) -> None:
         self.object_store = object_store
 
     def ensure_transition(self, job: dict[str, Any], next_state: str) -> None:
         validate_transition(str(job["state"]), next_state)
-        if next_state == STATE_RUNNING:
+        if next_state in {STATE_READY, STATE_RUNNING}:
+            if not str(job.get("target") or "").strip():
+                raise GuardrailViolation("job target is required before readiness")
+            if not str(job.get("acceptance_criteria") or "").strip():
+                raise GuardrailViolation("job acceptance criteria are required before readiness")
             gaps = decode_json(job.get("required_context_gaps"), [])
             if gaps:
-                raise GuardrailViolation("cannot enter running with required context gaps")
+                raise GuardrailViolation("cannot enter ready or running with required context gaps")
 
     def ensure_candidate_submission(self, job: dict[str, Any]) -> None:
         if job["state"] not in {"running"}:
             raise GuardrailViolation("candidate submission requires a running job")
+
+    def ensure_evidence_submission(self, job: dict[str, Any]) -> None:
+        if str(job["state"]) in TERMINAL_JOB_STATES:
+            raise GuardrailViolation("evidence submission is not allowed for terminal jobs")
+
+    def ensure_evidence_metadata(self, metadata: dict[str, Any] | None) -> None:
+        if not isinstance(metadata, dict):
+            raise GuardrailViolation("evidence metadata is required")
+        for field in ("evidence_kind", "evidence_hardness"):
+            if not str(metadata.get(field) or "").strip():
+                raise GuardrailViolation(f"evidence metadata field is required: {field}")
 
     def ensure_valid_appearance(self, appearance: dict[str, Any]) -> None:
         if appearance["structure_version"] != STRUCTURE_VERSION:
