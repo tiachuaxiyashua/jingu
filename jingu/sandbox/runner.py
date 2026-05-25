@@ -5967,6 +5967,10 @@ def parse_acceptance_routing_judgment(content: str) -> dict[str, Any]:
         field_name="evidence",
         error_prefix="acceptance routing response",
     )
+    if not reason:
+        raise RuntimeError("acceptance routing response reason is required")
+    if not evidence:
+        raise RuntimeError("acceptance routing response evidence must be non-empty")
 
     if route_action == "repair":
         if not repair_instruction:

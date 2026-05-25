@@ -10,7 +10,11 @@ from typing import Any
 
 from jingu.runtime.errors import JinguRuntimeError
 from jingu.runtime.service import RuntimeService
-from jingu.runtime.tree import TreeService
+from jingu.runtime.tree import (
+    SPLIT_DECISION_LAW_FIELDS,
+    SPLIT_DECISION_LAW_NAME,
+    TreeService,
+)
 from jingu.sandbox.flow import format_readable_event, tail_flow_events
 from jingu.sandbox.paths import (
     latest_log_pointer_path,
@@ -127,6 +131,35 @@ def build_parser() -> argparse.ArgumentParser:
     tree_propose_child.add_argument("--method", type=Path)
     tree_propose_child.add_argument("--method-reason")
     tree_propose_child.add_argument("--method-return-point")
+    split_law_source = tree_propose_child.add_mutually_exclusive_group()
+    split_law_source.add_argument("--split-law-json")
+    split_law_source.add_argument("--split-law-file", type=Path)
+    tree_propose_child.add_argument(
+        "--blocks-parent-execution",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+    )
+    tree_propose_child.add_argument(
+        "--blocks-parent-acceptance",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+    )
+    tree_propose_child.add_argument(
+        "--needs-distinct-capability",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+    )
+    tree_propose_child.add_argument(
+        "--has-independent-result-package",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+    )
+    tree_propose_child.add_argument(
+        "--has-high-value-or-risk",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+    )
+    tree_propose_child.add_argument("--split-law-reason")
 
     tree_show = tree_subparsers.add_parser("show", help="Show a root job tree.")
     tree_show.add_argument("job_id")
@@ -318,6 +351,7 @@ def run(args: argparse.Namespace) -> Any:
             method_path=args.method,
             method_binding_reason=args.method_reason,
             method_return_point=args.method_return_point,
+            split_law=split_law_from_args(args),
             actor_id="human",
         )
 
@@ -346,6 +380,48 @@ def read_json_file(path: Path) -> dict[str, Any]:
     if not isinstance(payload, dict):
         raise ValueError("JSON file must contain an object")
     return payload
+
+
+def split_law_from_args(args: argparse.Namespace) -> dict[str, Any]:
+    flag_fields = {
+        "blocks_parent_execution": args.blocks_parent_execution,
+        "blocks_parent_acceptance": args.blocks_parent_acceptance,
+        "needs_distinct_capability": args.needs_distinct_capability,
+        "has_independent_result_package": args.has_independent_result_package,
+        "has_high_value_or_risk": args.has_high_value_or_risk,
+    }
+    has_flag_data = any(value is not None for value in flag_fields.values()) or bool(
+        args.split_law_reason
+    )
+    if args.split_law_json or args.split_law_file:
+        if has_flag_data:
+            raise ValueError(
+                "provide split law as JSON/file or as explicit flags, not both"
+            )
+        raw = (
+            args.split_law_file.read_text(encoding="utf-8-sig")
+            if args.split_law_file
+            else args.split_law_json
+        )
+        payload = json.loads(raw)
+        if not isinstance(payload, dict):
+            raise ValueError("split law JSON must contain an object")
+        return payload
+
+    missing = [field for field, value in flag_fields.items() if value is None]
+    if missing or not str(args.split_law_reason or "").strip():
+        raise ValueError(
+            "tree propose-child requires an explicit split decision law: provide "
+            "--split-law-json, --split-law-file, or all five split-law flags plus "
+            "--split-law-reason. Missing: "
+            + ", ".join([*missing, *([] if args.split_law_reason else ["reason"])])
+        )
+
+    return {
+        "law_name": SPLIT_DECISION_LAW_NAME,
+        **{field: bool(flag_fields[field]) for field in SPLIT_DECISION_LAW_FIELDS},
+        "reason": str(args.split_law_reason).strip(),
+    }
 
 
 def run_result_only(args: argparse.Namespace) -> str:

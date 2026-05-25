@@ -1502,6 +1502,25 @@ class AiSandboxChatTest(unittest.TestCase):
         )
         self.assertTrue(judgment["does_not_auto_accept_or_reject"])
 
+    def test_acceptance_routing_requires_reason_and_evidence(self) -> None:
+        with self.assertRaises(RuntimeError) as context:
+            parse_acceptance_routing_judgment(
+                json.dumps(
+                    {
+                        "route_action": "continue",
+                        "feedback_job_kind": "none",
+                        "feedback_job_summary": "",
+                        "required_context_gaps": [],
+                        "repair_instruction": "",
+                        "reason": "",
+                        "evidence": [],
+                    },
+                    ensure_ascii=False,
+                )
+            )
+
+        self.assertIn("reason is required", str(context.exception))
+
     def test_parent_integration_repair_creates_repair_job_and_lineage(self) -> None:
         with TemporaryDirectory() as tmp:
             sandbox = Path(tmp) / "sandbox"

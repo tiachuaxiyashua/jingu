@@ -87,8 +87,6 @@ class TreeService:
         split_law = self._normalize_split_decision_law(
             split_law=split_law,
             blocking_reason=blocking_reason,
-            method_path=method_path,
-            required_context_gaps=required_context_gaps or [],
         )
 
         with self.runtime.repository.transaction() as connection:
@@ -191,19 +189,9 @@ class TreeService:
         *,
         split_law: dict[str, Any] | None,
         blocking_reason: str,
-        method_path: Path | str | None,
-        required_context_gaps: list[str],
     ) -> dict[str, Any]:
         if split_law is None:
-            normalized = {
-                "law_name": SPLIT_DECISION_LAW_NAME,
-                "blocks_parent_execution": True,
-                "blocks_parent_acceptance": False,
-                "needs_distinct_capability": bool(method_path) or bool(required_context_gaps),
-                "has_independent_result_package": True,
-                "has_high_value_or_risk": False,
-                "reason": blocking_reason,
-            }
+            raise GuardrailViolation("split decision law is required")
         else:
             if not isinstance(split_law, dict):
                 raise GuardrailViolation("split law must be a JSON object")

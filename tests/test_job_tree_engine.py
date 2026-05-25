@@ -25,6 +25,23 @@ def package_payload(**overrides):
     return payload
 
 
+def split_law(**overrides):
+    law = {
+        "blocks_parent_execution": True,
+        "blocks_parent_acceptance": False,
+        "needs_distinct_capability": False,
+        "has_independent_result_package": True,
+        "has_high_value_or_risk": False,
+        "reason": "parent cannot continue without the child result package",
+    }
+    law.update(overrides)
+    return law
+
+
+def split_law_json(**overrides):
+    return json.dumps(split_law(**overrides), ensure_ascii=False)
+
+
 class JobTreeEngineTest(unittest.TestCase):
     def setUp(self) -> None:
         self.tmp = TemporaryDirectory()
@@ -46,6 +63,7 @@ class JobTreeEngineTest(unittest.TestCase):
             acceptance_criteria="inventory names every required input",
             estimated_effort=1,
             depth_limit=3,
+            split_law=split_law(),
         )
 
         child = result["child"]
@@ -63,6 +81,23 @@ class JobTreeEngineTest(unittest.TestCase):
             [event["event_type"] for event in self.runtime.list_events(child["job_id"])],
             ["child_job_created"],
         )
+
+    def test_child_proposal_requires_explicit_split_law(self) -> None:
+        root = self.runtime.create_root_job(wish="validate a method")
+
+        with self.assertRaises(GuardrailViolation) as context:
+            self.tree.propose_child_job(
+                parent_job_id=root["job_id"],
+                target="check reusable inputs",
+                blocking_reason="parent cannot validate without input inventory",
+                output_contract="inventory with evidence",
+                acceptance_criteria="inventory names every required input",
+                estimated_effort=1,
+                depth_limit=3,
+            )
+
+        self.assertIn("split decision law is required", str(context.exception))
+        self.assertEqual(len(self.tree.get_tree(root["job_id"])["jobs"]), 1)
 
     def test_vague_child_proposal_is_rejected_without_creating_child(self) -> None:
         root = self.runtime.create_root_job(wish="validate a method")
@@ -141,6 +176,7 @@ class JobTreeEngineTest(unittest.TestCase):
             "acceptance_criteria": "inventory names every required input",
             "estimated_effort": 1,
             "depth_limit": 3,
+            "split_law": split_law(),
         }
         self.tree.propose_child_job(**kwargs)
 
@@ -265,6 +301,7 @@ class JobTreeEngineTest(unittest.TestCase):
             method_path=method_path,
             method_binding_reason="this child needs iterative Plan Do Check Act refinement",
             method_return_point="return the protagonist card to the parent story plan",
+            split_law=split_law(needs_distinct_capability=True),
         )
 
         child = result["child"]
@@ -310,6 +347,7 @@ class JobTreeEngineTest(unittest.TestCase):
                 depth_limit=4,
                 method_path=method_path,
                 method_return_point="return to parent",
+                split_law=split_law(needs_distinct_capability=True),
             )
 
         self.assertEqual(len(self.tree.get_tree(root["job_id"])["jobs"]), 1)
@@ -348,6 +386,8 @@ class JobTreeEngineTest(unittest.TestCase):
             "1",
             "--depth-limit",
             "3",
+            "--split-law-json",
+            split_law_json(),
         )["child"]
         run("job", "ready", child["job_id"])
         run("job", "run", child["job_id"])
@@ -358,6 +398,43 @@ class JobTreeEngineTest(unittest.TestCase):
         self.assertEqual(package_result["job"]["state"], STATE_REVIEWING)
         self.assertEqual(len(tree["jobs"]), 2)
         self.assertEqual(frontier["frontier"][0]["job_id"], child["job_id"])
+
+    def test_cli_propose_child_requires_explicit_split_law(self) -> None:
+        base = [sys.executable, "-m", "jingu.cli", "--workspace", str(self.workspace)]
+        root = subprocess.run(
+            [*base, "root", "create", "--wish", "wish", "--target", "target"],
+            check=True,
+            text=True,
+            capture_output=True,
+        )
+        root_job_id = json.loads(root.stdout)["job_id"]
+
+        completed = subprocess.run(
+            [
+                *base,
+                "tree",
+                "propose-child",
+                root_job_id,
+                "--target",
+                "child target",
+                "--blocking-reason",
+                "parent needs child output",
+                "--output-contract",
+                "structured child package",
+                "--acceptance-criteria",
+                "package has evidence",
+                "--estimated-effort",
+                "1",
+                "--depth-limit",
+                "3",
+            ],
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+
+        self.assertEqual(completed.returncode, 1)
+        self.assertIn("explicit split decision law", completed.stdout)
 
     def test_cli_child_method_binding_workflow(self) -> None:
         base = [sys.executable, "-m", "jingu.cli", "--workspace", str(self.workspace)]
@@ -400,6 +477,8 @@ class JobTreeEngineTest(unittest.TestCase):
             "this child needs contradiction analysis",
             "--method-return-point",
             "return contradiction table to parent",
+            "--split-law-json",
+            split_law_json(needs_distinct_capability=True),
         )["child"]
         tree = run("tree", "show", root["job_id"])
         child_summary = next(job for job in tree["jobs"] if job["job_id"] == child["job_id"])
@@ -417,6 +496,7 @@ class JobTreeEngineTest(unittest.TestCase):
             estimated_effort=1,
             depth_limit=4,
             required_context_gaps=gaps,
+            split_law=split_law(needs_distinct_capability=bool(gaps)),
         )["child"]
 
     def _accept_job(self, job_id: str, package: dict | None = None) -> dict:

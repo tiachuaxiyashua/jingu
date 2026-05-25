@@ -6,7 +6,7 @@ Jingu's job-tree growth can look too shallow when split requests are conservativ
 
 - Add an explicit split decision law to the truth source and runtime split-registration path.
 - Require AI split proposals to include the five split-law judgments.
-- Keep manual child-job creation simple by deriving a conservative default split law from existing required fields.
+- Require manual child-job creation to submit the five split-law judgments explicitly, instead of letting code derive a default law.
 - Record the split law in JSONL and readable logs so the user can inspect why a child job was or was not allowed.
 - Reject decorative child jobs that have no execution, acceptance, capability, or high-value/risk ground, and reject child jobs that cannot produce an independent parent-consumable result package.
 
