@@ -226,11 +226,21 @@ def build_text_delivery_ledger(
     task_text: str,
     candidate_text: str,
     candidate_appearance_id: str | None = None,
+    accepted_delivery_contributions: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     marker_pairs = extract_marker_regions(candidate_text)
-    selected_region = select_count_region(candidate_text, marker_pairs)
-    region_text = selected_region["text"]
-    actual_cjk_count = count_cjk_characters(region_text)
+    candidate_selected_region = select_count_region(candidate_text, marker_pairs)
+    candidate_region_text = candidate_selected_region["text"]
+    candidate_cjk_count = count_cjk_characters(candidate_region_text)
+    contribution_region = build_delivery_contribution_region(accepted_delivery_contributions)
+    if accepted_delivery_contributions is None:
+        selected_region = candidate_selected_region
+        actual_cjk_count = candidate_cjk_count
+        accounting_basis = "candidate_text"
+    else:
+        selected_region = contribution_region["selected_region"]
+        actual_cjk_count = int(contribution_region["actual_cjk_characters"])
+        accounting_basis = "accepted_delivery_contributions"
     constraints = extract_cjk_length_constraints(task_text)
     minimums = [
         constraint.min_cjk_characters
@@ -262,8 +272,10 @@ def build_text_delivery_ledger(
         "ledger_kind": "text_delivery_ledger",
         "candidate_appearance_id": candidate_appearance_id,
         "has_quantitative_text_contract": bool(constraints),
+        "accounting_basis": accounting_basis,
         "delivery_status": status,
         "actual_cjk_characters": actual_cjk_count,
+        "candidate_diagnostic_cjk_characters": candidate_cjk_count,
         "required_min_cjk_characters": required_minimum,
         "allowed_max_cjk_characters": allowed_maximum,
         "remaining_min_cjk_characters": (
@@ -272,8 +284,106 @@ def build_text_delivery_ledger(
             else None
         ),
         "selected_region": selected_region_without_text(selected_region),
+        "candidate_diagnostic_region": selected_region_without_text(candidate_selected_region),
+        "accepted_delivery_contributions": contribution_region["accepted_delivery_contributions"],
+        "skipped_delivery_contributions": contribution_region["skipped_delivery_contributions"],
         "constraints": [asdict(constraint) for constraint in constraints],
         "checks": checks,
+    }
+
+
+def build_delivery_contribution_region(
+    accepted_delivery_contributions: list[dict[str, Any]] | None,
+) -> dict[str, Any]:
+    if accepted_delivery_contributions is None:
+        return {
+            "selected_region": {},
+            "actual_cjk_characters": 0,
+            "accepted_delivery_contributions": [],
+            "skipped_delivery_contributions": [],
+        }
+
+    accepted: list[dict[str, Any]] = []
+    skipped: list[dict[str, Any]] = []
+    parts: list[str] = []
+    seen_keys: set[str] = set()
+    for index, contribution in enumerate(accepted_delivery_contributions, start=1):
+        if not isinstance(contribution, dict):
+            skipped.append({"index": index, "reason": "delivery contribution is not an object"})
+            continue
+        contribution_id = str(contribution.get("contribution_id") or f"contribution_{index}").strip()
+        source_job_id = str(contribution.get("source_job_id") or "").strip()
+        source_result_appearance_id = str(
+            contribution.get("source_result_appearance_id") or ""
+        ).strip()
+        counts_toward_parent_delivery = contribution.get("counts_toward_parent_delivery")
+        if counts_toward_parent_delivery is not True:
+            skipped.append(
+                {
+                    "index": index,
+                    "source_job_id": source_job_id,
+                    "source_result_appearance_id": source_result_appearance_id,
+                    "contribution_id": contribution_id,
+                    "reason": "contribution is not marked as parent delivery content",
+                }
+            )
+            continue
+        content = str(contribution.get("content") or "")
+        if not content.strip():
+            skipped.append(
+                {
+                    "index": index,
+                    "source_job_id": source_job_id,
+                    "source_result_appearance_id": source_result_appearance_id,
+                    "contribution_id": contribution_id,
+                    "reason": "delivery contribution content is empty",
+                }
+            )
+            continue
+        dedupe_key = "\x1f".join(
+            [
+                source_result_appearance_id,
+                source_job_id,
+                contribution_id,
+            ]
+        )
+        if dedupe_key in seen_keys:
+            skipped.append(
+                {
+                    "index": index,
+                    "source_job_id": source_job_id,
+                    "source_result_appearance_id": source_result_appearance_id,
+                    "contribution_id": contribution_id,
+                    "reason": "duplicate delivery contribution",
+                }
+            )
+            continue
+        seen_keys.add(dedupe_key)
+        cjk_count = count_cjk_characters(content)
+        parts.append(content)
+        accepted.append(
+            {
+                "source_job_id": source_job_id,
+                "source_result_appearance_id": source_result_appearance_id,
+                "contribution_id": contribution_id,
+                "character_count": len(content),
+                "cjk_character_count": cjk_count,
+                "evidence": str(contribution.get("evidence") or "").strip(),
+            }
+        )
+
+    combined = "\n".join(parts)
+    return {
+        "selected_region": {
+            "region_kind": "accepted_delivery_contributions",
+            "content_start": 0,
+            "content_end": len(combined),
+            "contribution_count": len(accepted),
+            "text": combined,
+        },
+        "actual_cjk_characters": sum(int(item["cjk_character_count"]) for item in accepted),
+        "accepted_delivery_contributions": accepted,
+        "skipped_delivery_contributions": skipped,
     }
 
 
@@ -506,6 +616,7 @@ def selected_region_without_text(selected_region: dict[str, Any]) -> dict[str, A
             "base_label": selected_region.get("base_label"),
             "content_start": selected_region.get("content_start"),
             "content_end": selected_region.get("content_end"),
+            "contribution_count": selected_region.get("contribution_count"),
             "character_count": len(text),
             "cjk_character_count": count_cjk_characters(text),
         }.items()

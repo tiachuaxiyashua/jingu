@@ -17,6 +17,7 @@ def package_payload(**overrides):
     payload = {
         "conclusion": "local result is usable",
         "artifacts": [{"kind": "text", "ref": "artifact-1"}],
+        "delivery_contributions": [],
         "evidence_summary": "manual evidence was provided",
         "open_questions": [],
         "suggested_follow_up_jobs": [],
@@ -243,6 +244,54 @@ class JobTreeEngineTest(unittest.TestCase):
                 package={"artifacts": [], "evidence_summary": "missing conclusion"},
             )
 
+        self.assertEqual(self.runtime.get_status(child["job_id"])["state"], "running")
+
+    def test_delivery_contribution_rejects_count_claim_without_matching_content(self) -> None:
+        root = self.runtime.create_root_job(wish="root")
+        child = self._child(root["job_id"], "child")
+        self.runtime.mark_ready(child["job_id"])
+        self.runtime.start_job(child["job_id"])
+
+        with self.assertRaises(GuardrailViolation) as context:
+            self.tree.submit_result_package(
+                child["job_id"],
+                package=package_payload(
+                    delivery_contributions=[
+                        {
+                            "contribution_id": "chapter_1",
+                            "content": "第一章完整正文，3000字。",
+                            "counts_toward_parent_delivery": True,
+                            "evidence": "经统计正文字数3000。",
+                        }
+                    ]
+                ),
+            )
+
+        self.assertIn("shorter than its stated count", str(context.exception))
+        self.assertEqual(self.runtime.get_status(child["job_id"])["state"], "running")
+
+    def test_delivery_contribution_rejects_inflated_count_claim_near_real_run_gap(self) -> None:
+        root = self.runtime.create_root_job(wish="root")
+        child = self._child(root["job_id"], "child")
+        self.runtime.mark_ready(child["job_id"])
+        self.runtime.start_job(child["job_id"])
+
+        with self.assertRaises(GuardrailViolation) as context:
+            self.tree.submit_result_package(
+                child["job_id"],
+                package=package_payload(
+                    delivery_contributions=[
+                        {
+                            "contribution_id": "chapter_2",
+                            "content": "字" * 2678,
+                            "counts_toward_parent_delivery": True,
+                            "evidence": "本章正文字数3127字，可直接累加入父业。",
+                        }
+                    ]
+                ),
+            )
+
+        self.assertIn("shorter than its stated count", str(context.exception))
         self.assertEqual(self.runtime.get_status(child["job_id"])["state"], "running")
 
     def test_parent_reevaluation_reports_unresolved_and_accepted_child_results(self) -> None:

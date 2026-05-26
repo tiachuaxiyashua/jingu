@@ -72,6 +72,7 @@ FLOW_METHOD_STEP_CANDIDATE_SKIPPED = "method_step_candidate_skipped"
 FLOW_SPLIT_PROPOSAL_REQUESTED = "split_proposal_requested"
 FLOW_SPLIT_PROPOSAL_RECEIVED = "split_proposal_received"
 FLOW_SPLIT_PROPOSAL_ACCEPTED = "split_proposal_accepted"
+FLOW_SPLIT_PROPOSAL_PARKED = "split_proposal_parked"
 FLOW_SPLIT_PROPOSAL_REJECTED = "split_proposal_rejected"
 FLOW_SPLIT_PROPOSAL_SKIPPED = "split_proposal_skipped"
 FLOW_FRONTIER_DISPATCH_STARTED = "frontier_dispatch_started"
@@ -386,6 +387,10 @@ FIELD_LABELS = {
     "decision_text": "裁决内容",
     "delivery_ledger": "交付账本",
     "delivery_status": "交付状态",
+    "split_proposal_parking_reason": "分业申请暂存原因",
+    "delivery_relation": "交付关系",
+    "accepted_delivery_contributions": "已接收交付贡献",
+    "candidate_diagnostic_cjk_characters": "候选诊断中文字符数",
     "parked_followups": "已暂存后续事项",
     "evidence_hardness": "证据硬度",
     "evidence_id": "证据相编号",
@@ -467,6 +472,7 @@ JOB_TREE_ACTION_LABELS = {
     "parent_integration_followup_registered": "父业整合后续分业登记已记录",
     "parent_integration_followup_parked": "父业整合后续事项已暂存",
     "delivery_ledger_recorded": "交付账本已记录",
+    "split_proposal_parked": "分业申请已暂存",
     "root_created": "根业已创建",
     "repair_candidate_attached": "修复候选已挂载",
     "repair_child_created": "修复子业已创建",
@@ -546,6 +552,8 @@ class FlowWriter:
             self._write_readable_event(event)
 
     def _write_readable_event(self, event: FlowEvent) -> None:
+        if event.event_type == FLOW_PROVIDER_STREAM_DELTA_RECEIVED:
+            return
         self.readable_log_path.parent.mkdir(parents=True, exist_ok=True)
         if not self._readable_header_written:
             fresh = not self.readable_log_path.exists()
@@ -581,6 +589,8 @@ def readable_log_path_for(diagnostic_log_path: Path) -> Path:
 def format_readable_event(event: dict[str, object]) -> str:
     timestamp = str(event.get("timestamp", ""))
     event_type = str(event.get("event_type", ""))
+    if event_type == FLOW_PROVIDER_STREAM_DELTA_RECEIVED:
+        return ""
     event_label = EVENT_LABELS.get(event_type, event_type)
     message = readable_message(event_type, str(event.get("message", "")))
     data = event.get("data") or {}

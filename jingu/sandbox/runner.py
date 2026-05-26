@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import shutil
+import time
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
@@ -13,6 +14,7 @@ from jingu.ai.client import ChatClient
 from jingu.ai.config import load_ai_config
 from jingu.runtime.constants import (
     DATABASE_FILENAME,
+    EVENT_CHILD_JOB_CREATED,
     EVENT_METHOD_CALL_FRAME_OPENED,
     STATE_ABANDONED,
     STATE_ACCEPTED,
@@ -84,6 +86,7 @@ from jingu.sandbox.flow import (
     FLOW_METHOD_STEP_CANDIDATE_SKIPPED,
     FLOW_METHOD_UPDATE_CANDIDATE_RECORDED,
     FLOW_SPLIT_PROPOSAL_ACCEPTED,
+    FLOW_SPLIT_PROPOSAL_PARKED,
     FLOW_SPLIT_PROPOSAL_RECEIVED,
     FLOW_SPLIT_PROPOSAL_REJECTED,
     FLOW_SPLIT_PROPOSAL_REQUESTED,
@@ -153,6 +156,7 @@ from jingu.sandbox.safety import destroy_sandbox_directory, prepare_sandbox_dire
 from jingu.sandbox.verification import (
     build_text_delivery_ledger,
     build_parent_verification_evidence,
+    count_cjk_characters,
     extract_cjk_length_constraints,
     verification_report_to_json,
     verify_candidate_text,
@@ -204,6 +208,7 @@ DEFAULT_MAX_PARENT_INTEGRATION_REPAIR_ATTEMPTS = 1
 DEFAULT_REGISTER_METHOD_STEP_CANDIDATES = False
 DEFAULT_AUTO_CONTINUE_TO_BLOCKER = False
 DEFAULT_PARENT_INTEGRATION_FOLLOWUP_DEPTH_LIMIT = 8
+PARENT_INTEGRATION_TEXT_PREVIEW_LIMIT = 800
 RUNTIME_CHECKPOINTS_DIRNAME = "runtime-checkpoints"
 ACCEPTANCE_ROUTE_ACTIONS = frozenset({"continue", "repair", "feedback"})
 ACCEPTANCE_FEEDBACK_JOB_KINDS = frozenset({"high_value", "directional"})
@@ -230,9 +235,26 @@ ADVANCEMENT_OUTCOME_BLOCKED = "blocked"
 CHILD_RESULT_PACKAGE_FIELDS = (
     "conclusion",
     "artifacts",
+    "delivery_contributions",
     "evidence_summary",
     "open_questions",
     "suggested_follow_up_jobs",
+)
+BASE_CHILD_RESULT_PACKAGE_FIELDS = tuple(
+    field for field in CHILD_RESULT_PACKAGE_FIELDS if field != "delivery_contributions"
+)
+DELIVERY_RELATION_ADVANCES = "advances_quantitative_delivery"
+DELIVERY_RELATION_UNBLOCKS = "unblocks_quantitative_delivery"
+DELIVERY_RELATION_NONCRITICAL = "does_not_advance_quantitative_delivery"
+DELIVERY_CRITICAL_RELATIONS = frozenset(
+    {DELIVERY_RELATION_ADVANCES, DELIVERY_RELATION_UNBLOCKS}
+)
+DELIVERY_RELATION_VALUES = frozenset(
+    {
+        DELIVERY_RELATION_ADVANCES,
+        DELIVERY_RELATION_UNBLOCKS,
+        DELIVERY_RELATION_NONCRITICAL,
+    }
 )
 RESULT_PACKAGE_METADATA_KIND = "result_package"
 REPAIRABLE_CHECK_KINDS = frozenset(
@@ -736,13 +758,15 @@ def build_split_proposal_messages(
     candidate_text: str,
     candidate_appearance_id: str,
     method_catalog: list[dict[str, str]],
+    delivery_ledger: dict[str, Any] | None = None,
     turn: str | None = None,
 ) -> list[dict[str, str]]:
-    delivery_ledger = build_text_delivery_ledger(
-        task_text=user_input,
-        candidate_text=candidate_text,
-        candidate_appearance_id=candidate_appearance_id,
-    )
+    if delivery_ledger is None:
+        delivery_ledger = build_text_delivery_ledger(
+            task_text=user_input,
+            candidate_text=candidate_text,
+            candidate_appearance_id=candidate_appearance_id,
+        )
     payload = {
         "task": user_input,
         "turn": turn or "",
@@ -783,6 +807,12 @@ def build_split_proposal_messages(
                 "method_path": "empty string or one exact method_path from available_method_catalog",
                 "method_binding_reason": "empty string unless method_path is set",
                 "method_return_point": "empty string unless method_path is set",
+                "delivery_relation": (
+                    f"{DELIVERY_RELATION_ADVANCES}, {DELIVERY_RELATION_UNBLOCKS}, "
+                    f"or {DELIVERY_RELATION_NONCRITICAL}; when delivery_ledger is below "
+                    "minimum, use the first two only for a direct critical path to the "
+                    "quantitative delivery"
+                ),
                 "split_law": (
                     "object with boolean fields: blocks_parent_execution, "
                     "blocks_parent_acceptance, needs_distinct_capability, "
@@ -801,6 +831,7 @@ def build_split_proposal_messages(
                 "method_path",
                 "method_binding_reason",
                 "method_return_point",
+                "delivery_relation",
                 "split_law",
             ],
             "split_law_rule": (
@@ -815,6 +846,7 @@ def build_split_proposal_messages(
             "runtime_effects": [
                 "Qualitative effort words will be rejected by the code gatekeeper.",
                 "A child job with required_context_gaps will be visible as blocked context and cannot enter running until gaps are resolved.",
+                "When delivery_ledger is below minimum, non-critical or duplicate delivery proposals will be parked instead of activated.",
             ],
         },
     }
@@ -847,9 +879,13 @@ def run_split_proposal_registration(
     candidate_appearance_id: str,
     step_prefix: str,
     turn: str | None = None,
+    delivery_ledger_override: dict[str, Any] | None = None,
+    critical_frontier_already_registered: bool = False,
 ) -> dict[str, Any]:
-    delivery_ledger = build_text_delivery_ledger(
-        task_text=user_input,
+    delivery_ledger = delivery_ledger_override or build_parent_delivery_ledger(
+        service=service,
+        parent_job_id=parent_job_id,
+        user_input=user_input,
         candidate_text=candidate_text,
         candidate_appearance_id=candidate_appearance_id,
     )
@@ -861,6 +897,7 @@ def run_split_proposal_registration(
         candidate_text=candidate_text,
         candidate_appearance_id=candidate_appearance_id,
         method_catalog=method_catalog,
+        delivery_ledger=delivery_ledger,
         turn=turn,
     )
     base_data = {
@@ -975,7 +1012,12 @@ def run_split_proposal_registration(
             status="skipped",
             **skipped,
         )
-        return {"accepted": [], "rejected": [], "skipped_reason": skipped["reason"]}
+        return {
+            "accepted": [],
+            "rejected": [],
+            "parked": [],
+            "skipped_reason": skipped["reason"],
+        }
 
     catalog_by_path = {
         str(Path(entry["method_path"]).resolve()): entry
@@ -984,6 +1026,8 @@ def run_split_proposal_registration(
     tree_service = TreeService(service.paths.workspace)
     accepted: list[dict[str, Any]] = []
     rejected: list[dict[str, Any]] = []
+    parked: list[dict[str, Any]] = []
+    critical_frontier_registered = bool(critical_frontier_already_registered)
     for index, proposal in enumerate(proposals, start=1):
         try:
             normalized = normalize_split_proposal(
@@ -998,6 +1042,86 @@ def run_split_proposal_registration(
                     "root quantitative delivery is still below the minimum; "
                     "park this completion-dependent split until the delivery ledger is satisfied"
                 )
+            if delivery_ledger_needs_more(delivery_ledger):
+                delivery_relation = str(normalized.get("delivery_relation") or "")
+                if delivery_relation not in DELIVERY_CRITICAL_RELATIONS:
+                    parked_item = {
+                        "proposal_index": index,
+                        "reason": (
+                            "root quantitative delivery is below minimum; "
+                            "non-critical split is parked outside the active frontier"
+                        ),
+                        "proposal": normalized,
+                    }
+                    parked.append(parked_item)
+                    parked_data = {
+                        **turn_field(turn),
+                        "job_id": parent_job_id,
+                        "split_proposal_index": str(index),
+                        "split_proposal_decision": "parked",
+                        "split_proposal_parking_reason": parked_item["reason"],
+                        "split_proposal": json.dumps(
+                            normalized, ensure_ascii=False, sort_keys=True, indent=2
+                        ),
+                        "delivery_ledger": base_data["delivery_ledger"],
+                    }
+                    flow.write(FLOW_SPLIT_PROPOSAL_PARKED, "split proposal parked", **parked_data)
+                    write_job_tree_mirror(
+                        flow=flow,
+                        service=service,
+                        turn=turn,
+                        job_id=parent_job_id,
+                        action="split_proposal_parked",
+                        reason=parked_item["reason"],
+                    )
+                    write_process_step(
+                        flow=flow,
+                        step=f"{step_prefix}.parked",
+                        phase="split_proposal",
+                        action="根业量化交付未达标，非临界分业申请暂存",
+                        status="parked",
+                        **parked_data,
+                    )
+                    continue
+                if critical_frontier_registered:
+                    parked_item = {
+                        "proposal_index": index,
+                        "reason": (
+                            "root quantitative delivery is below minimum; "
+                            "a critical delivery frontier is already registered for this pass"
+                        ),
+                        "proposal": normalized,
+                    }
+                    parked.append(parked_item)
+                    parked_data = {
+                        **turn_field(turn),
+                        "job_id": parent_job_id,
+                        "split_proposal_index": str(index),
+                        "split_proposal_decision": "parked",
+                        "split_proposal_parking_reason": parked_item["reason"],
+                        "split_proposal": json.dumps(
+                            normalized, ensure_ascii=False, sort_keys=True, indent=2
+                        ),
+                        "delivery_ledger": base_data["delivery_ledger"],
+                    }
+                    flow.write(FLOW_SPLIT_PROPOSAL_PARKED, "split proposal parked", **parked_data)
+                    write_job_tree_mirror(
+                        flow=flow,
+                        service=service,
+                        turn=turn,
+                        job_id=parent_job_id,
+                        action="split_proposal_parked",
+                        reason=parked_item["reason"],
+                    )
+                    write_process_step(
+                        flow=flow,
+                        step=f"{step_prefix}.parked",
+                        phase="split_proposal",
+                        action="根业量化交付未达标，本轮已有临界交付前沿，重复申请暂存",
+                        status="parked",
+                        **parked_data,
+                    )
+                    continue
             result = tree_service.propose_child_job(
                 parent_job_id=parent_job_id,
                 target=normalized["target"],
@@ -1011,6 +1135,7 @@ def run_split_proposal_registration(
                 method_binding_reason=normalized.get("method_binding_reason") or None,
                 method_return_point=normalized.get("method_return_point") or None,
                 split_law=normalized["split_law"],
+                delivery_relation=normalized["delivery_relation"],
                 actor_id="ai",
             )
             child = result["child"]
@@ -1022,6 +1147,8 @@ def run_split_proposal_registration(
                 "split_law": normalized["split_law"],
             }
             accepted.append(accepted_item)
+            if delivery_ledger_needs_more(delivery_ledger):
+                critical_frontier_registered = True
             accepted_data = {
                 **turn_field(turn),
                 "job_id": parent_job_id,
@@ -1082,7 +1209,48 @@ def run_split_proposal_registration(
                 status="rejected",
                 **rejected_data,
             )
-    return {"accepted": accepted, "rejected": rejected, "skipped_reason": ""}
+    if delivery_ledger_needs_more(delivery_ledger) and not critical_frontier_registered:
+        fallback_index = len(proposals) + 1
+        try:
+            accepted.append(
+                register_delivery_continuation_split(
+                    flow=flow,
+                    service=service,
+                    tree_service=tree_service,
+                    parent_job_id=parent_job_id,
+                    delivery_ledger=delivery_ledger,
+                    split_proposal_index=fallback_index,
+                    step_prefix=step_prefix,
+                    turn=turn,
+                )
+            )
+        except Exception as exc:
+            rejected_item = {
+                "proposal_index": fallback_index,
+                "reason": str(exc),
+                "proposal": delivery_continuation_entry(delivery_ledger),
+            }
+            rejected.append(rejected_item)
+            data = {
+                **turn_field(turn),
+                "job_id": parent_job_id,
+                "split_proposal_index": str(fallback_index),
+                "split_proposal_decision": "rejected",
+                "split_proposal_rejection_reason": str(exc),
+                "split_proposal": json.dumps(
+                    rejected_item["proposal"], ensure_ascii=False, sort_keys=True, indent=2
+                ),
+            }
+            flow.write(FLOW_SPLIT_PROPOSAL_REJECTED, "split proposal rejected", **data)
+            write_process_step(
+                flow=flow,
+                step=f"{step_prefix}.delivery_continuation_rejected",
+                phase="split_proposal",
+                action="交付续推兜底分业申请被代码守门器拒绝",
+                status="rejected",
+                **data,
+            )
+    return {"accepted": accepted, "rejected": rejected, "parked": parked, "skipped_reason": ""}
 
 
 def frontier_job_summary(job: dict[str, Any]) -> dict[str, Any]:
@@ -1553,24 +1721,70 @@ def run_frontier_child_dispatch(
                 max_repair_attempts=max_child_package_repair_attempts,
             )
             child_split_result = {"accepted": [], "rejected": [], "skipped_reason": ""}
+            if (
+                review_result.get("status") == "accept_ready"
+                and child_package_missing_required_delivery_contribution(
+                    service=service,
+                    parent_job_id=parent_job_id,
+                    child_job_id=child_job_id,
+                    user_input=user_input,
+                    root_candidate_text=root_candidate_text,
+                    root_candidate_appearance_id=root_candidate_appearance_id,
+                    package=review_result.get("package"),
+                )
+            ):
+                review_result = {
+                    **review_result,
+                    "status": "delivery_contribution_missing",
+                    "reason": (
+                        "critical quantitative delivery child was accepted by review, "
+                        "but its result package has no counted delivery_contributions"
+                    ),
+                }
             if review_result.get("status") == "accept_ready":
                 accepted_package_text = str(review_result["package_text"])
                 accepted_candidate_id = str(review_result["candidate_id"])
-                try:
-                    child_split_result = run_split_proposal_registration(
-                        flow=flow,
-                        service=service,
-                        client=client,
-                        method=child_method,
-                        parent_job_id=child_job_id,
-                        user_input=user_input,
-                        candidate_text=accepted_package_text,
-                        candidate_appearance_id=accepted_candidate_id,
-                        step_prefix=f"{step_prefix}.child_{index}.split_proposal",
-                        turn=turn,
-                    )
-                except Exception as exc:
-                    child_split_result = {"accepted": [], "rejected": [], "skipped_reason": str(exc)}
+                child_split_skip_reason = (
+                    "accepted child package returns to the parent before follow-up split "
+                    "registration; parent integration owns follow-up routing"
+                )
+                child_split_result = {
+                    "accepted": [],
+                    "rejected": [],
+                    "parked": [],
+                    "skipped_reason": child_split_skip_reason,
+                }
+                skip_data = {
+                    **turn_field(turn),
+                    "root_job_id": root_job_id,
+                    "parent_job_id": parent_job_id,
+                    "job_id": child_job_id,
+                    "child_job_id": child_job_id,
+                    "candidate_appearance_id": accepted_candidate_id,
+                    "reason": child_split_skip_reason,
+                }
+                flow.write(
+                    FLOW_SPLIT_PROPOSAL_SKIPPED,
+                    "split proposal registration skipped",
+                    **skip_data,
+                )
+                write_job_tree_mirror(
+                    flow=flow,
+                    service=service,
+                    turn=turn,
+                    job_id=child_job_id,
+                    action="split_proposal_skipped",
+                    child_job_id=child_job_id,
+                    reason=child_split_skip_reason,
+                )
+                write_process_step(
+                    flow=flow,
+                    step=f"{step_prefix}.child_{index}.split_proposal.skip_child_local",
+                    phase="split_proposal",
+                    action="已接收子业果包先回流父业，后续分业由父业整合位登记",
+                    status="skipped",
+                    **skip_data,
+                )
                 accept_reviewed_child_package(
                     flow=flow,
                     service=service,
@@ -1638,6 +1852,9 @@ def run_frontier_child_dispatch(
                     latest_root_integration = parent_integration_result
             else:
                 parent_reevaluation = tree_service.reevaluate_parent(parent_job_id)
+                unresolved_reason = str(
+                    review_result.get("reason") or review_result.get("status") or ""
+                )
                 reevaluation_data = {
                     **turn_field(turn),
                     "root_job_id": root_job_id,
@@ -1647,7 +1864,7 @@ def run_frontier_child_dispatch(
                     "parent_reevaluation": json.dumps(
                         parent_reevaluation, ensure_ascii=False, sort_keys=True, indent=2
                     ),
-                    "reason": str(review_result.get("reason") or review_result.get("status") or ""),
+                    "reason": unresolved_reason,
                 }
                 flow.write(
                     FLOW_PARENT_REEVALUATION_RECORDED,
@@ -1671,6 +1888,16 @@ def run_frontier_child_dispatch(
                     status="rejected",
                     **reevaluation_data,
                 )
+                block_child_after_package_failure(
+                    flow=flow,
+                    service=service,
+                    root_job_id=root_job_id,
+                    parent_job_id=parent_job_id,
+                    child_job_id=child_job_id,
+                    reason=unresolved_reason,
+                    step=f"{step_prefix}.child_{index}.package_review.block_unaccepted",
+                    turn=turn,
+                )
             dispatch_results.append(
                 {
                     "child_job_id": child_job_id,
@@ -1678,17 +1905,21 @@ def run_frontier_child_dispatch(
                     "candidate_appearance_id": review_result.get("candidate_id", candidate_id),
                     "evidence_appearance_id": review_result.get("evidence_id", evidence_id),
                     "child_split_result": child_split_result,
+                    "accepted_delivery_contribution_cjk_characters": (
+                        package_delivery_contribution_cjk_characters(review_result.get("package"))
+                    ),
                     "parent_integration_result": parent_integration_result_for_child,
                 }
             )
         except Exception as exc:
+            failure_reason = str(exc)
             rejected_data = {
                 **turn_field(turn),
                 "root_job_id": root_job_id,
                 "parent_job_id": parent_job_id,
                 "job_id": child_job_id,
                 "child_job_id": child_job_id,
-                "reason": str(exc),
+                "reason": failure_reason,
                 "child_job_response": response.content,
             }
             flow.write(
@@ -1712,8 +1943,18 @@ def run_frontier_child_dispatch(
                 status="rejected",
                 **rejected_data,
             )
+            block_child_after_package_failure(
+                flow=flow,
+                service=service,
+                root_job_id=root_job_id,
+                parent_job_id=parent_job_id,
+                child_job_id=child_job_id,
+                reason=failure_reason,
+                step=f"{step_prefix}.child_{index}.package_rejected.block",
+                turn=turn,
+            )
             dispatch_results.append(
-                {"child_job_id": child_job_id, "status": "rejected", "reason": str(exc)}
+                {"child_job_id": child_job_id, "status": "rejected", "reason": failure_reason}
             )
 
     if selected_children and not parent_integration_results:
@@ -1951,6 +2192,13 @@ def run_advancement_loop(
     blocked_frontier_jobs = [
         frontier_job_summary(job) for job in final_frontier_state["blocked"]
     ]
+    latest_delivery_ledger = build_parent_delivery_ledger(
+        service=service,
+        parent_job_id=root_job_id,
+        user_input=user_input,
+        candidate_text=latest_candidate_text,
+        candidate_appearance_id=latest_candidate_appearance_id,
+    )
 
     summary = {
         "wave_results": wave_results,
@@ -1962,6 +2210,7 @@ def run_advancement_loop(
         "blocked_frontier_jobs": blocked_frontier_jobs,
         "latest_parent_candidate_text": latest_candidate_text,
         "latest_parent_candidate_appearance_id": latest_candidate_appearance_id,
+        "latest_delivery_ledger": latest_delivery_ledger,
     }
     finish_data = {
         **turn_field(turn),
@@ -1999,6 +2248,128 @@ def run_advancement_loop(
 def has_runnable_frontier(service: RuntimeService, root_job_id: str) -> bool:
     frontier_state = classify_child_frontier(TreeService(service.paths.workspace), root_job_id)
     return bool(frontier_state["runnable"])
+
+
+def block_child_after_package_failure(
+    *,
+    flow: FlowWriter,
+    service: RuntimeService,
+    root_job_id: str,
+    parent_job_id: str,
+    child_job_id: str,
+    reason: str,
+    step: str,
+    turn: str | None = None,
+) -> None:
+    gap = f"子业果包未通过验收或确定性守门：{reason}"
+    try:
+        service.mark_blocked(
+            child_job_id,
+            reason=gap,
+            required_context_gaps=[gap],
+            actor_id="system",
+        )
+    except Exception as exc:
+        gap = f"{gap}；阻塞状态写入失败：{exc}"
+    blocked_data = {
+        **turn_field(turn),
+        "root_job_id": root_job_id,
+        "parent_job_id": parent_job_id,
+        "job_id": child_job_id,
+        "child_job_id": child_job_id,
+        "required_context_gaps": json.dumps([gap], ensure_ascii=False, sort_keys=True, indent=2),
+        "reason": gap,
+    }
+    flow.write(FLOW_FRONTIER_JOB_BLOCKED, "frontier job blocked", **blocked_data)
+    write_job_tree_mirror(
+        flow=flow,
+        service=service,
+        turn=turn,
+        job_id=child_job_id,
+        action="frontier_job_blocked",
+        child_job_id=child_job_id,
+        reason=gap,
+    )
+    write_process_step(
+        flow=flow,
+        step=step,
+        phase="frontier_dispatch",
+        action="子业果包失败后转为阻塞，避免无进展重复派发",
+        status="blocked",
+        **blocked_data,
+    )
+
+
+def child_job_delivery_relation(service: RuntimeService, child_job_id: str) -> str:
+    for event in service.list_events(child_job_id):
+        if str(event.get("event_type") or "") != EVENT_CHILD_JOB_CREATED:
+            continue
+        payload = event.get("payload") if isinstance(event.get("payload"), dict) else {}
+        relation = str(payload.get("delivery_relation") or "").strip()
+        if relation:
+            return relation
+    return ""
+
+
+def child_package_missing_required_delivery_contribution(
+    *,
+    service: RuntimeService,
+    parent_job_id: str,
+    child_job_id: str,
+    user_input: str,
+    root_candidate_text: str,
+    root_candidate_appearance_id: str,
+    package: Any,
+) -> bool:
+    relation = child_job_delivery_relation(service, child_job_id)
+    if relation not in DELIVERY_CRITICAL_RELATIONS:
+        return False
+    delivery_ledger = build_parent_delivery_ledger(
+        service=service,
+        parent_job_id=parent_job_id,
+        user_input=user_input,
+        candidate_text=root_candidate_text,
+        candidate_appearance_id=root_candidate_appearance_id,
+    )
+    if not delivery_ledger_needs_more(delivery_ledger):
+        return False
+    return package_delivery_contribution_cjk_characters(package) <= 0
+
+
+def accepted_delivery_progress_in_advancement(result: dict[str, Any]) -> int:
+    total = 0
+    for wave in result.get("wave_results") or []:
+        if not isinstance(wave, dict):
+            continue
+        for dispatch in wave.get("dispatch_results") or []:
+            if not isinstance(dispatch, dict):
+                continue
+            try:
+                total += int(dispatch.get("accepted_delivery_contribution_cjk_characters") or 0)
+            except (TypeError, ValueError):
+                continue
+    return total
+
+
+def should_pause_after_quantitative_delivery_batch(
+    *,
+    service: RuntimeService,
+    root_job_id: str,
+    user_input: str,
+    latest_candidate_text: str,
+    latest_candidate_appearance_id: str,
+    advancement_result: dict[str, Any],
+) -> bool:
+    if accepted_delivery_progress_in_advancement(advancement_result) <= 0:
+        return False
+    delivery_ledger = build_parent_delivery_ledger(
+        service=service,
+        parent_job_id=root_job_id,
+        user_input=user_input,
+        candidate_text=latest_candidate_text,
+        candidate_appearance_id=latest_candidate_appearance_id,
+    )
+    return delivery_ledger_needs_more(delivery_ledger)
 
 
 def run_advancement_until_boundary(
@@ -2048,6 +2419,37 @@ def run_advancement_until_boundary(
 
         outcome = str(result.get("advancement_loop_outcome") or ADVANCEMENT_OUTCOME_COMPLETED)
         if (
+            auto_continue_to_blocker
+            and outcome == ADVANCEMENT_OUTCOME_PAUSED
+            and has_runnable_frontier(service, root_job_id)
+            and should_pause_after_quantitative_delivery_batch(
+                service=service,
+                root_job_id=root_job_id,
+                user_input=user_input,
+                latest_candidate_text=latest_candidate_text,
+                latest_candidate_appearance_id=latest_candidate_appearance_id,
+                advancement_result=result,
+            )
+        ):
+            result["advancement_loop_outcome"] = ADVANCEMENT_OUTCOME_PAUSED
+            result["advancement_stop_reason"] = (
+                "measurable delivery batch accepted; pause before dispatching the next "
+                "quantitative delivery continuation"
+            )
+            write_process_step(
+                flow=flow,
+                step=f"{step_prefix}.batch_boundary_{round_index}",
+                phase="advancement",
+                action="已接收可计量交付批次，量化目标未完成，暂停并等待下一次恢复推进",
+                status="paused",
+                **turn_field(turn),
+                job_id=root_job_id,
+                root_job_id=root_job_id,
+                advancement_loop_outcome=ADVANCEMENT_OUTCOME_PAUSED,
+                advancement_stop_reason=str(result["advancement_stop_reason"]),
+            )
+            return result
+        if (
             not auto_continue_to_blocker
             or outcome != ADVANCEMENT_OUTCOME_PAUSED
             or not has_runnable_frontier(service, root_job_id)
@@ -2075,6 +2477,7 @@ def build_nonterminal_advancement_output(frontier_result: dict[str, Any]) -> str
     remaining = frontier_result.get("remaining_frontier_jobs") or []
     blocked = frontier_result.get("blocked_frontier_jobs") or []
     latest_candidate = str(frontier_result.get("latest_parent_candidate_text") or "").strip()
+    latest_delivery_ledger = frontier_result.get("latest_delivery_ledger")
     title = "金箍运行已暂停" if outcome == ADVANCEMENT_OUTCOME_PAUSED else "金箍运行已阻塞"
     sections = [
         f"# {title}",
@@ -2107,7 +2510,24 @@ def build_nonterminal_advancement_output(frontier_result: dict[str, Any]) -> str
             ]
         )
     if latest_candidate:
-        sections.extend(["", "## 最新父业候选", "", latest_candidate])
+        sections.extend(["", "## 最新父业候选"])
+        if (
+            isinstance(latest_delivery_ledger, dict)
+            and latest_delivery_ledger.get("has_quantitative_text_contract")
+            and not latest_candidate.startswith("## 确定性交付账本")
+        ):
+            sections.extend(
+                [
+                    "",
+                    render_delivery_ledger_markdown(latest_delivery_ledger),
+                    "",
+                    "## 模型候选文本",
+                    "",
+                    latest_candidate,
+                ]
+            )
+        else:
+            sections.extend(["", latest_candidate])
     return "\n".join(sections).rstrip()
 
 
@@ -2160,15 +2580,15 @@ def record_runtime_checkpoint(
         shutil.copytree(service.paths.runtime_root, temp_path)
         if checkpoint_path.exists():
             backup_path = checkpoint_path.with_name(f"{checkpoint_path.name}.old-{uuid.uuid4().hex}")
-            checkpoint_path.rename(backup_path)
+            rename_directory_with_retries(checkpoint_path, backup_path)
             try:
-                temp_path.rename(checkpoint_path)
+                rename_directory_with_retries(temp_path, checkpoint_path)
             except Exception:
                 if backup_path.exists() and not checkpoint_path.exists():
-                    backup_path.rename(checkpoint_path)
+                    rename_directory_with_retries(backup_path, checkpoint_path)
                 raise
         else:
-            temp_path.rename(checkpoint_path)
+            rename_directory_with_retries(temp_path, checkpoint_path)
     finally:
         if temp_path.exists():
             shutil.rmtree(temp_path, ignore_errors=True)
@@ -2194,6 +2614,19 @@ def record_runtime_checkpoint(
         **data,
     )
     return checkpoint_path
+
+
+def rename_directory_with_retries(source: Path, target: Path) -> None:
+    last_error: OSError | None = None
+    for _ in range(20):
+        try:
+            source.rename(target)
+            return
+        except OSError as exc:
+            last_error = exc
+            time.sleep(0.1)
+    assert last_error is not None
+    raise last_error
 
 
 def restore_runtime_checkpoint(*, checkpoint_path: Path, service: RuntimeService) -> None:
@@ -3212,7 +3645,7 @@ def read_accepted_child_packages(
                     }
                 )
                 continue
-            missing = [field for field in CHILD_RESULT_PACKAGE_FIELDS if field not in package]
+            missing = [field for field in BASE_CHILD_RESULT_PACKAGE_FIELDS if field not in package]
             if missing:
                 skipped.append(
                     {
@@ -3234,6 +3667,92 @@ def read_accepted_child_packages(
                 }
             )
     return {"packages": packages, "skipped": skipped}
+
+
+def accepted_delivery_contributions_from_packages(
+    accepted_child_packages: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    contributions: list[dict[str, Any]] = []
+    for package_ref in accepted_child_packages:
+        package = package_ref.get("package")
+        if not isinstance(package, dict):
+            continue
+        raw_contributions = package.get("delivery_contributions") or []
+        if not isinstance(raw_contributions, list):
+            continue
+        for index, contribution in enumerate(raw_contributions, start=1):
+            if not isinstance(contribution, dict):
+                contributions.append(
+                    {
+                        "source_job_id": str(package_ref.get("job_id") or ""),
+                        "source_result_appearance_id": str(
+                            package_ref.get("result_appearance_id") or ""
+                        ),
+                        "contribution_id": f"invalid_{index}",
+                        "content": "",
+                        "counts_toward_parent_delivery": False,
+                        "evidence": "delivery contribution was not a JSON object",
+                    }
+                )
+                continue
+            contribution_id = str(
+                contribution.get("contribution_id") or f"contribution_{index}"
+            ).strip()
+            contributions.append(
+                {
+                    "source_job_id": str(package_ref.get("job_id") or ""),
+                    "source_result_appearance_id": str(
+                        package_ref.get("result_appearance_id") or ""
+                    ),
+                    "contribution_id": contribution_id,
+                    "content": str(contribution.get("content") or ""),
+                    "counts_toward_parent_delivery": (
+                        contribution.get("counts_toward_parent_delivery") is True
+                    ),
+                    "evidence": str(contribution.get("evidence") or "").strip(),
+                }
+            )
+    return contributions
+
+
+def package_delivery_contribution_cjk_characters(package: Any) -> int:
+    if not isinstance(package, dict):
+        return 0
+    raw_contributions = package.get("delivery_contributions") or []
+    if not isinstance(raw_contributions, list):
+        return 0
+    total = 0
+    for contribution in raw_contributions:
+        if not isinstance(contribution, dict):
+            continue
+        if contribution.get("counts_toward_parent_delivery") is not True:
+            continue
+        total += count_cjk_characters(str(contribution.get("content") or ""))
+    return total
+
+
+def build_parent_delivery_ledger(
+    *,
+    service: RuntimeService,
+    parent_job_id: str,
+    user_input: str,
+    candidate_text: str,
+    candidate_appearance_id: str | None = None,
+    accepted_child_packages: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    if accepted_child_packages is None:
+        accepted_child_packages = read_accepted_child_packages(
+            service=service,
+            parent_job_id=parent_job_id,
+        )["packages"]
+    return build_text_delivery_ledger(
+        task_text=user_input,
+        candidate_text=candidate_text,
+        candidate_appearance_id=candidate_appearance_id,
+        accepted_delivery_contributions=accepted_delivery_contributions_from_packages(
+            accepted_child_packages
+        ),
+    )
 
 
 def build_parent_integration_messages(
@@ -3267,13 +3786,7 @@ def build_parent_integration_messages(
         },
         "parent_reevaluation": parent_reevaluation,
         "accepted_child_packages": [
-            {
-                "job_id": item["job_id"],
-                "target": item["target"],
-                "result_appearance_id": item["result_appearance_id"],
-                "evidence_appearance_id": item["evidence_appearance_id"],
-                "package": item["package"],
-            }
+            parent_integration_package_manifest(item)
             for item in accepted_child_packages
         ],
         "integration_contract": {
@@ -3281,7 +3794,11 @@ def build_parent_integration_messages(
             "required_fields": list(PARENT_INTEGRATION_REQUIRED_FIELDS),
             "optional_fields": list(PARENT_INTEGRATION_OPTIONAL_FIELDS),
             "field_types": {
-                "integrated_candidate_text": "non-empty string; the complete parent-scope candidate after consuming accepted child packages",
+                "integrated_candidate_text": (
+                    "non-empty string; a parent-scope integration manifest that references "
+                    "accepted child packages and summarizes current parent state without "
+                    "copying or inventing large deliverable bodies"
+                ),
                 "consumed_child_jobs": "non-empty list of accepted child job ids consumed in this integration",
                 "evidence": "non-empty list of strings explaining why each child package was used",
                 "open_gaps": "list of remaining parent-level gaps or questions",
@@ -3299,7 +3816,9 @@ def build_parent_integration_messages(
                 "Do not accept, reject, or complete the root job.",
                 "Only consume child packages listed in accepted_child_packages.",
                 "If a child package is insufficient, separate immediate critical-path work from parked backlog and risk notes.",
-                "Return complete parent-scope candidate text; do not return only a summary unless the parent target itself only asks for a summary.",
+                "Do not create new domain deliverable content during integration.",
+                "Do not copy large delivery contribution content into integrated_candidate_text; use result_appearance_id and contribution ids as references.",
+                "For intermediate quantitative deliveries, return a concise parent manifest plus gaps, evidence, ledger notes, and follow-up routing.",
             ],
         },
     }
@@ -3319,6 +3838,93 @@ def build_parent_integration_messages(
             "content": json.dumps(payload, ensure_ascii=False, sort_keys=True, indent=2),
         },
     ]
+
+
+def parent_integration_package_manifest(package_ref: dict[str, Any]) -> dict[str, Any]:
+    package = package_ref.get("package")
+    if not isinstance(package, dict):
+        package = {}
+    artifacts = package.get("artifacts") if isinstance(package.get("artifacts"), list) else []
+    contributions = (
+        package.get("delivery_contributions")
+        if isinstance(package.get("delivery_contributions"), list)
+        else []
+    )
+    open_questions = (
+        package.get("open_questions") if isinstance(package.get("open_questions"), list) else []
+    )
+    follow_ups = (
+        package.get("suggested_follow_up_jobs")
+        if isinstance(package.get("suggested_follow_up_jobs"), list)
+        else []
+    )
+    return {
+        "job_id": package_ref["job_id"],
+        "target": package_ref["target"],
+        "result_appearance_id": package_ref["result_appearance_id"],
+        "evidence_appearance_id": package_ref["evidence_appearance_id"],
+        "package_manifest": {
+            "conclusion": compact_parent_integration_text(str(package.get("conclusion") or "")),
+            "artifacts": [
+                compact_parent_integration_text(str(item))
+                for item in artifacts
+            ],
+            "delivery_contributions": [
+                parent_integration_contribution_manifest(package_ref, contribution, index)
+                for index, contribution in enumerate(contributions, start=1)
+            ],
+            "evidence_summary": compact_parent_integration_text(
+                str(package.get("evidence_summary") or "")
+            ),
+            "open_questions": [
+                compact_parent_integration_text(str(item))
+                for item in open_questions
+            ],
+            "suggested_follow_up_jobs": [
+                compact_parent_integration_text(str(item))
+                for item in follow_ups
+            ],
+        },
+    }
+
+
+def parent_integration_contribution_manifest(
+    package_ref: dict[str, Any],
+    contribution: Any,
+    index: int,
+) -> dict[str, Any]:
+    if not isinstance(contribution, dict):
+        return {
+            "contribution_id": f"invalid_{index}",
+            "counts_toward_parent_delivery": False,
+            "content_character_count": 0,
+            "content_cjk_character_count": 0,
+            "content_source": {
+                "result_appearance_id": package_ref.get("result_appearance_id", ""),
+            },
+            "evidence": "delivery contribution was not a JSON object",
+        }
+    content = str(contribution.get("content") or "")
+    return {
+        "contribution_id": str(contribution.get("contribution_id") or f"contribution_{index}"),
+        "counts_toward_parent_delivery": contribution.get("counts_toward_parent_delivery") is True,
+        "content_character_count": len(content),
+        "content_cjk_character_count": count_cjk_characters(content),
+        "content_source": {
+            "result_appearance_id": package_ref.get("result_appearance_id", ""),
+        },
+        "content_preview": compact_parent_integration_text(content),
+        "evidence": compact_parent_integration_text(str(contribution.get("evidence") or "")),
+    }
+
+
+def compact_parent_integration_text(value: str) -> str:
+    if len(value) <= PARENT_INTEGRATION_TEXT_PREVIEW_LIMIT:
+        return value
+    return (
+        value[:PARENT_INTEGRATION_TEXT_PREVIEW_LIMIT]
+        + "\n[正文已保存在相引用中，父业整合只使用引用和摘要，不在整合提示中复制全文。]"
+    )
 
 
 def parse_parent_integration_output(
@@ -3421,6 +4027,7 @@ def build_parent_integration_evidence(
     integration: dict[str, Any],
     parent_candidate_appearance_id: str,
     accepted_child_packages: list[dict[str, Any]],
+    delivery_ledger: dict[str, Any] | None = None,
     parent_integration_job_id: str = "",
     parent_integration_repair_job_id: str = "",
 ) -> str:
@@ -3439,6 +4046,7 @@ def build_parent_integration_evidence(
         "risk_notes": integration.get("risk_notes") or [],
         "acceptance_checks": integration.get("acceptance_checks") or [],
         "delivery_ledger_update": integration.get("delivery_ledger_update"),
+        "deterministic_delivery_ledger": delivery_ledger,
         "parent_consumption_summary": integration["parent_consumption_summary"],
         "accepted_child_package_refs": [
             {
@@ -3452,6 +4060,63 @@ def build_parent_integration_evidence(
         "does_not_auto_accept_or_reject": True,
     }
     return json.dumps(payload, ensure_ascii=False, sort_keys=True, indent=2)
+
+
+def build_parent_integration_candidate_text(
+    *,
+    integration: dict[str, Any],
+    delivery_ledger: dict[str, Any],
+) -> str:
+    integrated_text = str(integration.get("integrated_candidate_text") or "")
+    if not delivery_ledger.get("has_quantitative_text_contract"):
+        return integrated_text
+    return "\n\n".join(
+        [
+            render_delivery_ledger_markdown(delivery_ledger),
+            "## 父业整合候选",
+            integrated_text,
+        ]
+    )
+
+
+def delivery_ledger_summary(delivery_ledger: dict[str, Any]) -> dict[str, Any]:
+    accepted_contributions = delivery_ledger.get("accepted_delivery_contributions") or []
+    selected_region = delivery_ledger.get("selected_region") or {}
+    return {
+        "ledger_kind": "deterministic_parent_delivery_ledger",
+        "authority": "若整合位候选文本中的字数估算与本确定性账本冲突，以本确定性账本为准。",
+        "accounting_basis": delivery_ledger.get("accounting_basis"),
+        "delivery_status": delivery_ledger.get("delivery_status"),
+        "actual_cjk_characters": delivery_ledger.get("actual_cjk_characters"),
+        "candidate_diagnostic_cjk_characters": delivery_ledger.get(
+            "candidate_diagnostic_cjk_characters"
+        ),
+        "required_min_cjk_characters": delivery_ledger.get("required_min_cjk_characters"),
+        "allowed_max_cjk_characters": delivery_ledger.get("allowed_max_cjk_characters"),
+        "remaining_min_cjk_characters": delivery_ledger.get("remaining_min_cjk_characters"),
+        "contribution_count": selected_region.get("contribution_count", len(accepted_contributions)),
+        "accepted_contribution_refs": [
+            {
+                "source_job_id": item.get("source_job_id"),
+                "source_result_appearance_id": item.get("source_result_appearance_id"),
+                "contribution_id": item.get("contribution_id"),
+                "cjk_character_count": item.get("cjk_character_count"),
+            }
+            for item in accepted_contributions
+            if isinstance(item, dict)
+        ],
+        "skipped_contribution_count": len(delivery_ledger.get("skipped_delivery_contributions") or []),
+    }
+
+
+def render_delivery_ledger_markdown(delivery_ledger: dict[str, Any]) -> str:
+    ledger_summary = delivery_ledger_summary(delivery_ledger)
+    return "\n\n".join(
+        [
+            "## 确定性交付账本",
+            "```json\n" + json.dumps(ledger_summary, ensure_ascii=False, sort_keys=True, indent=2) + "\n```",
+        ]
+    )
 
 
 def build_parent_integration_lineage(
@@ -3723,6 +4388,7 @@ def delivery_continuation_entry(delivery_ledger: dict[str, Any]) -> dict[str, An
         "output_contract": DELIVERY_CONTINUATION_OUTPUT_CONTRACT,
         "acceptance_criteria": DELIVERY_CONTINUATION_ACCEPTANCE_CRITERIA,
         "required_context_gaps": [],
+        "delivery_relation": DELIVERY_RELATION_ADVANCES,
         "split_law": {
             **parent_integration_split_law(
                 reason=DELIVERY_CONTINUATION_BLOCKING_REASON,
@@ -3731,6 +4397,73 @@ def delivery_continuation_entry(delivery_ledger: dict[str, Any]) -> dict[str, An
             "blocks_parent_execution": True,
         },
     }
+
+
+def register_delivery_continuation_split(
+    *,
+    flow: FlowWriter,
+    service: RuntimeService,
+    tree_service: TreeService,
+    parent_job_id: str,
+    delivery_ledger: dict[str, Any],
+    split_proposal_index: int,
+    step_prefix: str,
+    turn: str | None,
+) -> dict[str, Any]:
+    entry = delivery_continuation_entry(delivery_ledger)
+    result = tree_service.propose_child_job(
+        parent_job_id=parent_job_id,
+        target=entry["target"],
+        blocking_reason=entry["blocking_reason"],
+        output_contract=entry["output_contract"],
+        acceptance_criteria=entry["acceptance_criteria"],
+        estimated_effort=1,
+        depth_limit=DEFAULT_PARENT_INTEGRATION_FOLLOWUP_DEPTH_LIMIT,
+        required_context_gaps=entry["required_context_gaps"],
+        split_law=entry["split_law"],
+        delivery_relation=entry["delivery_relation"],
+        actor_id="system",
+    )
+    child = result["child"]
+    accepted_item = {
+        "proposal_index": split_proposal_index,
+        "child_job_id": child["job_id"],
+        "target": child["target"],
+        "method_path": "",
+        "split_law": entry["split_law"],
+        "delivery_relation": entry["delivery_relation"],
+        "source": entry["source"],
+    }
+    accepted_data = {
+        **turn_field(turn),
+        "job_id": parent_job_id,
+        "child_job_id": child["job_id"],
+        "split_proposal_index": str(split_proposal_index),
+        "split_proposal_decision": "accepted",
+        "split_law": json.dumps(entry["split_law"], ensure_ascii=False, sort_keys=True, indent=2),
+        "split_proposal": json.dumps(entry, ensure_ascii=False, sort_keys=True, indent=2),
+        "split_registration_summary": json.dumps(
+            accepted_item, ensure_ascii=False, sort_keys=True, indent=2
+        ),
+        "delivery_ledger": json.dumps(delivery_ledger, ensure_ascii=False, sort_keys=True, indent=2),
+    }
+    flow.write(FLOW_SPLIT_PROPOSAL_ACCEPTED, "split proposal accepted", **accepted_data)
+    write_job_tree_mirror(
+        flow=flow,
+        service=service,
+        turn=turn,
+        job_id=child["job_id"],
+        action="split_proposal_child_created",
+        child_job_id=child["job_id"],
+    )
+    write_process_step(
+        flow=flow,
+        step=f"{step_prefix}.delivery_continuation_accepted",
+        phase="split_proposal",
+        action="根业量化交付未达标且无临界分业，运行时登记交付续推业",
+        **accepted_data,
+    )
+    return accepted_item
 
 
 def parent_followup_entries_from_integration(integration: dict[str, Any]) -> list[dict[str, Any]]:
@@ -3790,6 +4523,8 @@ def register_parent_integration_followups(
     parent_job_id: str,
     integration: dict[str, Any],
     user_input: str,
+    accepted_child_packages: list[dict[str, Any]],
+    delivery_ledger_override: dict[str, Any] | None = None,
     step_prefix: str,
     turn: str | None = None,
 ) -> dict[str, Any]:
@@ -3798,9 +4533,12 @@ def register_parent_integration_followups(
     rejected: list[dict[str, Any]] = []
     parked: list[dict[str, Any]] = []
     source_entries = parent_followup_entries_from_integration(integration)
-    delivery_ledger = build_text_delivery_ledger(
-        task_text=user_input,
+    delivery_ledger = delivery_ledger_override or build_parent_delivery_ledger(
+        service=service,
+        parent_job_id=parent_job_id,
+        user_input=user_input,
         candidate_text=str(integration.get("integrated_candidate_text") or ""),
+        accepted_child_packages=accepted_child_packages,
     )
     ledger_data = {
         **turn_field(turn),
@@ -3853,6 +4591,7 @@ def register_parent_integration_followups(
                 depth_limit=DEFAULT_PARENT_INTEGRATION_FOLLOWUP_DEPTH_LIMIT,
                 required_context_gaps=entry["required_context_gaps"],
                 split_law=entry["split_law"],
+                delivery_relation=str(entry.get("delivery_relation") or ""),
                 actor_id="system",
             )
             child = result["child"]
@@ -4485,9 +5224,21 @@ def run_parent_integration(
         accepted_child_packages=accepted_child_packages,
         integration=integration,
     )
+    delivery_ledger = build_parent_delivery_ledger(
+        service=service,
+        parent_job_id=parent_job_id,
+        user_input=user_input,
+        candidate_text=integration["integrated_candidate_text"],
+        candidate_appearance_id=raw_integration_candidate["appearance_id"],
+        accepted_child_packages=accepted_child_packages,
+    )
+    parent_candidate_text = build_parent_integration_candidate_text(
+        integration=integration,
+        delivery_ledger=delivery_ledger,
+    )
     parent_candidate = service.submit_candidate(
         parent_job_id,
-        text=integration["integrated_candidate_text"],
+        text=parent_candidate_text,
         actor_id="ai_integrator",
         metadata={
             "appearance_kind": "parent_integration_candidate",
@@ -4499,6 +5250,7 @@ def run_parent_integration(
         integration=integration,
         parent_candidate_appearance_id=parent_candidate["appearance_id"],
         accepted_child_packages=accepted_child_packages,
+        delivery_ledger=delivery_ledger,
         parent_integration_job_id=parent_integration_job_id,
         parent_integration_repair_job_id=parent_integration_repair_job_id,
     )
@@ -4520,10 +5272,11 @@ def run_parent_integration(
         "parent_integration_job_id": parent_integration_job_id,
         "parent_integration_repair_job_id": parent_integration_repair_job_id,
         "parent_integration_status": "integrated",
-        "parent_integration_candidate": integration["integrated_candidate_text"],
+        "parent_integration_candidate": parent_candidate_text,
         "parent_integration_candidate_appearance_id": parent_candidate["appearance_id"],
         "parent_integration_evidence": parent_evidence_text,
         "parent_integration_evidence_appearance_id": parent_evidence["appearance_id"],
+        "delivery_ledger": json.dumps(delivery_ledger, ensure_ascii=False, sort_keys=True, indent=2),
         "candidate_lineage": json.dumps(candidate_lineage, ensure_ascii=False, sort_keys=True, indent=2),
         "evidence_hardness": "weak_ai",
         "evidence_kind": "parent_integration_evidence",
@@ -4573,24 +5326,69 @@ def run_parent_integration(
         parent_job_id=parent_job_id,
         integration=integration,
         user_input=user_input,
+        accepted_child_packages=accepted_child_packages,
+        delivery_ledger_override=delivery_ledger,
         step_prefix=step_prefix,
         turn=turn,
     )
-    try:
-        split_result = run_split_proposal_registration(
+    if delivery_ledger_needs_more(direct_followup_result["delivery_ledger"]):
+        skipped_reason = (
+            "parent integration already registered the active delivery continuation; "
+            "generic split extraction skipped to preserve one critical frontier"
+        )
+        skipped_data = {
+            **turn_field(turn),
+            "job_id": parent_job_id,
+            "parent_job_id": parent_job_id,
+            "candidate_appearance_id": parent_candidate["appearance_id"],
+            "reason": skipped_reason,
+            "delivery_ledger": json.dumps(
+                direct_followup_result["delivery_ledger"],
+                ensure_ascii=False,
+                sort_keys=True,
+                indent=2,
+            ),
+        }
+        flow.write(FLOW_SPLIT_PROPOSAL_SKIPPED, "split proposal registration skipped", **skipped_data)
+        write_job_tree_mirror(
             flow=flow,
             service=service,
-            client=client,
-            method=method,
-            parent_job_id=parent_job_id,
-            user_input=user_input,
-            candidate_text=integration["integrated_candidate_text"],
-            candidate_appearance_id=parent_candidate["appearance_id"],
-            step_prefix=f"{step_prefix}.split_proposal",
             turn=turn,
+            job_id=parent_job_id,
+            action="split_proposal_skipped",
+            reason=skipped_reason,
         )
-    except Exception as exc:
-        split_result = {"accepted": [], "rejected": [], "skipped_reason": str(exc)}
+        write_process_step(
+            flow=flow,
+            step=f"{step_prefix}.split_proposal.skip_duplicate_ingress",
+            phase="split_proposal",
+            action="父业整合已登记临界交付续推业，跳过同一候选的重复分业抽取入口",
+            status="skipped",
+            **skipped_data,
+        )
+        split_result = {
+            "accepted": [],
+            "rejected": [],
+            "parked": [],
+            "skipped_reason": skipped_reason,
+        }
+    else:
+        try:
+            split_result = run_split_proposal_registration(
+                flow=flow,
+                service=service,
+                client=client,
+                method=method,
+                parent_job_id=parent_job_id,
+                user_input=user_input,
+                candidate_text=parent_candidate_text,
+                candidate_appearance_id=parent_candidate["appearance_id"],
+                delivery_ledger_override=direct_followup_result["delivery_ledger"],
+                step_prefix=f"{step_prefix}.split_proposal",
+                turn=turn,
+            )
+        except Exception as exc:
+            split_result = {"accepted": [], "rejected": [], "parked": [], "skipped_reason": str(exc)}
     split_result["parent_integration_followups"] = direct_followup_result
     followup_data = {
         **turn_field(turn),
@@ -4629,7 +5427,7 @@ def run_parent_integration(
         "parent_job_id": parent_job_id,
         "parent_integration_job_id": parent_integration_job_id,
         "parent_integration_repair_job_id": parent_integration_repair_job_id,
-        "candidate_text": integration["integrated_candidate_text"],
+        "candidate_text": parent_candidate_text,
         "candidate_appearance_id": parent_candidate["appearance_id"],
         "evidence_appearance_id": parent_evidence["appearance_id"],
         "candidate_lineage": candidate_lineage,
@@ -4653,6 +5451,11 @@ def build_child_dispatch_messages(
         "field_meaning": {
             "conclusion": "当前子业在自身责任范围内形成的结论或局部成果摘要。",
             "artifacts": "可被父业消费的局部产物、引用、清单或正文片段数组。",
+            "delivery_contributions": (
+                "数组。只有当某段内容本身就是父业目标交付物的一部分时，"
+                "才放入对象 {contribution_id, content, counts_toward_parent_delivery, evidence}；"
+                "支持材料、检查报告、设定说明不计入时返回 []。"
+            ),
             "evidence_summary": "为什么认为这些局部产物能支撑父业继续推进的证据摘要。",
             "open_questions": "仍然阻塞当前子业或父业的开放问题数组。",
             "suggested_follow_up_jobs": "需要后续另立业处理的候选事项数组。",
@@ -4661,6 +5464,7 @@ def build_child_dispatch_messages(
             "只返回 JSON 对象，不输出解释性正文。",
             "只能提交当前子业的候选果包，不能接收、拒收或完成任何业。",
             "不能宣告父业或根业完成。",
+            "delivery_contributions 只能收录真实交付内容，不得把计划、证据、评审或说明伪装为交付量。",
             "没有证据的结论必须进入 open_questions 或 suggested_follow_up_jobs。",
         ],
     }
@@ -4761,6 +5565,7 @@ def build_child_package_review_messages(
             "boundaries": [
                 "Do not accept or reject the parent or root job.",
                 "Do not claim final task completion.",
+                "If delivery_contributions contains support material, plans, reports, or evidence instead of parent-delivery content, choose repair.",
                 "If a high-value or human-only decision is needed, choose repair and put the decision need in repair_instruction.",
             ],
         },
@@ -4985,6 +5790,7 @@ def normalize_split_proposal(
             field_name="required_context_gaps",
             error_prefix="split proposal",
         ),
+        "delivery_relation": normalize_delivery_relation_field(proposal.get("delivery_relation")),
         "split_law": normalize_split_law_field(proposal["split_law"]),
     }
     method_path = str(proposal.get("method_path") or "").strip()
@@ -5006,6 +5812,15 @@ def normalize_split_proposal(
         normalized["method_binding_reason"] = ""
         normalized["method_return_point"] = ""
     return normalized
+
+
+def normalize_delivery_relation_field(value: Any) -> str:
+    relation = str(value or DELIVERY_RELATION_NONCRITICAL).strip()
+    if not relation:
+        relation = DELIVERY_RELATION_NONCRITICAL
+    if relation not in DELIVERY_RELATION_VALUES:
+        raise RuntimeError("split proposal delivery_relation is not supported")
+    return relation
 
 
 def normalize_split_law_field(value: Any) -> dict[str, Any]:

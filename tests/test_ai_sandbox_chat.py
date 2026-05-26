@@ -77,6 +77,7 @@ def split_proposals_json(proposals: list[dict] | None = None) -> str:
     enriched = []
     for proposal in proposals or []:
         item = {**proposal}
+        item.setdefault("delivery_relation", "does_not_advance_quantitative_delivery")
         item.setdefault("split_law", default_split_law())
         enriched.append(item)
     return json.dumps({"proposals": enriched}, ensure_ascii=False)
@@ -86,6 +87,7 @@ def child_result_package_json(
     *,
     conclusion: str = "child conclusion",
     artifacts: list[str] | None = None,
+    delivery_contributions: list[dict] | None = None,
     evidence_summary: str = "child evidence summary",
     open_questions: list[str] | None = None,
     suggested_follow_up_jobs: list[str] | None = None,
@@ -94,6 +96,7 @@ def child_result_package_json(
         {
             "conclusion": conclusion,
             "artifacts": artifacts or ["child artifact"],
+            "delivery_contributions": delivery_contributions or [],
             "evidence_summary": evidence_summary,
             "open_questions": open_questions or [],
             "suggested_follow_up_jobs": suggested_follow_up_jobs or [],
@@ -696,7 +699,7 @@ class AiSandboxChatTest(unittest.TestCase):
                 client=client,
             ).run("Use the method and split blocked story work into child jobs.")
 
-            self.assertIn("# 金箍运行已暂停", answer)
+            self.assertIn("# 金箍运行已阻塞", answer)
             self.assertIn("candidate that needs a protagonist child job", answer)
             self.assertIn("make protagonist vivid", answer)
             records = [
@@ -708,10 +711,11 @@ class AiSandboxChatTest(unittest.TestCase):
             self.assertEqual(event_types.count("split_proposal_accepted"), 1)
             self.assertEqual(event_types.count("split_proposal_rejected"), 2)
             self.assertEqual(event_types.count("child_result_package_rejected"), 1)
+            self.assertEqual(event_types.count("frontier_job_blocked"), 1)
             loop_finished = [
                 record for record in records if record["event_type"] == "advancement_loop_finished"
             ][-1]
-            self.assertEqual(loop_finished["data"]["advancement_loop_outcome"], "paused")
+            self.assertEqual(loop_finished["data"]["advancement_loop_outcome"], "blocked")
             self.assertIn("make protagonist vivid", loop_finished["data"]["remaining_frontier_jobs"])
             checkpoint = [
                 record for record in records if record["event_type"] == "runtime_checkpoint_recorded"
@@ -730,9 +734,10 @@ class AiSandboxChatTest(unittest.TestCase):
             self.assertIn("分业申请已登记（split_proposal_accepted）", readable_text)
             self.assertIn("分业申请已拒绝（split_proposal_rejected）", readable_text)
             self.assertIn("子业果包已拒绝（child_result_package_rejected）", readable_text)
+            self.assertIn("前沿业已阻塞（frontier_job_blocked）", readable_text)
             self.assertIn("父业整合已跳过（parent_integration_skipped）", readable_text)
 
-    def test_runner_dispatches_child_package_and_registers_grandchild(self) -> None:
+    def test_runner_returns_accepted_child_package_before_registering_followup(self) -> None:
         with TemporaryDirectory() as tmp:
             workspace = Path(tmp)
             sandbox = workspace / "sandbox"
@@ -769,22 +774,6 @@ class AiSandboxChatTest(unittest.TestCase):
                     }
                 ]
             )
-            child_split_payload = split_proposals_json(
-                [
-                    {
-                        "target": "quantify protagonist vividness checks",
-                        "blocking_reason": "the child package exposes an unresolved acceptance checklist",
-                        "output_contract": "measurable vividness checklist",
-                        "acceptance_criteria": "checklist has observable items and thresholds",
-                        "estimated_effort": 1,
-                        "depth_limit": 4,
-                        "required_context_gaps": [],
-                        "method_path": str(child_method),
-                        "method_binding_reason": "the same child method can refine its acceptance checks",
-                        "method_return_point": "return the checklist to the character child job",
-                    }
-                ]
-            )
             client = FakeChatClient(
                 responses=[
                     "root candidate that needs character work",
@@ -800,9 +789,9 @@ class AiSandboxChatTest(unittest.TestCase):
                     child_package_review_accept_json(
                         parent_consumption_summary="parent can consume the protagonist card"
                     ),
-                    child_split_payload,
                     parent_integration_response(
-                        "integrated root candidate with protagonist card"
+                        "integrated root candidate with protagonist card",
+                        suggested_follow_up_jobs=["quantify protagonist vividness checks"],
                     ),
                     split_proposals_json(),
                     acceptance_continue_json(),
@@ -882,6 +871,13 @@ class AiSandboxChatTest(unittest.TestCase):
                     for node in snapshot["nodes"]
                 )
             )
+            final_snapshot = tree_snapshots[-1]
+            followup_nodes = [
+                node
+                for node in final_snapshot["nodes"]
+                if node["target"] == "quantify protagonist vividness checks"
+            ]
+            self.assertEqual(followup_nodes[0]["parent_job_id"], final_snapshot["root_job_id"])
             readable_text = next(log_dir.glob("ai-run-*.md")).read_text(encoding="utf-8-sig")
             self.assertIn("子业果包已提交（child_result_package_submitted）", readable_text)
             self.assertIn("子业果包验收已接收（child_package_review_accepted）", readable_text)
@@ -1072,7 +1068,6 @@ class AiSandboxChatTest(unittest.TestCase):
                     child_package_review_accept_json(
                         parent_consumption_summary="parent can consume the repaired package"
                     ),
-                    split_proposals_json(),
                     parent_integration_response("integrated root candidate after repaired package"),
                     split_proposals_json(),
                     acceptance_continue_json(),
@@ -1145,7 +1140,6 @@ class AiSandboxChatTest(unittest.TestCase):
                     root_split_payload,
                     child_result_package_json(conclusion="accepted child package"),
                     child_package_review_accept_json(),
-                    split_proposals_json(),
                     "not json",
                     acceptance_continue_json(),
                 ]
@@ -1479,7 +1473,6 @@ class AiSandboxChatTest(unittest.TestCase):
                     child_package_review_accept_json(
                         parent_consumption_summary="parent can consume the returned direction decision"
                     ),
-                    split_proposals_json(),
                     parent_integration_response("integrated answer after human decision"),
                     split_proposals_json(),
                     acceptance_continue_json(),
@@ -1617,7 +1610,6 @@ class AiSandboxChatTest(unittest.TestCase):
                     split_proposals_json([child_proposal]),
                     child_result_package_json(),
                     child_package_review_accept_json(),
-                    split_proposals_json(),
                     "{not valid integration json",
                     parent_integration_response("repaired integrated parent candidate"),
                     split_proposals_json(),
@@ -1672,7 +1664,6 @@ class AiSandboxChatTest(unittest.TestCase):
                     split_proposals_json([child_proposal]),
                     child_result_package_json(),
                     child_package_review_accept_json(),
-                    split_proposals_json(),
                     parent_integration_response(
                         "integrated parent candidate with gap",
                         open_gaps=["missing external source"],
@@ -1730,15 +1721,24 @@ class AiSandboxChatTest(unittest.TestCase):
                 "method_path": "",
                 "method_binding_reason": "",
                 "method_return_point": "",
+                "delivery_relation": "advances_quantitative_delivery",
             }
             client = FakeChatClient(
                 responses=[
                     "字" * 1000,
                     method_review_json(),
                     split_proposals_json([child_proposal]),
-                    child_result_package_json(),
+                    child_result_package_json(
+                        delivery_contributions=[
+                            {
+                                "contribution_id": "batch_1",
+                                "content": "字" * 3000,
+                                "counts_toward_parent_delivery": True,
+                                "evidence": "first batch content belongs to the requested body text",
+                            }
+                        ]
+                    ),
                     child_package_review_accept_json(),
-                    split_proposals_json(),
                     parent_integration_response(
                         "字" * 2000,
                         open_gaps=["missing external source"],
@@ -1767,9 +1767,23 @@ class AiSandboxChatTest(unittest.TestCase):
             self.assertIn("parent_integration_followup_parked", event_types)
             serialized = "\n".join(json.dumps(record, ensure_ascii=False) for record in records)
             self.assertIn("below_minimum", serialized)
+            self.assertIn("当前 3000 / 最低 10000", serialized)
+            self.assertIn("accepted_delivery_contributions", serialized)
             self.assertIn("missing external source", serialized)
             self.assertIn("separate consistency review", serialized)
             self.assertIn("delivery_ledger", serialized)
+            ledgers = [
+                json.loads(record["data"]["delivery_ledger"])
+                for record in records
+                if record["event_type"] == "delivery_ledger_recorded"
+            ]
+            self.assertTrue(
+                any(
+                    ledger["accounting_basis"] == "accepted_delivery_contributions"
+                    and ledger["actual_cjk_characters"] == 3000
+                    for ledger in ledgers
+                )
+            )
             snapshots = [
                 json.loads(record["data"]["tree_snapshot"])
                 for record in records
@@ -1816,16 +1830,39 @@ class AiSandboxChatTest(unittest.TestCase):
                 "method_path": "",
                 "method_binding_reason": "",
                 "method_return_point": "",
+                "delivery_relation": "advances_quantitative_delivery",
                 "split_law": default_split_law(blocks_parent_execution=True),
+            }
+            feedback_proposal = {
+                "target": "收集读者反馈",
+                "blocking_reason": "feedback may improve later writing",
+                "output_contract": "feedback report",
+                "acceptance_criteria": "report has observations",
+                "estimated_effort": 1,
+                "depth_limit": 3,
+                "required_context_gaps": [],
+                "method_path": "",
+                "method_binding_reason": "",
+                "method_return_point": "",
+                "delivery_relation": "does_not_advance_quantitative_delivery",
+                "split_law": default_split_law(blocks_parent_acceptance=True),
             }
             client = FakeChatClient(
                 responses=[
                     "字" * 1000,
                     method_review_json(),
-                    split_proposals_json([final_proposal, batch_proposal]),
-                    child_result_package_json(),
+                    split_proposals_json([final_proposal, batch_proposal, feedback_proposal]),
+                    child_result_package_json(
+                        delivery_contributions=[
+                            {
+                                "contribution_id": "batch_1",
+                                "content": "字" * 2000,
+                                "counts_toward_parent_delivery": True,
+                                "evidence": "incremental body text",
+                            }
+                        ]
+                    ),
                     child_package_review_accept_json(),
-                    split_proposals_json(),
                     parent_integration_response("字" * 2000),
                     split_proposals_json(),
                 ]
@@ -1845,8 +1882,81 @@ class AiSandboxChatTest(unittest.TestCase):
             ]
             event_types = [record["event_type"] for record in records]
             self.assertIn("split_proposal_rejected", event_types)
+            self.assertIn("split_proposal_parked", event_types)
             serialized = "\n".join(json.dumps(record, ensure_ascii=False) for record in records)
             self.assertIn("root quantitative delivery is still below the minimum", serialized)
+            self.assertIn("non-critical split is parked", serialized)
+            snapshots = [
+                json.loads(record["data"]["tree_snapshot"])
+                for record in records
+                if record["event_type"] == "job_tree_snapshot_recorded"
+            ]
+            self.assertFalse(
+                any(
+                    "最终交付完整正文" in json.dumps(node, ensure_ascii=False)
+                    for snapshot in snapshots
+                    for node in snapshot["nodes"]
+                )
+            )
+
+    def test_completion_only_split_falls_back_to_delivery_continuation(self) -> None:
+        with TemporaryDirectory() as tmp:
+            sandbox = Path(tmp) / "sandbox"
+            log_dir = Path(tmp) / "logs"
+            method_path = write_method_file(Path(tmp))
+            final_proposal = {
+                "target": "最终交付完整正文",
+                "blocking_reason": "parent acceptance depends on the final manuscript",
+                "output_contract": "complete manuscript package",
+                "acceptance_criteria": "总字数1万字到2万字之间，并附带完整证据",
+                "estimated_effort": 1,
+                "depth_limit": 3,
+                "required_context_gaps": [],
+                "method_path": "",
+                "method_binding_reason": "",
+                "method_return_point": "",
+                "split_law": default_split_law(
+                    blocks_parent_execution=False,
+                    blocks_parent_acceptance=True,
+                    needs_distinct_capability=True,
+                ),
+            }
+            client = FakeChatClient(
+                responses=[
+                    "字" * 1000,
+                    method_review_json(),
+                    split_proposals_json([final_proposal]),
+                    child_result_package_json(
+                        delivery_contributions=[
+                            {
+                                "contribution_id": "fallback_batch",
+                                "content": "字" * 1500,
+                                "counts_toward_parent_delivery": True,
+                                "evidence": "runtime fallback asked for direct delivery continuation",
+                            }
+                        ]
+                    ),
+                    child_package_review_accept_json(),
+                    parent_integration_response("阶段整合说明"),
+                ]
+            )
+
+            AiSandboxRunner(
+                sandbox_path=sandbox,
+                log_dir=log_dir,
+                method_path=method_path,
+                client=client,
+            ).run("请输出1万字到2万字的完整正文。")
+
+            records = [
+                json.loads(line)
+                for line in next(log_dir.glob("ai-run-*.jsonl")).read_text(encoding="utf-8").splitlines()
+                if line.strip()
+            ]
+            serialized = "\n".join(json.dumps(record, ensure_ascii=False) for record in records)
+            self.assertIn("root quantitative delivery is still below the minimum", serialized)
+            self.assertIn("继续补齐根业量化交付目标", serialized)
+            self.assertIn("fallback_batch", serialized)
             snapshots = [
                 json.loads(record["data"]["tree_snapshot"])
                 for record in records
@@ -1884,7 +1994,6 @@ class AiSandboxChatTest(unittest.TestCase):
                     split_proposals_json([child_proposal]),
                     child_result_package_json(),
                     child_package_review_accept_json(),
-                    split_proposals_json(),
                     "{not valid integration json",
                     "{still invalid",
                     acceptance_continue_json(),
@@ -1935,12 +2044,10 @@ class AiSandboxChatTest(unittest.TestCase):
                     split_proposals_json([proposal("first child")]),
                     child_result_package_json(conclusion="first"),
                     child_package_review_accept_json(),
-                    split_proposals_json(),
                     parent_integration_response("first integration"),
                     split_proposals_json([proposal("second child")]),
                     child_result_package_json(conclusion="second"),
                     child_package_review_accept_json(),
-                    split_proposals_json(),
                     parent_integration_response("second integration"),
                     split_proposals_json(),
                     acceptance_continue_json(),
@@ -1993,12 +2100,10 @@ class AiSandboxChatTest(unittest.TestCase):
                     split_proposals_json([proposal("first child")]),
                     child_result_package_json(conclusion="first"),
                     child_package_review_accept_json(),
-                    split_proposals_json(),
                     parent_integration_response("first integration"),
                     split_proposals_json([proposal("second child")]),
                     child_result_package_json(conclusion="second"),
                     child_package_review_accept_json(),
-                    split_proposals_json(),
                     parent_integration_response("second integration"),
                     split_proposals_json(),
                     acceptance_continue_json(),
@@ -2031,6 +2136,193 @@ class AiSandboxChatTest(unittest.TestCase):
                     for record in records
                 )
             )
+
+    def test_auto_continue_pauses_after_quantitative_delivery_batch(self) -> None:
+        with TemporaryDirectory() as tmp:
+            sandbox = Path(tmp) / "sandbox"
+            log_dir = Path(tmp) / "logs"
+            method_path = write_method_file(Path(tmp))
+            child_proposal = {
+                "target": "produce first text batch",
+                "blocking_reason": "parent needs measurable body text",
+                "output_contract": "structured batch package",
+                "acceptance_criteria": "package includes counted delivery text",
+                "estimated_effort": 1,
+                "depth_limit": 3,
+                "required_context_gaps": [],
+                "method_path": "",
+                "method_binding_reason": "",
+                "method_return_point": "",
+                "delivery_relation": "advances_quantitative_delivery",
+            }
+            client = FakeChatClient(
+                responses=[
+                    "字" * 1000,
+                    method_review_json(),
+                    split_proposals_json([child_proposal]),
+                    child_result_package_json(
+                        delivery_contributions=[
+                            {
+                                "contribution_id": "batch_1",
+                                "content": "字" * 3000,
+                                "counts_toward_parent_delivery": True,
+                                "evidence": "first measurable body text batch",
+                            }
+                        ]
+                    ),
+                    child_package_review_accept_json(),
+                    parent_integration_response("阶段交付清单"),
+                ]
+            )
+
+            answer = AiSandboxRunner(
+                sandbox_path=sandbox,
+                log_dir=log_dir,
+                method_path=method_path,
+                client=client,
+                max_advancement_waves=1,
+                auto_continue_to_blocker=True,
+            ).run("请输出1万字到2万字的完整正文。")
+
+            self.assertIn("# 金箍运行已暂停", answer)
+            self.assertIn("measurable delivery batch accepted", answer)
+            self.assertIn("确定性交付账本", answer)
+            self.assertIn("actual_cjk_characters", answer)
+            records = [
+                json.loads(line)
+                for line in next(log_dir.glob("ai-run-*.jsonl")).read_text(encoding="utf-8").splitlines()
+                if line.strip()
+            ]
+            event_types = [record["event_type"] for record in records]
+            self.assertEqual(event_types.count("child_job_dispatch_started"), 1)
+            self.assertEqual(event_types.count("runtime_checkpoint_recorded"), 1)
+            self.assertIn("batch_boundary", "\n".join(json.dumps(record) for record in records))
+
+    def test_child_package_guardrail_failure_blocks_frontier_without_auto_retry(self) -> None:
+        with TemporaryDirectory() as tmp:
+            sandbox = Path(tmp) / "sandbox"
+            log_dir = Path(tmp) / "logs"
+            method_path = write_method_file(Path(tmp))
+            child_proposal = {
+                "target": "produce counted text batch",
+                "blocking_reason": "parent needs measurable body text",
+                "output_contract": "structured batch package",
+                "acceptance_criteria": "package includes counted delivery text",
+                "estimated_effort": 1,
+                "depth_limit": 3,
+                "required_context_gaps": [],
+                "method_path": "",
+                "method_binding_reason": "",
+                "method_return_point": "",
+                "delivery_relation": "advances_quantitative_delivery",
+            }
+            invalid_package = json.dumps(
+                {
+                    "conclusion": "invalid counted package",
+                    "artifacts": [],
+                    "delivery_contributions": [
+                        {
+                            "contribution_id": "bad_count",
+                            "content": "正文",
+                            "counts_toward_parent_delivery": "true",
+                            "evidence": "正文可计入父业。",
+                        }
+                    ],
+                    "evidence_summary": "invalid boolean should be blocked",
+                    "open_questions": [],
+                    "suggested_follow_up_jobs": [],
+                },
+                ensure_ascii=False,
+            )
+            client = FakeChatClient(
+                responses=[
+                    "root draft",
+                    method_review_json(),
+                    split_proposals_json([child_proposal]),
+                    invalid_package,
+                ]
+            )
+
+            answer = AiSandboxRunner(
+                sandbox_path=sandbox,
+                log_dir=log_dir,
+                method_path=method_path,
+                client=client,
+                max_advancement_waves=1,
+                auto_continue_to_blocker=True,
+            ).run("请输出1万字到2万字的完整正文。")
+
+            self.assertIn("# 金箍运行已阻塞", answer)
+            self.assertIn("counts_toward_parent_delivery must be boolean", answer)
+            self.assertIn("确定性交付账本", answer)
+            self.assertIn("actual_cjk_characters", answer)
+            records = [
+                json.loads(line)
+                for line in next(log_dir.glob("ai-run-*.jsonl")).read_text(encoding="utf-8").splitlines()
+                if line.strip()
+            ]
+            event_types = [record["event_type"] for record in records]
+            self.assertEqual(event_types.count("child_job_dispatch_started"), 1)
+            self.assertEqual(event_types.count("child_result_package_rejected"), 1)
+            self.assertEqual(event_types.count("frontier_job_blocked"), 1)
+            self.assertEqual(event_types.count("runtime_checkpoint_recorded"), 1)
+
+    def test_critical_delivery_child_without_counted_contribution_is_blocked(self) -> None:
+        with TemporaryDirectory() as tmp:
+            sandbox = Path(tmp) / "sandbox"
+            log_dir = Path(tmp) / "logs"
+            method_path = write_method_file(Path(tmp))
+            child_proposal = {
+                "target": "produce measurable text batch",
+                "blocking_reason": "parent needs measurable body text",
+                "output_contract": "structured batch package",
+                "acceptance_criteria": "package includes counted delivery text",
+                "estimated_effort": 1,
+                "depth_limit": 3,
+                "required_context_gaps": [],
+                "method_path": "",
+                "method_binding_reason": "",
+                "method_return_point": "",
+                "delivery_relation": "advances_quantitative_delivery",
+            }
+            client = FakeChatClient(
+                responses=[
+                    "root draft",
+                    method_review_json(),
+                    split_proposals_json([child_proposal]),
+                    child_result_package_json(
+                        conclusion="review report only",
+                        artifacts=["claims 3000 words but no counted delivery contribution"],
+                        evidence_summary="support-only package",
+                        delivery_contributions=[],
+                    ),
+                    child_package_review_accept_json(),
+                ]
+            )
+
+            answer = AiSandboxRunner(
+                sandbox_path=sandbox,
+                log_dir=log_dir,
+                method_path=method_path,
+                client=client,
+                max_advancement_waves=1,
+                auto_continue_to_blocker=True,
+            ).run("请输出1万字到2万字的完整正文。")
+
+            self.assertIn("# 金箍运行已阻塞", answer)
+            self.assertIn("no counted delivery_contributions", answer)
+            self.assertIn("确定性交付账本", answer)
+            self.assertIn("actual_cjk_characters", answer)
+            records = [
+                json.loads(line)
+                for line in next(log_dir.glob("ai-run-*.jsonl")).read_text(encoding="utf-8").splitlines()
+                if line.strip()
+            ]
+            event_types = [record["event_type"] for record in records]
+            self.assertEqual(event_types.count("child_package_review_accepted"), 0)
+            self.assertEqual(event_types.count("accepted_parent_reevaluation_recorded"), 0)
+            self.assertEqual(event_types.count("parent_integration_candidate_submitted"), 0)
+            self.assertEqual(event_types.count("frontier_job_blocked"), 1)
 
     def test_method_learning_candidate_and_method_step_candidate_are_visible(self) -> None:
         with TemporaryDirectory() as tmp:
@@ -2236,7 +2528,6 @@ class AiSandboxChatTest(unittest.TestCase):
                     child_package_review_accept_json(
                         parent_consumption_summary="parent can consume the returned direction decision"
                     ),
-                    split_proposals_json(),
                     parent_integration_response("chat answer 2 after decision"),
                     split_proposals_json(),
                     acceptance_continue_json("the answer can continue as a normal conversation"),
@@ -2287,8 +2578,8 @@ class AiSandboxChatTest(unittest.TestCase):
             self.assertEqual(event_types.count("method_self_review_requested"), 1)
             self.assertEqual(event_types.count("method_self_review_received"), 1)
             self.assertEqual(event_types.count("method_update_candidate_recorded"), 1)
-            self.assertGreaterEqual(event_types.count("split_proposal_requested"), 3)
-            self.assertGreaterEqual(event_types.count("split_proposal_received"), 3)
+            self.assertGreaterEqual(event_types.count("split_proposal_requested"), 2)
+            self.assertGreaterEqual(event_types.count("split_proposal_received"), 2)
             self.assertGreaterEqual(event_types.count("split_proposal_skipped"), 3)
             self.assertEqual(event_types.count("result_output_recorded"), 2)
             self.assertGreaterEqual(event_types.count("candidate_submitted"), 1)
@@ -2307,7 +2598,7 @@ class AiSandboxChatTest(unittest.TestCase):
             self.assertEqual(event_types.count("child_job_dispatch_started"), 1)
             self.assertEqual(event_types.count("parent_integration_candidate_submitted"), 1)
             self.assertEqual(event_types.count("acceptance_routing_skipped"), 1)
-            self.assertGreaterEqual(event_types.count("provider_messages_recorded"), 10)
+            self.assertGreaterEqual(event_types.count("provider_messages_recorded"), 9)
             self.assertGreaterEqual(event_types.count("process_step_recorded"), 20)
             self.assertGreaterEqual(event_types.count("job_tree_management_recorded"), 12)
             self.assertGreaterEqual(event_types.count("job_tree_snapshot_recorded"), 12)
@@ -2481,6 +2772,21 @@ class AiSandboxChatTest(unittest.TestCase):
         self.assertIn("用户输入已记录（user_input_recorded）", rendered)
         self.assertIn("输入内容（input）", rendered)
         self.assertIn("编码警告", rendered)
+
+    def test_readable_event_skips_provider_stream_deltas(self) -> None:
+        rendered = format_readable_event(
+            {
+                "timestamp": "2026-05-17T10:00:00+00:00",
+                "event_type": "provider_stream_delta_received",
+                "message": "provider stream delta received",
+                "data": {
+                    "provider_call_kind": "candidate_generation",
+                    "provider_delta_text": "逐字流",
+                },
+            }
+        )
+
+        self.assertEqual(rendered, "")
 
 
 if __name__ == "__main__":

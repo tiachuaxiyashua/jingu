@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 from typing import Any
 
@@ -29,6 +30,7 @@ TERMINAL_STATES = {STATE_ACCEPTED, STATE_REJECTED, STATE_ABANDONED}
 PACKAGE_REQUIRED_FIELDS = {
     "conclusion",
     "artifacts",
+    "delivery_contributions",
     "evidence_summary",
     "open_questions",
     "suggested_follow_up_jobs",
@@ -48,6 +50,16 @@ SPLIT_DECISION_TRIGGER_FIELDS = (
     "has_high_value_or_risk",
 )
 SPLIT_DECISION_LAW_NAME = "分业判定律"
+CJK_CHARACTER = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]")
+DELIVERY_COUNT_CLAIMS = (
+    re.compile(r"(?P<count>\d{2,7})\s*(?:中文字符|中文字|汉字|中文|字)"),
+    re.compile(
+        r"(?:字数|字符数|中文字符数|中文字数)\s*(?:为|是|共|共计|约|约为|约计|:|：)?\s*"
+        r"(?P<count>\d{2,7})"
+    ),
+)
+DELIVERY_COUNT_TOLERANCE_RATIO = 0.03
+DELIVERY_COUNT_TOLERANCE_MIN = 20
 
 
 class TreeService:
@@ -69,6 +81,7 @@ class TreeService:
         method_binding_reason: str | None = None,
         method_return_point: str | None = None,
         split_law: dict[str, Any] | None = None,
+        delivery_relation: str | None = None,
         actor_id: str = "ai",
     ) -> dict[str, Any]:
         target = self._require_text("target", target)
@@ -115,6 +128,7 @@ class TreeService:
                 "child_depth": child_depth,
                 "required_context_gaps": required_context_gaps or [],
                 "split_law": split_law,
+                "delivery_relation": str(delivery_relation or ""),
             }
             self.runtime.repository.append_event(
                 connection,
@@ -147,6 +161,7 @@ class TreeService:
                     "blocking_reason": blocking_reason,
                     "output_contract": output_contract,
                     "split_law": split_law,
+                    "delivery_relation": str(delivery_relation or ""),
                 },
             )
             result = {
@@ -483,10 +498,68 @@ class TreeService:
             raise GuardrailViolation(f"result package is missing fields: {', '.join(sorted(missing))}")
         for field in ("conclusion", "evidence_summary"):
             TreeService._require_text(field, str(package.get(field) or ""))
-        for field in ("artifacts", "open_questions", "suggested_follow_up_jobs"):
+        for field in (
+            "artifacts",
+            "delivery_contributions",
+            "open_questions",
+            "suggested_follow_up_jobs",
+        ):
             if not isinstance(package.get(field), list):
                 raise GuardrailViolation(f"result package field must be a list: {field}")
+        for index, contribution in enumerate(package["delivery_contributions"], start=1):
+            if not isinstance(contribution, dict):
+                raise GuardrailViolation(
+                    f"delivery contribution must be an object: {index}"
+                )
+            contribution_id = str(contribution.get("contribution_id") or "").strip()
+            content = contribution.get("content")
+            counts = contribution.get("counts_toward_parent_delivery")
+            evidence = str(contribution.get("evidence") or "").strip()
+            if not contribution_id:
+                raise GuardrailViolation("delivery contribution id is required")
+            if not isinstance(content, str):
+                raise GuardrailViolation("delivery contribution content must be text")
+            if not isinstance(counts, bool):
+                raise GuardrailViolation(
+                    "delivery contribution counts_toward_parent_delivery must be boolean"
+                )
+            if counts:
+                if not content.strip():
+                    raise GuardrailViolation("counted delivery contribution content is required")
+                if not evidence:
+                    raise GuardrailViolation("counted delivery contribution evidence is required")
+                TreeService._validate_delivery_count_claim(
+                    content=content,
+                    evidence=evidence,
+                    contribution_id=contribution_id,
+                )
         return package
+
+    @staticmethod
+    def _validate_delivery_count_claim(
+        *,
+        content: str,
+        evidence: str,
+        contribution_id: str,
+    ) -> None:
+        actual_cjk = len(CJK_CHARACTER.findall(content))
+        claims = [
+            int(match.group("count"))
+            for pattern in DELIVERY_COUNT_CLAIMS
+            for match in pattern.finditer(evidence)
+        ]
+        if not claims:
+            return
+        largest_claim = max(claims)
+        tolerance = max(
+            DELIVERY_COUNT_TOLERANCE_MIN,
+            int(largest_claim * DELIVERY_COUNT_TOLERANCE_RATIO),
+        )
+        if actual_cjk + tolerance < largest_claim:
+            raise GuardrailViolation(
+                "counted delivery contribution content is shorter than its stated "
+                f"count: {contribution_id}"
+            )
 
     @staticmethod
     def _require_text(name: str, value: str) -> str:

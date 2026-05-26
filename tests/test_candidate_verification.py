@@ -64,6 +64,59 @@ class CandidateVerificationTest(unittest.TestCase):
         self.assertEqual(ledger["delivery_status"], "below_minimum")
         self.assertEqual(ledger["remaining_min_cjk_characters"], 88500)
 
+    def test_delivery_ledger_counts_accepted_contributions_not_candidate_summary(self) -> None:
+        ledger = build_text_delivery_ledger(
+            task_text="请输出1万字到2万字的完整正文。",
+            candidate_text="整合说明",
+            accepted_delivery_contributions=[
+                {
+                    "source_job_id": "job_child",
+                    "source_result_appearance_id": "appearance_child",
+                    "contribution_id": "body_1",
+                    "content": "字" * 3000,
+                    "counts_toward_parent_delivery": True,
+                    "evidence": "accepted body text",
+                }
+            ],
+        )
+
+        self.assertEqual(ledger["accounting_basis"], "accepted_delivery_contributions")
+        self.assertEqual(ledger["actual_cjk_characters"], 3000)
+        self.assertEqual(ledger["candidate_diagnostic_cjk_characters"], 4)
+        self.assertEqual(ledger["remaining_min_cjk_characters"], 7000)
+        self.assertEqual(
+            ledger["accepted_delivery_contributions"][0]["source_result_appearance_id"],
+            "appearance_child",
+        )
+
+    def test_delivery_ledger_excludes_support_material_contributions(self) -> None:
+        ledger = build_text_delivery_ledger(
+            task_text="请输出1万字到2万字的完整正文。",
+            candidate_text="整合说明",
+            accepted_delivery_contributions=[
+                {
+                    "source_job_id": "job_child",
+                    "source_result_appearance_id": "appearance_child",
+                    "contribution_id": "report",
+                    "content": "这是很长的检查报告" * 100,
+                    "counts_toward_parent_delivery": False,
+                    "evidence": "support material only",
+                },
+                {
+                    "source_job_id": "job_child",
+                    "source_result_appearance_id": "appearance_child",
+                    "contribution_id": "body",
+                    "content": "字" * 1200,
+                    "counts_toward_parent_delivery": True,
+                    "evidence": "accepted body text",
+                },
+            ],
+        )
+
+        self.assertEqual(ledger["actual_cjk_characters"], 1200)
+        self.assertEqual(len(ledger["accepted_delivery_contributions"]), 1)
+        self.assertEqual(len(ledger["skipped_delivery_contributions"]), 1)
+
     def test_marker_extraction_is_based_on_generic_boundary_labels(self) -> None:
         regions = extract_marker_regions(
             "<<<交付物开始>>>\n可验证正文\n<<<交付物结束>>>\n"
