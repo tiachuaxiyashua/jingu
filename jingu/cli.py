@@ -23,6 +23,7 @@ from jingu.sandbox.paths import (
     resolve_sandbox_path,
 )
 from jingu.sandbox.runner import (
+    DEFAULT_AUTO_CONTINUE_TO_BLOCKER,
     DEFAULT_MAX_ADVANCEMENT_WAVES,
     DEFAULT_MAX_CHILD_PACKAGE_REPAIR_ATTEMPTS,
     DEFAULT_MAX_FRONTIER_DISPATCHES,
@@ -208,6 +209,12 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         default=DEFAULT_REGISTER_METHOD_STEP_CANDIDATES,
     )
+    ai_run.add_argument(
+        "--auto-continue",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Continue advancement batches in one command until completion, blocking, or human input is required.",
+    )
     ai_resume = ai_subparsers.add_parser("resume", help="Resume an AI sandbox run from a runtime checkpoint.")
     ai_resume.add_argument("--checkpoint", type=Path, required=True)
     ai_resume.add_argument("--sandbox", type=Path)
@@ -240,6 +247,12 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         default=DEFAULT_REGISTER_METHOD_STEP_CANDIDATES,
     )
+    ai_resume.add_argument(
+        "--auto-continue",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Continue advancement batches in one command until completion, blocking, or human input is required.",
+    )
     ai_monitor = ai_subparsers.add_parser("monitor", help="Monitor the current AI sandbox flow.")
     ai_monitor.add_argument("--sandbox", type=Path)
     ai_monitor.add_argument("--log-dir", type=Path)
@@ -270,6 +283,12 @@ def build_parser() -> argparse.ArgumentParser:
         "--register-method-step-candidates",
         action="store_true",
         default=DEFAULT_REGISTER_METHOD_STEP_CANDIDATES,
+    )
+    ai_chat.add_argument(
+        "--auto-continue",
+        action=argparse.BooleanOptionalAction,
+        default=DEFAULT_AUTO_CONTINUE_TO_BLOCKER,
+        help="Continue advancement batches inside each chat turn until completion or a blocker.",
     )
 
     return parser
@@ -447,6 +466,7 @@ def run_result_only(args: argparse.Namespace) -> str:
             max_advancement_waves=args.max_advancement_waves,
             max_parent_integration_repair_attempts=args.max_parent_integration_repair_attempts,
             register_method_step_candidates=args.register_method_step_candidates,
+            auto_continue_to_blocker=args.auto_continue,
         ).run(args.message)
     if args.command == "ai" and args.ai_command == "resume":
         return AiSandboxRunner(
@@ -460,6 +480,7 @@ def run_result_only(args: argparse.Namespace) -> str:
             max_advancement_waves=args.max_advancement_waves,
             max_parent_integration_repair_attempts=args.max_parent_integration_repair_attempts,
             register_method_step_candidates=args.register_method_step_candidates,
+            auto_continue_to_blocker=args.auto_continue,
         ).resume(
             checkpoint_path=args.checkpoint,
             human_response=args.human_response,
@@ -499,6 +520,7 @@ def run_chat(args: argparse.Namespace) -> None:
         max_advancement_waves=args.max_advancement_waves,
         max_parent_integration_repair_attempts=args.max_parent_integration_repair_attempts,
         register_method_step_candidates=args.register_method_step_candidates,
+        auto_continue_to_blocker=args.auto_continue,
     )
     session.start()
     print("Jingu AI chat started. Type /exit to finish.", flush=True)

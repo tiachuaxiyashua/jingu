@@ -1820,6 +1820,72 @@ class AiSandboxChatTest(unittest.TestCase):
             self.assertGreaterEqual(event_types.count("child_job_dispatch_started"), 2)
             self.assertIn("advancement_loop_finished", event_types)
 
+    def test_runner_auto_continues_when_wave_budget_leaves_runnable_frontier(self) -> None:
+        with TemporaryDirectory() as tmp:
+            sandbox = Path(tmp) / "sandbox"
+            log_dir = Path(tmp) / "logs"
+            method_path = write_method_file(Path(tmp))
+
+            def proposal(target: str) -> dict:
+                return {
+                    "target": target,
+                    "blocking_reason": "needed by parent",
+                    "output_contract": "structured child result package",
+                    "acceptance_criteria": "package is consumable by parent",
+                    "estimated_effort": 1,
+                    "depth_limit": 3,
+                    "required_context_gaps": [],
+                    "method_path": "",
+                    "method_binding_reason": "",
+                    "method_return_point": "",
+                }
+
+            client = FakeChatClient(
+                responses=[
+                    "root draft",
+                    method_review_json(),
+                    split_proposals_json([proposal("first child")]),
+                    child_result_package_json(conclusion="first"),
+                    child_package_review_accept_json(),
+                    split_proposals_json(),
+                    parent_integration_response("first integration"),
+                    split_proposals_json([proposal("second child")]),
+                    child_result_package_json(conclusion="second"),
+                    child_package_review_accept_json(),
+                    split_proposals_json(),
+                    parent_integration_response("second integration"),
+                    split_proposals_json(),
+                    acceptance_continue_json(),
+                ]
+            )
+
+            answer = AiSandboxRunner(
+                sandbox_path=sandbox,
+                log_dir=log_dir,
+                method_path=method_path,
+                client=client,
+                max_advancement_waves=1,
+                auto_continue_to_blocker=True,
+            ).run("continue runnable frontier in one command")
+
+            self.assertEqual(answer, "second integration")
+            records = [
+                json.loads(line)
+                for line in next(log_dir.glob("ai-run-*.jsonl")).read_text(encoding="utf-8").splitlines()
+                if line.strip()
+            ]
+            event_types = [record["event_type"] for record in records]
+            self.assertEqual(event_types.count("advancement_loop_finished"), 2)
+            self.assertEqual(event_types.count("runtime_checkpoint_recorded"), 0)
+            self.assertGreaterEqual(event_types.count("child_job_dispatch_started"), 2)
+            self.assertTrue(
+                any(
+                    record["event_type"] == "process_step_recorded"
+                    and record["data"].get("process_status") == "continued"
+                    for record in records
+                )
+            )
+
     def test_method_learning_candidate_and_method_step_candidate_are_visible(self) -> None:
         with TemporaryDirectory() as tmp:
             sandbox = Path(tmp) / "sandbox"
@@ -1982,8 +2048,10 @@ class AiSandboxChatTest(unittest.TestCase):
 
     def test_ai_run_cli_prints_only_answer(self) -> None:
         class FakeRunner:
+            kwargs: dict[str, object] = {}
+
             def __init__(self, **kwargs):
-                self.kwargs = kwargs
+                FakeRunner.kwargs = kwargs
 
             def run(self, message: str) -> str:
                 self.message = message
@@ -1995,6 +2063,7 @@ class AiSandboxChatTest(unittest.TestCase):
 
         self.assertEqual(code, 0)
         self.assertEqual(output.getvalue(), "answer only\n")
+        self.assertTrue(FakeRunner.kwargs["auto_continue_to_blocker"])
 
     def test_interactive_chat_session_keeps_context_and_cleans_sandbox(self) -> None:
         with TemporaryDirectory() as tmp:

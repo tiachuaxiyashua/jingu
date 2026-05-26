@@ -189,6 +189,7 @@ DEFAULT_MAX_CHILD_PACKAGE_REPAIR_ATTEMPTS = 1
 DEFAULT_MAX_ADVANCEMENT_WAVES = 1
 DEFAULT_MAX_PARENT_INTEGRATION_REPAIR_ATTEMPTS = 1
 DEFAULT_REGISTER_METHOD_STEP_CANDIDATES = False
+DEFAULT_AUTO_CONTINUE_TO_BLOCKER = False
 DEFAULT_PARENT_INTEGRATION_FOLLOWUP_DEPTH_LIMIT = 8
 RUNTIME_CHECKPOINTS_DIRNAME = "runtime-checkpoints"
 ACCEPTANCE_ROUTE_ACTIONS = frozenset({"continue", "repair", "feedback"})
@@ -232,6 +233,7 @@ class SandboxRuntimeOptions:
     max_advancement_waves: int = DEFAULT_MAX_ADVANCEMENT_WAVES
     max_parent_integration_repair_attempts: int = DEFAULT_MAX_PARENT_INTEGRATION_REPAIR_ATTEMPTS
     register_method_step_candidates: bool = DEFAULT_REGISTER_METHOD_STEP_CANDIDATES
+    auto_continue_to_blocker: bool = DEFAULT_AUTO_CONTINUE_TO_BLOCKER
 
     @classmethod
     def from_values(
@@ -243,6 +245,7 @@ class SandboxRuntimeOptions:
         max_advancement_waves: int = DEFAULT_MAX_ADVANCEMENT_WAVES,
         max_parent_integration_repair_attempts: int = DEFAULT_MAX_PARENT_INTEGRATION_REPAIR_ATTEMPTS,
         register_method_step_candidates: bool = DEFAULT_REGISTER_METHOD_STEP_CANDIDATES,
+        auto_continue_to_blocker: bool = DEFAULT_AUTO_CONTINUE_TO_BLOCKER,
     ) -> "SandboxRuntimeOptions":
         return cls(
             max_repair_attempts=normalize_max_repair_attempts(max_repair_attempts),
@@ -255,6 +258,7 @@ class SandboxRuntimeOptions:
                 max_parent_integration_repair_attempts
             ),
             register_method_step_candidates=bool(register_method_step_candidates),
+            auto_continue_to_blocker=bool(auto_continue_to_blocker),
         )
 
     def as_dict(self) -> dict[str, Any]:
@@ -265,6 +269,7 @@ class SandboxRuntimeOptions:
             "max_advancement_waves": self.max_advancement_waves,
             "max_parent_integration_repair_attempts": self.max_parent_integration_repair_attempts,
             "register_method_step_candidates": self.register_method_step_candidates,
+            "auto_continue_to_blocker": self.auto_continue_to_blocker,
         }
 
     def log_fields(self) -> dict[str, str]:
@@ -276,6 +281,7 @@ class SandboxRuntimeOptions:
             "advancement_wave_limit": str(self.max_advancement_waves),
             "parent_integration_repair_limit": str(self.max_parent_integration_repair_attempts),
             "method_step_registration_enabled": str(self.register_method_step_candidates).lower(),
+            "auto_continue_to_blocker": str(self.auto_continue_to_blocker).lower(),
         }
 
 
@@ -1937,6 +1943,79 @@ def run_advancement_loop(
     return summary
 
 
+def has_runnable_frontier(service: RuntimeService, root_job_id: str) -> bool:
+    frontier_state = classify_child_frontier(TreeService(service.paths.workspace), root_job_id)
+    return bool(frontier_state["runnable"])
+
+
+def run_advancement_until_boundary(
+    *,
+    flow: FlowWriter,
+    service: RuntimeService,
+    client: ChatClient,
+    root_job_id: str,
+    user_input: str,
+    root_method: MethodContext,
+    root_candidate_text: str,
+    root_candidate_appearance_id: str,
+    step_prefix: str,
+    turn: str | None = None,
+    max_advancement_waves: int = DEFAULT_MAX_ADVANCEMENT_WAVES,
+    max_child_dispatches: int = DEFAULT_MAX_FRONTIER_DISPATCHES,
+    max_child_package_repair_attempts: int = DEFAULT_MAX_CHILD_PACKAGE_REPAIR_ATTEMPTS,
+    max_parent_integration_repair_attempts: int = DEFAULT_MAX_PARENT_INTEGRATION_REPAIR_ATTEMPTS,
+    auto_continue_to_blocker: bool = DEFAULT_AUTO_CONTINUE_TO_BLOCKER,
+) -> dict[str, Any]:
+    latest_candidate_text = root_candidate_text
+    latest_candidate_appearance_id = root_candidate_appearance_id
+    round_index = 1
+
+    while True:
+        result = run_advancement_loop(
+            flow=flow,
+            service=service,
+            client=client,
+            root_job_id=root_job_id,
+            user_input=user_input,
+            root_method=root_method,
+            root_candidate_text=latest_candidate_text,
+            root_candidate_appearance_id=latest_candidate_appearance_id,
+            step_prefix=f"{step_prefix}.round_{round_index}",
+            turn=turn,
+            max_advancement_waves=max_advancement_waves,
+            max_child_dispatches=max_child_dispatches,
+            max_child_package_repair_attempts=max_child_package_repair_attempts,
+            max_parent_integration_repair_attempts=max_parent_integration_repair_attempts,
+        )
+        if result.get("latest_parent_candidate_text") and result.get(
+            "latest_parent_candidate_appearance_id"
+        ):
+            latest_candidate_text = str(result["latest_parent_candidate_text"])
+            latest_candidate_appearance_id = str(result["latest_parent_candidate_appearance_id"])
+
+        outcome = str(result.get("advancement_loop_outcome") or ADVANCEMENT_OUTCOME_COMPLETED)
+        if (
+            not auto_continue_to_blocker
+            or outcome != ADVANCEMENT_OUTCOME_PAUSED
+            or not has_runnable_frontier(service, root_job_id)
+        ):
+            return result
+
+        write_process_step(
+            flow=flow,
+            step=f"{step_prefix}.auto_continue_{round_index}",
+            phase="advancement",
+            action="推进预算耗尽但仍有可运行前沿业，同一命令内继续下一批推进",
+            status="continued",
+            **turn_field(turn),
+            job_id=root_job_id,
+            root_job_id=root_job_id,
+            advancement_loop_outcome=outcome,
+            advancement_stop_reason=str(result.get("advancement_stop_reason") or ""),
+        )
+        round_index += 1
+
+
 def build_nonterminal_advancement_output(frontier_result: dict[str, Any]) -> str:
     outcome = str(frontier_result.get("advancement_loop_outcome") or "")
     reason = str(frontier_result.get("advancement_stop_reason") or "")
@@ -2312,9 +2391,10 @@ def run_existing_root_to_output(
     max_child_dispatches: int,
     max_child_package_repair_attempts: int,
     max_parent_integration_repair_attempts: int,
+    auto_continue_to_blocker: bool,
     turn: str | None = None,
 ) -> str:
-    frontier_result = run_advancement_loop(
+    frontier_result = run_advancement_until_boundary(
         flow=flow,
         service=service,
         client=client,
@@ -2329,6 +2409,7 @@ def run_existing_root_to_output(
         max_child_dispatches=max_child_dispatches,
         max_child_package_repair_attempts=max_child_package_repair_attempts,
         max_parent_integration_repair_attempts=max_parent_integration_repair_attempts,
+        auto_continue_to_blocker=auto_continue_to_blocker,
     )
     advancement_outcome = str(
         frontier_result.get("advancement_loop_outcome") or ADVANCEMENT_OUTCOME_COMPLETED
@@ -6419,6 +6500,7 @@ class AiSandboxRunner:
         max_advancement_waves: int = DEFAULT_MAX_ADVANCEMENT_WAVES,
         max_parent_integration_repair_attempts: int = DEFAULT_MAX_PARENT_INTEGRATION_REPAIR_ATTEMPTS,
         register_method_step_candidates: bool = DEFAULT_REGISTER_METHOD_STEP_CANDIDATES,
+        auto_continue_to_blocker: bool = DEFAULT_AUTO_CONTINUE_TO_BLOCKER,
     ) -> None:
         self.sandbox_path = resolve_sandbox_path(sandbox_path)
         self.log_dir = resolve_log_dir(log_dir)
@@ -6434,6 +6516,7 @@ class AiSandboxRunner:
             max_advancement_waves=max_advancement_waves,
             max_parent_integration_repair_attempts=max_parent_integration_repair_attempts,
             register_method_step_candidates=register_method_step_candidates,
+            auto_continue_to_blocker=auto_continue_to_blocker,
         )
         self.max_repair_attempts = self.runtime_options.max_repair_attempts
         self.max_frontier_dispatches = self.runtime_options.max_frontier_dispatches
@@ -6443,6 +6526,7 @@ class AiSandboxRunner:
             self.runtime_options.max_parent_integration_repair_attempts
         )
         self.register_method_step_candidates = self.runtime_options.register_method_step_candidates
+        self.auto_continue_to_blocker = self.runtime_options.auto_continue_to_blocker
         self.flow = FlowWriter(
             self.sandbox_path,
             self.diagnostic_log_path,
@@ -6722,7 +6806,7 @@ class AiSandboxRunner:
                 candidate_appearance_id=candidate["appearance_id"],
                 step_prefix="split_proposal",
             )
-            frontier_result = run_advancement_loop(
+            frontier_result = run_advancement_until_boundary(
                 flow=self.flow,
                 service=service,
                 client=client,
@@ -6736,6 +6820,7 @@ class AiSandboxRunner:
                 max_child_dispatches=self.max_frontier_dispatches,
                 max_child_package_repair_attempts=self.max_child_package_repair_attempts,
                 max_parent_integration_repair_attempts=self.max_parent_integration_repair_attempts,
+                auto_continue_to_blocker=self.auto_continue_to_blocker,
             )
             advancement_outcome = str(
                 frontier_result.get("advancement_loop_outcome") or ADVANCEMENT_OUTCOME_COMPLETED
@@ -6949,6 +7034,7 @@ class AiSandboxRunner:
                 max_child_dispatches=self.max_frontier_dispatches,
                 max_child_package_repair_attempts=self.max_child_package_repair_attempts,
                 max_parent_integration_repair_attempts=self.max_parent_integration_repair_attempts,
+                auto_continue_to_blocker=self.auto_continue_to_blocker,
             )
             self.flow.write(FLOW_RUN_FINISHED, "run finished", job_id=root_job_id)
             return output_text
@@ -7092,6 +7178,7 @@ class AiSandboxChatSession:
         max_advancement_waves: int = DEFAULT_MAX_ADVANCEMENT_WAVES,
         max_parent_integration_repair_attempts: int = DEFAULT_MAX_PARENT_INTEGRATION_REPAIR_ATTEMPTS,
         register_method_step_candidates: bool = DEFAULT_REGISTER_METHOD_STEP_CANDIDATES,
+        auto_continue_to_blocker: bool = DEFAULT_AUTO_CONTINUE_TO_BLOCKER,
     ) -> None:
         self.sandbox_path = resolve_sandbox_path(sandbox_path)
         self.log_dir = resolve_log_dir(log_dir)
@@ -7107,6 +7194,7 @@ class AiSandboxChatSession:
             max_advancement_waves=max_advancement_waves,
             max_parent_integration_repair_attempts=max_parent_integration_repair_attempts,
             register_method_step_candidates=register_method_step_candidates,
+            auto_continue_to_blocker=auto_continue_to_blocker,
         )
         self.max_repair_attempts = self.runtime_options.max_repair_attempts
         self.max_frontier_dispatches = self.runtime_options.max_frontier_dispatches
@@ -7116,6 +7204,7 @@ class AiSandboxChatSession:
             self.runtime_options.max_parent_integration_repair_attempts
         )
         self.register_method_step_candidates = self.runtime_options.register_method_step_candidates
+        self.auto_continue_to_blocker = self.runtime_options.auto_continue_to_blocker
         self.flow = FlowWriter(
             self.sandbox_path,
             self.diagnostic_log_path,
@@ -7227,6 +7316,7 @@ class AiSandboxChatSession:
                 max_child_dispatches=self.max_frontier_dispatches,
                 max_child_package_repair_attempts=self.max_child_package_repair_attempts,
                 max_parent_integration_repair_attempts=self.max_parent_integration_repair_attempts,
+                auto_continue_to_blocker=self.auto_continue_to_blocker,
                 turn=turn,
             )
             self.history.append({"role": "assistant", "content": output_text})
@@ -7508,7 +7598,7 @@ class AiSandboxChatSession:
             step_prefix="chat.split_proposal",
             turn=turn,
         )
-        frontier_result = run_advancement_loop(
+        frontier_result = run_advancement_until_boundary(
             flow=self.flow,
             service=self.service,
             client=client,
@@ -7523,6 +7613,7 @@ class AiSandboxChatSession:
             max_child_dispatches=self.max_frontier_dispatches,
             max_child_package_repair_attempts=self.max_child_package_repair_attempts,
             max_parent_integration_repair_attempts=self.max_parent_integration_repair_attempts,
+            auto_continue_to_blocker=self.auto_continue_to_blocker,
         )
         advancement_outcome = str(
             frontier_result.get("advancement_loop_outcome") or ADVANCEMENT_OUTCOME_COMPLETED

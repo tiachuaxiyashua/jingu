@@ -245,6 +245,7 @@ FIELD_LABELS = {
     "advancement_wave": "推进波次",
     "advancement_wave_count": "推进波次数量",
     "advancement_wave_limit": "推进波次上限",
+    "auto_continue_to_blocker": "自动续推至阻塞点",
     "appearance_id": "相编号",
     "appearance_kind": "相用途类型",
     "candidate_lineage": "候选血缘",
