@@ -258,6 +258,7 @@ FIELD_LABELS = {
     "feedback_job_kind": "反馈业类型",
     "feedback_job_summary": "反馈业摘要",
     "feedback_job_target": "反馈业目标",
+    "failure_source": "失败来源",
     "child_job_id": "子业编号",
     "child_job_response": "子业响应",
     "child_method_path": "子业方法路径",

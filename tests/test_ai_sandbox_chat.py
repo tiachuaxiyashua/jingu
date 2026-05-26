@@ -2198,7 +2198,7 @@ class AiSandboxChatTest(unittest.TestCase):
             self.assertEqual(event_types.count("runtime_checkpoint_recorded"), 1)
             self.assertIn("batch_boundary", "\n".join(json.dumps(record) for record in records))
 
-    def test_child_package_guardrail_failure_blocks_frontier_without_auto_retry(self) -> None:
+    def test_child_package_guardrail_failure_creates_repair_job_and_accepts_repaired_package(self) -> None:
         with TemporaryDirectory() as tmp:
             sandbox = Path(tmp) / "sandbox"
             log_dir = Path(tmp) / "logs"
@@ -2240,6 +2240,22 @@ class AiSandboxChatTest(unittest.TestCase):
                     method_review_json(),
                     split_proposals_json([child_proposal]),
                     invalid_package,
+                    child_result_package_json(
+                        conclusion="repaired counted package",
+                        delivery_contributions=[
+                            {
+                                "contribution_id": "batch_1",
+                                "content": "字" * 3000,
+                                "counts_toward_parent_delivery": True,
+                                "evidence": "repaired package contains measurable parent-delivery text",
+                            }
+                        ],
+                        evidence_summary="deterministic repair produced a valid package",
+                    ),
+                    child_package_review_accept_json(
+                        parent_consumption_summary="parent can consume the repaired package"
+                    ),
+                    parent_integration_response("阶段交付清单"),
                 ]
             )
 
@@ -2252,8 +2268,8 @@ class AiSandboxChatTest(unittest.TestCase):
                 auto_continue_to_blocker=True,
             ).run("请输出1万字到2万字的完整正文。")
 
-            self.assertIn("# 金箍运行已阻塞", answer)
-            self.assertIn("counts_toward_parent_delivery must be boolean", answer)
+            self.assertIn("# 金箍运行已暂停", answer)
+            self.assertIn("measurable delivery batch accepted", answer)
             self.assertIn("确定性交付账本", answer)
             self.assertIn("actual_cjk_characters", answer)
             records = [
@@ -2264,8 +2280,99 @@ class AiSandboxChatTest(unittest.TestCase):
             event_types = [record["event_type"] for record in records]
             self.assertEqual(event_types.count("child_job_dispatch_started"), 1)
             self.assertEqual(event_types.count("child_result_package_rejected"), 1)
-            self.assertEqual(event_types.count("frontier_job_blocked"), 1)
+            self.assertEqual(event_types.count("child_package_repair_requested"), 1)
+            self.assertEqual(event_types.count("child_package_repair_response_received"), 1)
+            self.assertEqual(event_types.count("child_package_repair_package_submitted"), 1)
+            self.assertEqual(event_types.count("child_package_review_accepted"), 1)
+            self.assertEqual(event_types.count("frontier_job_blocked"), 0)
             self.assertEqual(event_types.count("runtime_checkpoint_recorded"), 1)
+            serialized = "\n".join(json.dumps(record, ensure_ascii=False) for record in records)
+            self.assertIn("deterministic_guardrail", serialized)
+            self.assertIn("counts_toward_parent_delivery must be boolean", serialized)
+            self.assertIn("repaired counted package", serialized)
+            tree_actions = [
+                record["data"]["job_tree_action"]
+                for record in records
+                if record["event_type"] == "job_tree_management_recorded"
+            ]
+            self.assertIn("child_package_repair_child_created", tree_actions)
+            self.assertIn("child_package_repair_package_submitted", tree_actions)
+
+    def test_child_package_guardrail_repair_limit_blocks_original_child_once(self) -> None:
+        with TemporaryDirectory() as tmp:
+            sandbox = Path(tmp) / "sandbox"
+            log_dir = Path(tmp) / "logs"
+            method_path = write_method_file(Path(tmp))
+            child_proposal = {
+                "target": "produce counted text batch",
+                "blocking_reason": "parent needs measurable body text",
+                "output_contract": "structured batch package",
+                "acceptance_criteria": "package includes counted delivery text",
+                "estimated_effort": 1,
+                "depth_limit": 3,
+                "required_context_gaps": [],
+                "method_path": "",
+                "method_binding_reason": "",
+                "method_return_point": "",
+                "delivery_relation": "advances_quantitative_delivery",
+            }
+            invalid_package = json.dumps(
+                {
+                    "conclusion": "invalid counted package",
+                    "artifacts": [],
+                    "delivery_contributions": [
+                        {
+                            "contribution_id": "bad_count",
+                            "content": "正文",
+                            "counts_toward_parent_delivery": "true",
+                            "evidence": "正文可计入父业。",
+                        }
+                    ],
+                    "evidence_summary": "invalid boolean should be blocked",
+                    "open_questions": [],
+                    "suggested_follow_up_jobs": [],
+                },
+                ensure_ascii=False,
+            )
+            client = FakeChatClient(
+                responses=[
+                    "root draft",
+                    method_review_json(),
+                    split_proposals_json([child_proposal]),
+                    invalid_package,
+                    invalid_package,
+                ]
+            )
+
+            answer = AiSandboxRunner(
+                sandbox_path=sandbox,
+                log_dir=log_dir,
+                method_path=method_path,
+                client=client,
+                max_advancement_waves=1,
+                max_child_package_repair_attempts=1,
+                auto_continue_to_blocker=True,
+            ).run("请输出1万字到2万字的完整正文。")
+
+            self.assertIn("# 金箍运行已阻塞", answer)
+            self.assertIn("counts_toward_parent_delivery must be boolean", answer)
+            records = [
+                json.loads(line)
+                for line in next(log_dir.glob("ai-run-*.jsonl")).read_text(encoding="utf-8").splitlines()
+                if line.strip()
+            ]
+            event_types = [record["event_type"] for record in records]
+            self.assertEqual(event_types.count("child_result_package_rejected"), 1)
+            self.assertEqual(event_types.count("child_package_repair_requested"), 1)
+            self.assertEqual(event_types.count("child_package_repair_response_received"), 1)
+            self.assertEqual(event_types.count("child_package_repair_rejected"), 1)
+            self.assertEqual(event_types.count("child_package_repair_limit_reached"), 1)
+            self.assertEqual(event_types.count("child_package_repair_package_submitted"), 0)
+            self.assertEqual(event_types.count("child_package_review_requested"), 0)
+            self.assertEqual(event_types.count("frontier_job_blocked"), 1)
+            serialized = "\n".join(json.dumps(record, ensure_ascii=False) for record in records)
+            self.assertIn("deterministic_guardrail", serialized)
+            self.assertIn("确定性果包修复次数已达上限", serialized)
 
     def test_critical_delivery_child_without_counted_contribution_is_blocked(self) -> None:
         with TemporaryDirectory() as tmp:
