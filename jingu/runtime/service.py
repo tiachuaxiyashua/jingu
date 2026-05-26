@@ -162,14 +162,21 @@ class RuntimeService:
         job_id: str,
         *,
         reason: str = "",
+        required_context_gaps: list[str] | None = None,
         actor_id: str = "system",
     ) -> dict[str, Any]:
+        update_fields: dict[str, Any] = {}
+        payload: dict[str, Any] = {"reason": reason}
+        if required_context_gaps is not None:
+            update_fields["required_context_gaps"] = encode_json(required_context_gaps)
+            payload["required_context_gaps"] = required_context_gaps
         return self._transition_job(
             job_id=job_id,
             next_state=STATE_BLOCKED,
             event_type=EVENT_JOB_BLOCKED,
             actor_id=actor_id,
-            payload={"reason": reason},
+            payload=payload,
+            update_fields=update_fields,
         )
 
     def mark_waiting_human(
@@ -610,11 +617,13 @@ class RuntimeService:
         event_type: str,
         actor_id: str,
         payload: dict[str, Any],
+        update_fields: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         with self.repository.transaction() as connection:
             job = self.repository.require_job(connection, job_id)
             self.guardkeeper.ensure_transition(job, next_state)
-            updated = self.repository.update_job(connection, job_id, state=next_state)
+            fields = {"state": next_state, **(update_fields or {})}
+            updated = self.repository.update_job(connection, job_id, **fields)
             self.repository.append_event(
                 connection,
                 job_id=job_id,

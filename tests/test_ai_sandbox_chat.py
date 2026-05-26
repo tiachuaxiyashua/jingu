@@ -266,6 +266,8 @@ class FakeChatClient:
         if self.responses:
             index = len(self.message_batches) - 1
             content = self.responses[index] if index < len(self.responses) else self.responses[-1]
+            if isinstance(content, BaseException):
+                raise content
             if callable(content):
                 content = content(messages)
             return ChatResponse(content=content, raw={"ok": True})
@@ -944,6 +946,76 @@ class AiSandboxChatTest(unittest.TestCase):
                 record for record in records if record["event_type"] == "runtime_checkpoint_recorded"
             ][-1]
             self.assertTrue(Path(checkpoint["data"]["runtime_checkpoint_path"]).exists())
+
+    def test_child_provider_failure_blocks_child_and_records_checkpoint(self) -> None:
+        with TemporaryDirectory() as tmp:
+            workspace = Path(tmp)
+            sandbox = workspace / "sandbox"
+            log_dir = workspace / "logs"
+            method_path = write_method_file(workspace)
+            root_split_payload = split_proposals_json(
+                [
+                    {
+                        "target": "generate first chapter sample",
+                        "blocking_reason": "parent needs a concrete chapter sample",
+                        "output_contract": "chapter package",
+                        "acceptance_criteria": "package includes chapter text and evidence",
+                        "estimated_effort": 1,
+                        "depth_limit": 3,
+                        "required_context_gaps": [],
+                        "method_path": "",
+                        "method_binding_reason": "",
+                        "method_return_point": "",
+                    }
+                ]
+            )
+            provider_error = JinguRuntimeError(
+                "AI provider stream idle timeout after 1 seconds without content"
+            )
+            client = FakeChatClient(
+                responses=[
+                    "root candidate",
+                    method_review_json("checked root method use"),
+                    root_split_payload,
+                    provider_error,
+                ]
+            )
+
+            answer = AiSandboxRunner(
+                sandbox_path=sandbox,
+                log_dir=log_dir,
+                method_path=method_path,
+                client=client,
+            ).run("Create a story and dispatch a child chapter job.")
+
+            self.assertIn("# 金箍运行已阻塞", answer)
+            self.assertIn("generate first chapter sample", answer)
+            self.assertIn("Provider 调用在子业产生果包前失败", answer)
+            records = [
+                json.loads(line)
+                for line in next(log_dir.glob("ai-run-*.jsonl")).read_text(encoding="utf-8").splitlines()
+                if line.strip()
+            ]
+            event_types = [record["event_type"] for record in records]
+            self.assertIn("provider_call_started", event_types)
+            self.assertIn("provider_call_failed", event_types)
+            self.assertIn("frontier_job_blocked", event_types)
+            self.assertIn("advancement_loop_finished", event_types)
+            self.assertIn("runtime_checkpoint_recorded", event_types)
+            self.assertIn("run_finished", event_types)
+            self.assertNotIn("run_failed", event_types)
+            loop_finished = [
+                record for record in records if record["event_type"] == "advancement_loop_finished"
+            ][-1]
+            self.assertEqual(loop_finished["data"]["advancement_loop_outcome"], "blocked")
+            self.assertIn("AI provider stream idle timeout", loop_finished["data"]["blocked_frontier_jobs"])
+            checkpoint = [
+                record for record in records if record["event_type"] == "runtime_checkpoint_recorded"
+            ][-1]
+            self.assertTrue(Path(checkpoint["data"]["runtime_checkpoint_path"]).exists())
+            readable_text = next(log_dir.glob("ai-run-*.md")).read_text(encoding="utf-8-sig")
+            self.assertIn("Provider 调用已失败（provider_call_failed）", readable_text)
+            self.assertIn("Provider 调用在子业产生果包前失败", readable_text)
 
     def test_runner_repairs_child_package_before_acceptance(self) -> None:
         with TemporaryDirectory() as tmp:

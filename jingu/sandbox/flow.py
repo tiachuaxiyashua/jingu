@@ -36,6 +36,8 @@ FLOW_PROCESS_STEP_RECORDED = "process_step_recorded"
 FLOW_USER_INPUT_RECORDED = "user_input_recorded"
 FLOW_INPUT_PROVENANCE_RECORDED = "input_provenance_recorded"
 FLOW_PROVIDER_MESSAGES_RECORDED = "provider_messages_recorded"
+FLOW_PROVIDER_CALL_STARTED = "provider_call_started"
+FLOW_PROVIDER_CALL_FAILED = "provider_call_failed"
 FLOW_PROVIDER_STREAM_DELTA_RECEIVED = "provider_stream_delta_received"
 FLOW_PROVIDER_STREAM_FINISHED = "provider_stream_finished"
 FLOW_AI_REQUEST_STARTED = "ai_request_started"
@@ -145,6 +147,8 @@ EVENT_LABELS = {
     FLOW_USER_INPUT_RECORDED: "用户输入已记录",
     FLOW_INPUT_PROVENANCE_RECORDED: "输入来源已记录",
     FLOW_PROVIDER_MESSAGES_RECORDED: "Provider 请求消息已记录",
+    FLOW_PROVIDER_CALL_STARTED: "Provider 调用已开始",
+    FLOW_PROVIDER_CALL_FAILED: "Provider 调用已失败",
     FLOW_PROVIDER_STREAM_DELTA_RECEIVED: "Provider 流式增量已收到",
     FLOW_PROVIDER_STREAM_FINISHED: "Provider 流式输出已结束",
     FLOW_AI_REQUEST_STARTED: "AI 请求已开始",
@@ -348,6 +352,7 @@ FIELD_LABELS = {
     "provider_delta_kind": "Provider 增量类型",
     "provider_delta_text": "Provider 增量内容",
     "provider_finish_reason": "Provider 结束原因",
+    "provider_exception_type": "Provider 异常类型",
     "provider_messages": "Provider 请求消息",
     "provider_message_count": "Provider 消息数量",
     "provider_message_roles": "Provider 消息角色",

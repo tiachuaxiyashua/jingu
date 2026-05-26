@@ -88,6 +88,8 @@ from jingu.sandbox.flow import (
     FLOW_SPLIT_PROPOSAL_REQUESTED,
     FLOW_SPLIT_PROPOSAL_SKIPPED,
     FLOW_PROCESS_STEP_RECORDED,
+    FLOW_PROVIDER_CALL_FAILED,
+    FLOW_PROVIDER_CALL_STARTED,
     FLOW_PROVIDER_MESSAGES_RECORDED,
     FLOW_PROVIDER_STREAM_DELTA_RECEIVED,
     FLOW_PROVIDER_STREAM_FINISHED,
@@ -1353,14 +1355,63 @@ def run_frontier_child_dispatch(
             **dispatch_data,
         )
 
-        response = complete_with_provider_logging(
-            flow=flow,
-            client=client,
-            messages=messages,
-            call_kind="child_job_execution",
-            turn=turn,
-            job_id=child_job_id,
-        )
+        try:
+            response = complete_with_provider_logging(
+                flow=flow,
+                client=client,
+                messages=messages,
+                call_kind="child_job_execution",
+                turn=turn,
+                job_id=child_job_id,
+            )
+        except Exception as exc:
+            provider_failure_gap = f"Provider 调用在子业产生果包前失败：{exc}"
+            service.mark_blocked(
+                child_job_id,
+                reason=provider_failure_gap,
+                required_context_gaps=[provider_failure_gap],
+                actor_id="system",
+            )
+            blocked_data = {
+                **turn_field(turn),
+                "root_job_id": root_job_id,
+                "parent_job_id": parent_job_id,
+                "job_id": child_job_id,
+                "child_job_id": child_job_id,
+                "required_context_gaps": json.dumps(
+                    [provider_failure_gap],
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    indent=2,
+                ),
+                "reason": provider_failure_gap,
+            }
+            flow.write(FLOW_FRONTIER_JOB_BLOCKED, "frontier job blocked", **blocked_data)
+            write_job_tree_mirror(
+                flow=flow,
+                service=service,
+                turn=turn,
+                job_id=child_job_id,
+                action="frontier_job_blocked",
+                child_job_id=child_job_id,
+                reason=provider_failure_gap,
+            )
+            write_process_step(
+                flow=flow,
+                step=f"{step_prefix}.child_{index}.provider_failed",
+                phase="frontier_dispatch",
+                action="子业执行位 Provider 调用失败，转为阻塞并等待补缘或重试",
+                status="blocked",
+                **blocked_data,
+            )
+            dispatch_results.append(
+                {
+                    "child_job_id": child_job_id,
+                    "status": "blocked",
+                    "reason": provider_failure_gap,
+                }
+            )
+            continue
         response_data = {
             **turn_field(turn),
             "root_job_id": root_job_id,
@@ -6195,6 +6246,16 @@ def complete_with_provider_logging(
     turn: str | None = None,
     job_id: str | None = None,
 ):
+    call_data = {
+        "provider_call_kind": call_kind,
+        "provider_message_count": str(len(messages)),
+    }
+    if turn is not None:
+        call_data["turn"] = turn
+    if job_id is not None:
+        call_data["job_id"] = job_id
+    flow.write(FLOW_PROVIDER_CALL_STARTED, "provider call started", **call_data)
+
     def on_stream_event(event: dict[str, str]) -> None:
         data = {
             "provider_call_kind": call_kind,
@@ -6214,7 +6275,17 @@ def complete_with_provider_logging(
             **data,
         )
 
-    return client.complete_messages(messages, on_stream_event=on_stream_event)
+    try:
+        return client.complete_messages(messages, on_stream_event=on_stream_event)
+    except Exception as exc:
+        flow.write(
+            FLOW_PROVIDER_CALL_FAILED,
+            "provider call failed",
+            **call_data,
+            error=str(exc),
+            provider_exception_type=exc.__class__.__name__,
+        )
+        raise
 
 
 def write_job_tree_mirror(
