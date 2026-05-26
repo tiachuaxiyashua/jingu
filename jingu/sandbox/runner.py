@@ -57,6 +57,7 @@ from jingu.sandbox.flow import (
     FLOW_CHAT_SESSION_STARTED,
     FLOW_CHAT_TURN_FINISHED,
     FLOW_CONTEXT_GAPS_RESOLVED,
+    FLOW_DELIVERY_LEDGER_RECORDED,
     FLOW_EVIDENCE_SUBMITTED,
     FLOW_FEEDBACK_JOB_CREATED,
     FLOW_HUMAN_DECISION_REQUESTED,
@@ -107,6 +108,7 @@ from jingu.sandbox.flow import (
     FLOW_PARENT_INTEGRATION_REJECTED,
     FLOW_PARENT_INTEGRATION_REQUESTED,
     FLOW_PARENT_INTEGRATION_SKIPPED,
+    FLOW_PARENT_INTEGRATION_FOLLOWUP_PARKED,
     FLOW_RESULT_OUTPUT_RECORDED,
     FLOW_REPAIR_CANDIDATE_SUBMITTED,
     FLOW_REPAIR_JOB_CREATED,
@@ -149,7 +151,9 @@ from jingu.sandbox.paths import (
 )
 from jingu.sandbox.safety import destroy_sandbox_directory, prepare_sandbox_directory
 from jingu.sandbox.verification import (
+    build_text_delivery_ledger,
     build_parent_verification_evidence,
+    extract_cjk_length_constraints,
     verification_report_to_json,
     verify_candidate_text,
 )
@@ -180,6 +184,15 @@ PARENT_OPEN_GAP_ACCEPTANCE_CRITERIA = JOB_CONTRACTS.parent_open_gap_acceptance_c
 PARENT_FOLLOWUP_BLOCKING_REASON = JOB_CONTRACTS.parent_followup_blocking_reason
 PARENT_FOLLOWUP_OUTPUT_CONTRACT = JOB_CONTRACTS.parent_followup_output_contract
 PARENT_FOLLOWUP_ACCEPTANCE_CRITERIA = JOB_CONTRACTS.parent_followup_acceptance_criteria
+DELIVERY_CONTINUATION_TARGET_PREFIX = JOB_CONTRACTS.delivery_continuation_target_prefix
+DELIVERY_CONTINUATION_BLOCKING_REASON = JOB_CONTRACTS.delivery_continuation_blocking_reason
+DELIVERY_CONTINUATION_OUTPUT_CONTRACT = JOB_CONTRACTS.delivery_continuation_output_contract
+DELIVERY_CONTINUATION_ACCEPTANCE_CRITERIA = JOB_CONTRACTS.delivery_continuation_acceptance_criteria
+COMPLETION_DEPENDENT_SPLIT_MARKERS = tuple(
+    item.strip()
+    for item in JOB_CONTRACTS.completion_dependent_split_markers.split("|")
+    if item.strip()
+)
 METHOD_STEP_TARGET_PREFIX = JOB_CONTRACTS.method_step_target_prefix
 METHOD_STEP_ACCEPTANCE_CRITERIA = JOB_CONTRACTS.method_step_acceptance_criteria
 CHILD_PACKAGE_REPAIR_TARGET_PREFIX = JOB_CONTRACTS.child_package_repair_target_prefix
@@ -202,6 +215,13 @@ PARENT_INTEGRATION_REQUIRED_FIELDS = (
     "open_gaps",
     "suggested_follow_up_jobs",
     "parent_consumption_summary",
+)
+PARENT_INTEGRATION_OPTIONAL_FIELDS = (
+    "active_follow_up_jobs",
+    "parked_backlog",
+    "risk_notes",
+    "acceptance_checks",
+    "delivery_ledger_update",
 )
 FRONTIER_DISPATCH_STATES = frozenset({STATE_DRAFT, STATE_READY, STATE_RUNNING})
 ADVANCEMENT_OUTCOME_COMPLETED = "completed"
@@ -718,6 +738,11 @@ def build_split_proposal_messages(
     method_catalog: list[dict[str, str]],
     turn: str | None = None,
 ) -> list[dict[str, str]]:
+    delivery_ledger = build_text_delivery_ledger(
+        task_text=user_input,
+        candidate_text=candidate_text,
+        candidate_appearance_id=candidate_appearance_id,
+    )
     payload = {
         "task": user_input,
         "turn": turn or "",
@@ -726,6 +751,7 @@ def build_split_proposal_messages(
             "appearance_id": candidate_appearance_id,
             "text": candidate_text,
         },
+        "delivery_ledger": delivery_ledger,
         "root_method": {
             "method_name": method.name,
             "method_path": str(method.path),
@@ -739,6 +765,7 @@ def build_split_proposal_messages(
             "五项全否时必须留在父业内部作为检查项，不得提出子业。",
             "禁止为了概念完整性、装饰性分类或复述父业目标而提出子业。",
             "子业必须有独立局部果、可验收输出契约和父业可消费的回流点。",
+            "如果 delivery_ledger 显示根业量化交付目标尚未达到最低值，不得提出终校、发布、全局完成类子业；优先提出直接推进交付量、解除当前阻塞或校验当前批次的子业。",
             "如果子业需要调用法，method_path 必须从 available_method_catalog 中选择并原样返回。",
             "子业只能供料证成，不能宣告父业或根业完成。",
         ],
@@ -821,6 +848,11 @@ def run_split_proposal_registration(
     step_prefix: str,
     turn: str | None = None,
 ) -> dict[str, Any]:
+    delivery_ledger = build_text_delivery_ledger(
+        task_text=user_input,
+        candidate_text=candidate_text,
+        candidate_appearance_id=candidate_appearance_id,
+    )
     method_catalog = discover_method_catalog(root_method=method)
     messages = build_split_proposal_messages(
         method=method,
@@ -838,7 +870,20 @@ def run_split_proposal_registration(
         "method_catalog": json.dumps(method_catalog, ensure_ascii=False, sort_keys=True, indent=2),
         "split_proposal_prompt": messages[-1]["content"],
         "provider_message_count": str(len(messages)),
+        "delivery_ledger": json.dumps(delivery_ledger, ensure_ascii=False, sort_keys=True, indent=2),
+        "delivery_status": str(delivery_ledger.get("delivery_status") or ""),
     }
+    flow.write(
+        FLOW_DELIVERY_LEDGER_RECORDED,
+        "delivery ledger recorded",
+        **{
+            **turn_field(turn),
+            "job_id": parent_job_id,
+            "candidate_appearance_id": candidate_appearance_id,
+            "delivery_ledger": base_data["delivery_ledger"],
+            "delivery_status": base_data["delivery_status"],
+        },
+    )
     flow.write(FLOW_SPLIT_PROPOSAL_REQUESTED, "split proposal requested", **base_data)
     write_provider_messages(
         flow=flow,
@@ -945,6 +990,14 @@ def run_split_proposal_registration(
                 proposal,
                 catalog_by_path=catalog_by_path,
             )
+            if split_proposal_requires_satisfied_delivery(
+                normalized,
+                delivery_ledger=delivery_ledger,
+            ):
+                raise RuntimeError(
+                    "root quantitative delivery is still below the minimum; "
+                    "park this completion-dependent split until the delivery ledger is satisfied"
+                )
             result = tree_service.propose_child_job(
                 parent_job_id=parent_job_id,
                 target=normalized["target"],
@@ -3226,12 +3279,18 @@ def build_parent_integration_messages(
         "integration_contract": {
             "top_level": "JSON object only",
             "required_fields": list(PARENT_INTEGRATION_REQUIRED_FIELDS),
+            "optional_fields": list(PARENT_INTEGRATION_OPTIONAL_FIELDS),
             "field_types": {
                 "integrated_candidate_text": "non-empty string; the complete parent-scope candidate after consuming accepted child packages",
                 "consumed_child_jobs": "non-empty list of accepted child job ids consumed in this integration",
                 "evidence": "non-empty list of strings explaining why each child package was used",
                 "open_gaps": "list of remaining parent-level gaps or questions",
                 "suggested_follow_up_jobs": "list of parent-level follow-up job targets if new blocking work is visible",
+                "active_follow_up_jobs": "optional list of follow-up job targets that are on the immediate critical path",
+                "parked_backlog": "optional list of visible but non-critical follow-up items that should not become active child jobs yet",
+                "risk_notes": "optional list of risks to keep visible without registering active work",
+                "acceptance_checks": "optional list of parent acceptance checks still to run later",
+                "delivery_ledger_update": "optional object or string summarizing measurable delivery progress",
                 "parent_consumption_summary": "non-empty string summarizing how the parent consumed child packages",
             },
             "allowed_consumed_child_jobs": child_job_ids,
@@ -3239,7 +3298,7 @@ def build_parent_integration_messages(
                 "Do not accept, reject, or complete the parent job.",
                 "Do not accept, reject, or complete the root job.",
                 "Only consume child packages listed in accepted_child_packages.",
-                "If a child package is insufficient, put the remaining problem in open_gaps or suggested_follow_up_jobs.",
+                "If a child package is insufficient, separate immediate critical-path work from parked backlog and risk notes.",
                 "Return complete parent-scope candidate text; do not return only a summary unless the parent target itself only asks for a summary.",
             ],
         },
@@ -3320,12 +3379,38 @@ def parse_parent_integration_output(
     parent_consumption_summary = str(payload.get("parent_consumption_summary") or "").strip()
     if not parent_consumption_summary:
         raise RuntimeError("parent integration response parent_consumption_summary is required")
+    active_follow_up_jobs = normalize_string_list(
+        payload.get("active_follow_up_jobs") or [],
+        field_name="active_follow_up_jobs",
+        error_prefix="parent integration response",
+    )
+    parked_backlog = normalize_string_list(
+        payload.get("parked_backlog") or [],
+        field_name="parked_backlog",
+        error_prefix="parent integration response",
+    )
+    risk_notes = normalize_string_list(
+        payload.get("risk_notes") or [],
+        field_name="risk_notes",
+        error_prefix="parent integration response",
+    )
+    acceptance_checks = normalize_string_list(
+        payload.get("acceptance_checks") or [],
+        field_name="acceptance_checks",
+        error_prefix="parent integration response",
+    )
+    delivery_ledger_update = payload.get("delivery_ledger_update")
     return {
         "integrated_candidate_text": integrated_candidate_text,
         "consumed_child_jobs": consumed_child_jobs,
         "evidence": evidence,
         "open_gaps": open_gaps,
         "suggested_follow_up_jobs": suggested_follow_up_jobs,
+        "active_follow_up_jobs": active_follow_up_jobs,
+        "parked_backlog": parked_backlog,
+        "risk_notes": risk_notes,
+        "acceptance_checks": acceptance_checks,
+        "delivery_ledger_update": delivery_ledger_update,
         "parent_consumption_summary": parent_consumption_summary,
         "does_not_auto_accept_or_reject": True,
     }
@@ -3349,6 +3434,11 @@ def build_parent_integration_evidence(
         "integrator_evidence": integration["evidence"],
         "open_gaps": integration["open_gaps"],
         "suggested_follow_up_jobs": integration["suggested_follow_up_jobs"],
+        "active_follow_up_jobs": integration.get("active_follow_up_jobs") or [],
+        "parked_backlog": integration.get("parked_backlog") or [],
+        "risk_notes": integration.get("risk_notes") or [],
+        "acceptance_checks": integration.get("acceptance_checks") or [],
+        "delivery_ledger_update": integration.get("delivery_ledger_update"),
         "parent_consumption_summary": integration["parent_consumption_summary"],
         "accepted_child_package_refs": [
             {
@@ -3612,18 +3702,38 @@ def parent_integration_split_law(*, reason: str, needs_distinct_capability: bool
     }
 
 
-def register_parent_integration_followups(
-    *,
-    flow: FlowWriter,
-    service: RuntimeService,
-    parent_job_id: str,
-    integration: dict[str, Any],
-    step_prefix: str,
-    turn: str | None = None,
-) -> dict[str, Any]:
-    tree_service = TreeService(service.paths.workspace)
-    accepted: list[dict[str, Any]] = []
-    rejected: list[dict[str, Any]] = []
+def delivery_ledger_needs_more(delivery_ledger: dict[str, Any]) -> bool:
+    return bool(
+        delivery_ledger.get("has_quantitative_text_contract")
+        and delivery_ledger.get("delivery_status") == "below_minimum"
+        and isinstance(delivery_ledger.get("remaining_min_cjk_characters"), int)
+        and int(delivery_ledger["remaining_min_cjk_characters"]) > 0
+    )
+
+
+def delivery_continuation_entry(delivery_ledger: dict[str, Any]) -> dict[str, Any]:
+    actual = int(delivery_ledger.get("actual_cjk_characters") or 0)
+    required = int(delivery_ledger.get("required_min_cjk_characters") or 0)
+    remaining = int(delivery_ledger.get("remaining_min_cjk_characters") or 0)
+    progress_summary = f"当前 {actual} / 最低 {required}，仍需至少 {remaining}"
+    return {
+        "source": "delivery_ledger",
+        "target": f"{DELIVERY_CONTINUATION_TARGET_PREFIX}：{progress_summary}",
+        "blocking_reason": DELIVERY_CONTINUATION_BLOCKING_REASON,
+        "output_contract": DELIVERY_CONTINUATION_OUTPUT_CONTRACT,
+        "acceptance_criteria": DELIVERY_CONTINUATION_ACCEPTANCE_CRITERIA,
+        "required_context_gaps": [],
+        "split_law": {
+            **parent_integration_split_law(
+                reason=DELIVERY_CONTINUATION_BLOCKING_REASON,
+                needs_distinct_capability=False,
+            ),
+            "blocks_parent_execution": True,
+        },
+    }
+
+
+def parent_followup_entries_from_integration(integration: dict[str, Any]) -> list[dict[str, Any]]:
     entries: list[dict[str, Any]] = []
     for gap in normalize_parent_followup_items(integration.get("open_gaps")):
         entries.append(
@@ -3655,6 +3765,82 @@ def register_parent_integration_followups(
                 ),
             }
         )
+    for followup in normalize_parent_followup_items(integration.get("active_follow_up_jobs")):
+        entries.append(
+            {
+                "source": "active_follow_up_jobs",
+                "target": followup,
+                "blocking_reason": PARENT_FOLLOWUP_BLOCKING_REASON,
+                "output_contract": PARENT_FOLLOWUP_OUTPUT_CONTRACT,
+                "acceptance_criteria": PARENT_FOLLOWUP_ACCEPTANCE_CRITERIA,
+                "required_context_gaps": [],
+                "split_law": parent_integration_split_law(
+                    reason=PARENT_FOLLOWUP_BLOCKING_REASON,
+                    needs_distinct_capability=False,
+                ),
+            }
+        )
+    return entries
+
+
+def register_parent_integration_followups(
+    *,
+    flow: FlowWriter,
+    service: RuntimeService,
+    parent_job_id: str,
+    integration: dict[str, Any],
+    user_input: str,
+    step_prefix: str,
+    turn: str | None = None,
+) -> dict[str, Any]:
+    tree_service = TreeService(service.paths.workspace)
+    accepted: list[dict[str, Any]] = []
+    rejected: list[dict[str, Any]] = []
+    parked: list[dict[str, Any]] = []
+    source_entries = parent_followup_entries_from_integration(integration)
+    delivery_ledger = build_text_delivery_ledger(
+        task_text=user_input,
+        candidate_text=str(integration.get("integrated_candidate_text") or ""),
+    )
+    ledger_data = {
+        **turn_field(turn),
+        "job_id": parent_job_id,
+        "delivery_status": str(delivery_ledger.get("delivery_status") or ""),
+        "delivery_ledger": json.dumps(delivery_ledger, ensure_ascii=False, sort_keys=True, indent=2),
+    }
+    flow.write(FLOW_DELIVERY_LEDGER_RECORDED, "delivery ledger recorded", **ledger_data)
+    write_process_step(
+        flow=flow,
+        step=f"{step_prefix}.delivery_ledger",
+        phase="parent_integration",
+        action="记录父业整合后的根业交付账本",
+        **ledger_data,
+    )
+    if delivery_ledger_needs_more(delivery_ledger):
+        entries = [delivery_continuation_entry(delivery_ledger)]
+        parked = [
+            {
+                "source": entry["source"],
+                "target": entry["target"],
+                "reason": "root quantitative delivery is below minimum; parked until critical delivery work advances",
+            }
+            for entry in source_entries
+        ]
+        parked.extend(
+            {
+                "source": source,
+                "target": item,
+                "reason": "visible parent integration item parked outside active frontier",
+            }
+            for source, values in (
+                ("parked_backlog", integration.get("parked_backlog")),
+                ("risk_notes", integration.get("risk_notes")),
+                ("acceptance_checks", integration.get("acceptance_checks")),
+            )
+            for item in normalize_parent_followup_items(values)
+        )
+    else:
+        entries = source_entries
     for index, entry in enumerate(entries, start=1):
         try:
             result = tree_service.propose_child_job(
@@ -3768,7 +3954,34 @@ def register_parent_integration_followups(
                 status="rejected",
                 **data,
             )
-    return {"accepted": accepted, "rejected": rejected, "count": len(entries)}
+    if parked:
+        parked_data = {
+            **turn_field(turn),
+            "job_id": parent_job_id,
+            "parked_followups": json.dumps(parked, ensure_ascii=False, sort_keys=True, indent=2),
+            "delivery_status": str(delivery_ledger.get("delivery_status") or ""),
+            "delivery_ledger": json.dumps(delivery_ledger, ensure_ascii=False, sort_keys=True, indent=2),
+        }
+        flow.write(
+            FLOW_PARENT_INTEGRATION_FOLLOWUP_PARKED,
+            "parent integration follow-up parked",
+            **parked_data,
+        )
+        write_process_step(
+            flow=flow,
+            step=f"{step_prefix}.followup_parked",
+            phase="parent_integration",
+            action="根业量化交付未达标，非临界路径后续事项暂存为可见积压",
+            status="parked",
+            **parked_data,
+        )
+    return {
+        "accepted": accepted,
+        "rejected": rejected,
+        "parked": parked,
+        "count": len(entries),
+        "delivery_ledger": delivery_ledger,
+    }
 
 
 def run_parent_integration(
@@ -4320,6 +4533,17 @@ def run_parent_integration(
         "integration_open_gaps": json.dumps(
             integration["open_gaps"], ensure_ascii=False, sort_keys=True
         ),
+        "parked_followups": json.dumps(
+            {
+                "active_follow_up_jobs": integration.get("active_follow_up_jobs") or [],
+                "parked_backlog": integration.get("parked_backlog") or [],
+                "risk_notes": integration.get("risk_notes") or [],
+                "acceptance_checks": integration.get("acceptance_checks") or [],
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+            indent=2,
+        ),
         "parent_integration_summary": integration["parent_consumption_summary"],
     }
     flow.write(
@@ -4348,6 +4572,7 @@ def run_parent_integration(
         service=service,
         parent_job_id=parent_job_id,
         integration=integration,
+        user_input=user_input,
         step_prefix=step_prefix,
         turn=turn,
     )
@@ -4684,6 +4909,38 @@ def parse_split_proposals(content: str) -> list[dict[str, Any]]:
             raise RuntimeError("each split proposal must be a JSON object")
         normalized.append(item)
     return normalized
+
+
+def split_proposal_requires_satisfied_delivery(
+    proposal: dict[str, Any],
+    *,
+    delivery_ledger: dict[str, Any],
+) -> bool:
+    if not delivery_ledger_needs_more(delivery_ledger):
+        return False
+    required_minimum = delivery_ledger.get("required_min_cjk_characters")
+    if not isinstance(required_minimum, int) or required_minimum <= 0:
+        return False
+    proposal_text = "\n".join(
+        str(proposal.get(field) or "")
+        for field in ("target", "blocking_reason", "output_contract", "acceptance_criteria")
+    )
+    for constraint in extract_cjk_length_constraints(proposal_text):
+        if (
+            constraint.min_cjk_characters is not None
+            and constraint.min_cjk_characters >= required_minimum
+        ):
+            return True
+    split_law = proposal.get("split_law") or {}
+    return bool(
+        split_law.get("blocks_parent_acceptance")
+        and not split_law.get("blocks_parent_execution")
+        and not split_law.get("has_high_value_or_risk")
+        and any(
+            marker in proposal_text
+            for marker in COMPLETION_DEPENDENT_SPLIT_MARKERS
+        )
+    )
 
 
 def normalize_split_proposal(

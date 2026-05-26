@@ -2,7 +2,11 @@ from __future__ import annotations
 
 import unittest
 
-from jingu.sandbox.verification import extract_marker_regions, verify_candidate_text
+from jingu.sandbox.verification import (
+    build_text_delivery_ledger,
+    extract_marker_regions,
+    verify_candidate_text,
+)
 
 
 class CandidateVerificationTest(unittest.TestCase):
@@ -38,6 +42,27 @@ class CandidateVerificationTest(unittest.TestCase):
         self.assertEqual(length_check["actual_cjk_characters"], 2600)
         self.assertEqual(length_check["min_cjk_characters"], 4500)
         self.assertEqual(length_check["max_cjk_characters"], 6000)
+
+    def test_cjk_length_range_supports_chinese_magnitude_units(self) -> None:
+        report = verify_candidate_text(
+            task_text="请输出10万字到20万字左右的完整正文。",
+            candidate_text="字" * 11500,
+        )
+
+        length_check = next(
+            check for check in report["checks"] if check["check_kind"] == "cjk_length_range"
+        )
+        self.assertEqual(length_check["status"], "failed")
+        self.assertEqual(length_check["actual_cjk_characters"], 11500)
+        self.assertEqual(length_check["min_cjk_characters"], 100000)
+        self.assertEqual(length_check["max_cjk_characters"], 200000)
+
+        ledger = build_text_delivery_ledger(
+            task_text="请输出10万字到20万字左右的完整正文。",
+            candidate_text="字" * 11500,
+        )
+        self.assertEqual(ledger["delivery_status"], "below_minimum")
+        self.assertEqual(ledger["remaining_min_cjk_characters"], 88500)
 
     def test_marker_extraction_is_based_on_generic_boundary_labels(self) -> None:
         regions = extract_marker_regions(

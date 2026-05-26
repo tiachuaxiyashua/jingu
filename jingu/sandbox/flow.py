@@ -107,6 +107,8 @@ FLOW_PARENT_INTEGRATION_REPAIR_ACCEPTED = "parent_integration_repair_accepted"
 FLOW_PARENT_INTEGRATION_FOLLOWUP_REGISTRATION_FINISHED = (
     "parent_integration_followup_registration_finished"
 )
+FLOW_DELIVERY_LEDGER_RECORDED = "delivery_ledger_recorded"
+FLOW_PARENT_INTEGRATION_FOLLOWUP_PARKED = "parent_integration_followup_parked"
 FLOW_ADVANCEMENT_WAVE_STARTED = "advancement_wave_started"
 FLOW_ADVANCEMENT_WAVE_FINISHED = "advancement_wave_finished"
 FLOW_ADVANCEMENT_LOOP_FINISHED = "advancement_loop_finished"
@@ -382,6 +384,9 @@ FIELD_LABELS = {
     "reason": "原因",
     "decision_evidence_appearance_id": "裁决证据相编号",
     "decision_text": "裁决内容",
+    "delivery_ledger": "交付账本",
+    "delivery_status": "交付状态",
+    "parked_followups": "已暂存后续事项",
     "evidence_hardness": "证据硬度",
     "evidence_id": "证据相编号",
     "evidence_kind": "证据类型",
@@ -460,6 +465,8 @@ JOB_TREE_ACTION_LABELS = {
     "parent_integration_repair_rejected": "父业整合修复已拒收",
     "parent_integration_skipped": "父业整合已跳过",
     "parent_integration_followup_registered": "父业整合后续分业登记已记录",
+    "parent_integration_followup_parked": "父业整合后续事项已暂存",
+    "delivery_ledger_recorded": "交付账本已记录",
     "root_created": "根业已创建",
     "repair_candidate_attached": "修复候选已挂载",
     "repair_child_created": "修复子业已创建",

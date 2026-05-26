@@ -35,6 +35,11 @@ class SandboxJobContracts:
     parent_followup_blocking_reason: str
     parent_followup_output_contract: str
     parent_followup_acceptance_criteria: str
+    delivery_continuation_target_prefix: str
+    delivery_continuation_blocking_reason: str
+    delivery_continuation_output_contract: str
+    delivery_continuation_acceptance_criteria: str
+    completion_dependent_split_markers: str
     method_step_target_prefix: str
     method_step_acceptance_criteria: str
     child_package_repair_target_prefix: str

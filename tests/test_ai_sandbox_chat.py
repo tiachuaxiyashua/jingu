@@ -1714,6 +1714,152 @@ class AiSandboxChatTest(unittest.TestCase):
                 )
             )
 
+    def test_parent_integration_parks_followups_when_delivery_ledger_is_incomplete(self) -> None:
+        with TemporaryDirectory() as tmp:
+            sandbox = Path(tmp) / "sandbox"
+            log_dir = Path(tmp) / "logs"
+            method_path = write_method_file(Path(tmp))
+            child_proposal = {
+                "target": "Produce the first measurable batch",
+                "blocking_reason": "parent needs initial content before acceptance work",
+                "output_contract": "structured child result package",
+                "acceptance_criteria": "package advances the parent candidate",
+                "estimated_effort": 1,
+                "depth_limit": 3,
+                "required_context_gaps": [],
+                "method_path": "",
+                "method_binding_reason": "",
+                "method_return_point": "",
+            }
+            client = FakeChatClient(
+                responses=[
+                    "字" * 1000,
+                    method_review_json(),
+                    split_proposals_json([child_proposal]),
+                    child_result_package_json(),
+                    child_package_review_accept_json(),
+                    split_proposals_json(),
+                    parent_integration_response(
+                        "字" * 2000,
+                        open_gaps=["missing external source"],
+                        suggested_follow_up_jobs=["separate consistency review"],
+                    ),
+                    split_proposals_json(),
+                ]
+            )
+
+            answer = AiSandboxRunner(
+                sandbox_path=sandbox,
+                log_dir=log_dir,
+                method_path=method_path,
+                client=client,
+            ).run("请输出1万字到2万字的完整正文。")
+
+            self.assertIn("# 金箍运行已暂停", answer)
+            self.assertIn("继续补齐根业量化交付目标", answer)
+            records = [
+                json.loads(line)
+                for line in next(log_dir.glob("ai-run-*.jsonl")).read_text(encoding="utf-8").splitlines()
+                if line.strip()
+            ]
+            event_types = [record["event_type"] for record in records]
+            self.assertIn("delivery_ledger_recorded", event_types)
+            self.assertIn("parent_integration_followup_parked", event_types)
+            serialized = "\n".join(json.dumps(record, ensure_ascii=False) for record in records)
+            self.assertIn("below_minimum", serialized)
+            self.assertIn("missing external source", serialized)
+            self.assertIn("separate consistency review", serialized)
+            self.assertIn("delivery_ledger", serialized)
+            snapshots = [
+                json.loads(record["data"]["tree_snapshot"])
+                for record in records
+                if record["event_type"] == "job_tree_snapshot_recorded"
+            ]
+            self.assertFalse(
+                any(
+                    node["state"] == "blocked" and "missing external source" in json.dumps(node, ensure_ascii=False)
+                    for snapshot in snapshots
+                    for node in snapshot["nodes"]
+                )
+            )
+
+    def test_split_proposal_rejects_completion_dependent_child_before_delivery_minimum(self) -> None:
+        with TemporaryDirectory() as tmp:
+            sandbox = Path(tmp) / "sandbox"
+            log_dir = Path(tmp) / "logs"
+            method_path = write_method_file(Path(tmp))
+            final_proposal = {
+                "target": "最终交付完整正文",
+                "blocking_reason": "parent acceptance depends on the final manuscript",
+                "output_contract": "complete manuscript package",
+                "acceptance_criteria": "总字数1万字到2万字之间，并附带完整证据",
+                "estimated_effort": 1,
+                "depth_limit": 3,
+                "required_context_gaps": [],
+                "method_path": "",
+                "method_binding_reason": "",
+                "method_return_point": "",
+                "split_law": default_split_law(
+                    blocks_parent_execution=False,
+                    blocks_parent_acceptance=True,
+                    needs_distinct_capability=True,
+                ),
+            }
+            batch_proposal = {
+                "target": "继续生成下一批正文",
+                "blocking_reason": "parent needs more body content before final acceptance work",
+                "output_contract": "incremental body package",
+                "acceptance_criteria": "package advances the parent candidate",
+                "estimated_effort": 1,
+                "depth_limit": 3,
+                "required_context_gaps": [],
+                "method_path": "",
+                "method_binding_reason": "",
+                "method_return_point": "",
+                "split_law": default_split_law(blocks_parent_execution=True),
+            }
+            client = FakeChatClient(
+                responses=[
+                    "字" * 1000,
+                    method_review_json(),
+                    split_proposals_json([final_proposal, batch_proposal]),
+                    child_result_package_json(),
+                    child_package_review_accept_json(),
+                    split_proposals_json(),
+                    parent_integration_response("字" * 2000),
+                    split_proposals_json(),
+                ]
+            )
+
+            AiSandboxRunner(
+                sandbox_path=sandbox,
+                log_dir=log_dir,
+                method_path=method_path,
+                client=client,
+            ).run("请输出1万字到2万字的完整正文。")
+
+            records = [
+                json.loads(line)
+                for line in next(log_dir.glob("ai-run-*.jsonl")).read_text(encoding="utf-8").splitlines()
+                if line.strip()
+            ]
+            event_types = [record["event_type"] for record in records]
+            self.assertIn("split_proposal_rejected", event_types)
+            serialized = "\n".join(json.dumps(record, ensure_ascii=False) for record in records)
+            self.assertIn("root quantitative delivery is still below the minimum", serialized)
+            snapshots = [
+                json.loads(record["data"]["tree_snapshot"])
+                for record in records
+                if record["event_type"] == "job_tree_snapshot_recorded"
+            ]
+            self.assertFalse(
+                any(
+                    "最终交付完整正文" in json.dumps(node, ensure_ascii=False)
+                    for snapshot in snapshots
+                    for node in snapshot["nodes"]
+                )
+            )
+
     def test_invalid_parent_integration_repair_does_not_mutate_parent_candidate(self) -> None:
         with TemporaryDirectory() as tmp:
             sandbox = Path(tmp) / "sandbox"

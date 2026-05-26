@@ -20,6 +20,11 @@
   "parent_followup_blocking_reason": "父业整合建议另立后续业处理该事项，以免父业候选把未完成工作伪装成完成。",
   "parent_followup_output_contract": "提交可被父业消费的后续果包，包含结论、产物引用、证据摘要、开放问题和后续建议。",
   "parent_followup_acceptance_criteria": "后续事项在自身责任范围内形成可引用果包，并明确对父业完成或验收的影响。",
+  "delivery_continuation_target_prefix": "继续补齐根业量化交付目标",
+  "delivery_continuation_blocking_reason": "根业量化交付账本显示当前候选尚未达到最低交付量。",
+  "delivery_continuation_output_contract": "提交可被父业消费的增量候选果包，包含新增内容或内容引用、增量计数、更新后的总计数、证据和仍未解决的问题。",
+  "delivery_continuation_acceptance_criteria": "增量果包必须直接推进根业量化交付计数，说明本批新增量、总量变化和可校验证据；不得宣告父业或根业完成。",
+  "completion_dependent_split_markers": "完整|最终|终校|发布|交付|完成",
   "method_step_target_prefix": "执行法步骤候选",
   "method_step_acceptance_criteria": "产出当前法片段在本业中的可消费局部果、证据、开放缺口和回流点；不得宣告父业或根业完成。",
   "child_package_repair_target_prefix": "修复子业果包"

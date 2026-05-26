@@ -5,32 +5,53 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import asdict, dataclass
+from decimal import Decimal, InvalidOperation
 from typing import Any
 
 
 CJK_CHARACTER = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]")
 MARKER_PATTERN = re.compile(r"<<<\s*(?P<label>[^<>\r\n]{1,120}?)\s*>>>")
 TEXT_UNIT = r"(?:中文字符|中文字|汉字|中文|字)"
+MAGNITUDE_UNIT = r"(?:万|千)"
 RANGE_SEPARATOR = r"(?:-|~|至|到|—|–)"
+QUANTITY_PATTERN = r"\d+(?:\.\d+)?"
 RANGE_PATTERNS = (
     re.compile(
-        rf"(?P<min>\d{{2,7}})\s*{RANGE_SEPARATOR}\s*(?P<max>\d{{2,7}})\s*(?P<unit>{TEXT_UNIT})"
+        rf"(?P<min>{QUANTITY_PATTERN})\s*(?P<min_scale>{MAGNITUDE_UNIT})?\s*"
+        rf"(?P<min_text_unit>{TEXT_UNIT})?\s*{RANGE_SEPARATOR}\s*"
+        rf"(?P<max>{QUANTITY_PATTERN})\s*(?P<max_scale>{MAGNITUDE_UNIT})?\s*"
+        rf"(?P<unit>{TEXT_UNIT})"
     ),
     re.compile(
-        rf"(?P<unit>{TEXT_UNIT})\s*(?P<min>\d{{2,7}})\s*{RANGE_SEPARATOR}\s*(?P<max>\d{{2,7}})"
+        rf"(?P<unit>{TEXT_UNIT})\s*(?P<min>{QUANTITY_PATTERN})\s*"
+        rf"(?P<min_scale>{MAGNITUDE_UNIT})?\s*{RANGE_SEPARATOR}\s*"
+        rf"(?P<max>{QUANTITY_PATTERN})\s*(?P<max_scale>{MAGNITUDE_UNIT})?"
     ),
 )
 MIN_PATTERNS = (
-    re.compile(rf"(?:至少|不少于|不低于|大于等于)\s*(?P<min>\d{{2,7}})\s*(?P<unit>{TEXT_UNIT})"),
-    re.compile(rf"(?P<min>\d{{2,7}})\s*(?P<unit>{TEXT_UNIT})\s*(?:以上|起)"),
+    re.compile(
+        rf"(?:至少|不少于|不低于|大于等于)\s*(?P<min>{QUANTITY_PATTERN})\s*"
+        rf"(?P<min_scale>{MAGNITUDE_UNIT})?\s*(?P<unit>{TEXT_UNIT})"
+    ),
+    re.compile(
+        rf"(?P<min>{QUANTITY_PATTERN})\s*(?P<min_scale>{MAGNITUDE_UNIT})?\s*"
+        rf"(?P<unit>{TEXT_UNIT})\s*(?:以上|起)"
+    ),
 )
 MAX_PATTERNS = (
-    re.compile(rf"(?:最多|不超过|不高于|小于等于)\s*(?P<max>\d{{2,7}})\s*(?P<unit>{TEXT_UNIT})"),
-    re.compile(rf"(?P<max>\d{{2,7}})\s*(?P<unit>{TEXT_UNIT})\s*(?:以内|以下)"),
+    re.compile(
+        rf"(?:最多|不超过|不高于|小于等于)\s*(?P<max>{QUANTITY_PATTERN})\s*"
+        rf"(?P<max_scale>{MAGNITUDE_UNIT})?\s*(?P<unit>{TEXT_UNIT})"
+    ),
+    re.compile(
+        rf"(?P<max>{QUANTITY_PATTERN})\s*(?P<max_scale>{MAGNITUDE_UNIT})?\s*"
+        rf"(?P<unit>{TEXT_UNIT})\s*(?:以内|以下)"
+    ),
 )
 TARGET_PATTERN = re.compile(
     rf"(?P<prefix>大概|大约|约|约莫|接近)?\s*"
-    rf"(?P<target>\d{{2,7}})\s*(?P<unit>{TEXT_UNIT})\s*"
+    rf"(?P<target>{QUANTITY_PATTERN})\s*(?P<target_scale>{MAGNITUDE_UNIT})?\s*"
+    rf"(?P<unit>{TEXT_UNIT})\s*"
     rf"(?P<suffix>左右|上下|附近|大概|大约|约)?"
 )
 INCOMPLETE_SIGNAL_PATTERNS = (
@@ -200,6 +221,62 @@ def verification_report_to_json(report: dict[str, Any]) -> str:
     return json.dumps(report, ensure_ascii=False, sort_keys=True, indent=2)
 
 
+def build_text_delivery_ledger(
+    *,
+    task_text: str,
+    candidate_text: str,
+    candidate_appearance_id: str | None = None,
+) -> dict[str, Any]:
+    marker_pairs = extract_marker_regions(candidate_text)
+    selected_region = select_count_region(candidate_text, marker_pairs)
+    region_text = selected_region["text"]
+    actual_cjk_count = count_cjk_characters(region_text)
+    constraints = extract_cjk_length_constraints(task_text)
+    minimums = [
+        constraint.min_cjk_characters
+        for constraint in constraints
+        if constraint.min_cjk_characters is not None
+    ]
+    maximums = [
+        constraint.max_cjk_characters
+        for constraint in constraints
+        if constraint.max_cjk_characters is not None
+    ]
+    required_minimum = max(minimums) if minimums else None
+    allowed_maximum = min(maximums) if maximums else None
+    below_minimum = required_minimum is not None and actual_cjk_count < required_minimum
+    above_maximum = allowed_maximum is not None and actual_cjk_count > allowed_maximum
+    if not constraints:
+        status = "unsupported"
+    elif below_minimum:
+        status = "below_minimum"
+    elif above_maximum:
+        status = "above_maximum"
+    else:
+        status = "satisfied"
+    checks = [
+        build_length_check(index, constraint, actual_cjk_count, selected_region)
+        for index, constraint in enumerate(constraints, start=1)
+    ]
+    return {
+        "ledger_kind": "text_delivery_ledger",
+        "candidate_appearance_id": candidate_appearance_id,
+        "has_quantitative_text_contract": bool(constraints),
+        "delivery_status": status,
+        "actual_cjk_characters": actual_cjk_count,
+        "required_min_cjk_characters": required_minimum,
+        "allowed_max_cjk_characters": allowed_maximum,
+        "remaining_min_cjk_characters": (
+            max(required_minimum - actual_cjk_count, 0)
+            if required_minimum is not None
+            else None
+        ),
+        "selected_region": selected_region_without_text(selected_region),
+        "constraints": [asdict(constraint) for constraint in constraints],
+        "checks": checks,
+    }
+
+
 def extract_marker_regions(candidate_text: str) -> list[MarkerRegion]:
     markers = [build_marker(match) for match in MARKER_PATTERN.finditer(candidate_text)]
     regions: list[MarkerRegion] = []
@@ -236,8 +313,17 @@ def extract_cjk_length_constraints(task_text: str) -> list[LengthConstraint]:
         for match in pattern.finditer(task_text):
             if overlaps_existing(match.span(), occupied):
                 continue
-            minimum = int(match.group("min"))
-            maximum = int(match.group("max"))
+            minimum = quantity_match_to_int(
+                match,
+                value_group="min",
+                scale_group="min_scale",
+                fallback_scale_group="max_scale",
+            )
+            maximum = quantity_match_to_int(
+                match,
+                value_group="max",
+                scale_group="max_scale",
+            )
             if minimum <= maximum:
                 constraints.append(
                     LengthConstraint(
@@ -259,7 +345,11 @@ def extract_cjk_length_constraints(task_text: str) -> list[LengthConstraint]:
             constraints.append(
                 LengthConstraint(
                     constraint_kind="cjk_length_minimum",
-                    min_cjk_characters=int(match.group("min")),
+                    min_cjk_characters=quantity_match_to_int(
+                        match,
+                        value_group="min",
+                        scale_group="min_scale",
+                    ),
                     max_cjk_characters=None,
                     source_text=match.group(0),
                     source_start=match.start(),
@@ -277,7 +367,11 @@ def extract_cjk_length_constraints(task_text: str) -> list[LengthConstraint]:
                 LengthConstraint(
                     constraint_kind="cjk_length_maximum",
                     min_cjk_characters=None,
-                    max_cjk_characters=int(match.group("max")),
+                    max_cjk_characters=quantity_match_to_int(
+                        match,
+                        value_group="max",
+                        scale_group="max_scale",
+                    ),
                     source_text=match.group(0),
                     source_start=match.start(),
                     source_end=match.end(),
@@ -301,7 +395,11 @@ def observe_unbounded_length_targets(
         has_approximation = bool(match.group("prefix") or match.group("suffix"))
         if not has_approximation:
             continue
-        target = int(match.group("target"))
+        target = quantity_match_to_int(
+            match,
+            value_group="target",
+            scale_group="target_scale",
+        )
         observations.append(
             {
                 "source_text": match.group(0),
@@ -327,6 +425,47 @@ def find_incomplete_signals(candidate_text: str) -> list[dict[str, Any]]:
                 }
             )
     return signals
+
+
+def quantity_match_to_int(
+    match: re.Match[str],
+    *,
+    value_group: str,
+    scale_group: str,
+    fallback_scale_group: str | None = None,
+) -> int:
+    raw_value = match.group(value_group)
+    raw_scale = optional_match_group(match, scale_group)
+    fallback_scale = optional_match_group(match, fallback_scale_group)
+    scale = raw_scale or inferred_compact_range_scale(raw_value, fallback_scale)
+    try:
+        value = Decimal(raw_value)
+    except InvalidOperation as exc:
+        raise ValueError(f"invalid quantity: {raw_value}") from exc
+    multiplier = {"": 1, "千": 1000, "万": 10000}.get(scale or "")
+    if multiplier is None:
+        raise ValueError(f"unsupported quantity scale: {scale}")
+    return int(value * multiplier)
+
+
+def optional_match_group(match: re.Match[str], group_name: str | None) -> str:
+    if not group_name:
+        return ""
+    try:
+        value = match.group(group_name)
+    except IndexError:
+        return ""
+    return str(value or "").strip()
+
+
+def inferred_compact_range_scale(raw_value: str, fallback_scale: str) -> str:
+    if fallback_scale not in {"千", "万"}:
+        return ""
+    try:
+        value = Decimal(raw_value)
+    except InvalidOperation:
+        return ""
+    return fallback_scale if value < Decimal(1000) else ""
 
 
 def count_cjk_characters(text: str) -> int:
